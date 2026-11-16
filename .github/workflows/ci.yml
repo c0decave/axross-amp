@@ -19,7 +19,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
-      - name: Linux libraries (ALSA headers; Mesa's software Vulkan for the window test)
+      - name: Linux libraries (ALSA headers; Mesa's software Vulkan for the window test; CMake builds libopus)
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libasound2-dev pkg-config mesa-vulkan-drivers
       - run: cargo fmt --check

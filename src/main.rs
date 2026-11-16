@@ -12,7 +12,7 @@ use axross_amp::app;
 
 const USAGE: &str = "axross-amp [FILE|FOLDER|PLAYLIST|URL ...]
 
-Play local audio (MP3, FLAC, Ogg Vorbis, AAC / M4A, ALAC, WAV, AIFF, CAF),
+Play local audio (MP3, FLAC, Ogg Vorbis, Opus, AAC / M4A, ALAC, WAV, AIFF, CAF),
 folders and M3U / PLS playlists, and internet radio by its http(s) URL.
 
 Keys: Space play / pause, Left / Right seek 5 s, Up / Down volume,

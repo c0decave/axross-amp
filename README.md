@@ -4,9 +4,10 @@ axross's Media Player as a program of its own - written in Rust.
 
 ![The window](docs/window.png)
 
-- **Plays** local files (MP3, FLAC, Ogg Vorbis, AAC / M4A, ALAC, WAV, AIFF, CAF;
+- **Plays** local files (MP3, FLAC, Ogg Vorbis, Opus, AAC / M4A, ALAC, WAV, AIFF, CAF;
   MP4 / MKV containers), folders and M3U / PLS playlists, and **internet radio** by
-  its http(s) URL - decoded by [symphonia](https://github.com/pdeljanov/Symphonia),
+  its http(s) URL - decoded by [symphonia](https://github.com/pdeljanov/Symphonia)
+  (Opus by libopus, built in; AAC / ALAC in MP4 trimmed by its edit list: gapless),
   played through [cpal](https://github.com/RustAudio/cpal) (PulseAudio / PipeWire or
   ALSA on Linux, CoreAudio on macOS, WASAPI on Windows), resampled to the output's rate.
 - **A ten-band equalizer** with axross's presets (Flat, Bass boost, Treble boost,
@@ -46,7 +47,7 @@ cargo test                          # the window test renders it (needs a Vulkan
 ```
 
 On Linux the ALSA headers are needed (`libasound2-dev`); PulseAudio / PipeWire is
-spoken natively.
+spoken natively. libopus is built from its sources, which needs CMake.
 
 ## Status
 

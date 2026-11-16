@@ -5,6 +5,7 @@ pub mod analyzer;
 pub mod app;
 pub mod engine;
 pub mod eq;
+pub mod mp4edit;
 pub mod playlist;
 pub mod state;
 pub mod viz;

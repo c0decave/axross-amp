@@ -7,9 +7,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 /// What the decoder reads (symphonia's formats).
-pub const AUDIO_EXTENSIONS: [&str; 15] = [
-    "mp3", "flac", "ogg", "oga", "wav", "wave", "aif", "aiff", "aifc", "m4a", "m4b", "mp4", "aac",
-    "caf", "mka",
+pub const AUDIO_EXTENSIONS: [&str; 17] = [
+    "mp3", "flac", "ogg", "oga", "opus", "wav", "wave", "aif", "aiff", "aifc", "m4a", "m4b", "mp4",
+    "aac", "caf", "mka", "webm",
 ];
 pub const PLAYLIST_EXTENSIONS: [&str; 3] = ["m3u", "m3u8", "pls"];
 /// How deep a folder is walked, and the largest playlist file read (axross's).
@@ -504,5 +504,8 @@ mod tests {
         assert_eq!(found.len(), 2); // b.flac, sub/a.mp3 (playlists are not walked into)
         assert_eq!(skipped, vec!["nope.xyz".to_string()]);
         assert!(to_m3u(&m3u).contains("#EXTINF:-1,Song A"));
+        for name in ["x.opus", "x.webm", "x.OGG"] {
+            assert!(is_audio(Path::new(name)), "{name}");
+        }
     }
 }

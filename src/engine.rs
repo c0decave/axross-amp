@@ -25,7 +25,7 @@ use symphonia::core::errors::Error as SymError;
 use symphonia::core::formats::probe::Hint;
 use symphonia::core::formats::{FormatOptions, FormatReader, SeekMode, SeekTo, TrackType};
 use symphonia::core::io::{MediaSourceStream, ReadOnlySource};
-use symphonia::core::meta::{MetadataOptions, StandardTag};
+use symphonia::core::meta::{MetadataOptions, StandardTag, StandardVisualKey};
 use symphonia::core::units::{Time, TimeBase, Timestamp};
 
 /// Seconds of sound decoded ahead of the output.
@@ -343,6 +343,14 @@ struct Decoding {
     scratch: Vec<f32>,
     stereo: Vec<f32>,
     resampled: Vec<f32>,
+    /// The source's rate, the frames still to drop before the sound (encoder
+    /// delay, or the part of a packet before a seek's target), the frames
+    /// still to play (an edit list's length: the encoder's padding is not)
+    /// and where the sound begins in the media (frames).
+    rate: u32,
+    skip: u64,
+    left: Option<u64>,
+    edit: Option<crate::mp4edit::Edit>,
 }
 
 fn hint_for(path: &str, content_type: Option<&str>) -> Hint {
@@ -444,7 +452,7 @@ fn open(path: &str, out_rate: u32, generation: u64) -> Result<(Decoding, TrackIn
         .and_then(|p| p.audio())
         .ok_or("no audio codec")?
         .clone();
-    let decoder = symphonia::default::get_codecs()
+    let decoder = codecs()
         .make_audio_decoder(&params, &AudioDecoderOptions::default())
         .map_err(|e| format!("cannot decode it ({e})"))?;
     let rate = params.sample_rate.unwrap_or(44_100);
@@ -452,7 +460,7 @@ fn open(path: &str, out_rate: u32, generation: u64) -> Result<(Decoding, TrackIn
         rate,
         channels: params.channels.as_ref().map(|c| c.count()).unwrap_or(2),
         seekable,
-        codec: symphonia::default::get_codecs()
+        codec: codecs()
             .get_audio_decoder(params.codec)
             .map(|d| d.codec.info.short_name.to_uppercase())
             .unwrap_or_else(|| "audio".into()),
@@ -463,13 +471,40 @@ fn open(path: &str, out_rate: u32, generation: u64) -> Result<(Decoding, TrackIn
     {
         info.duration = tb.calc_time(ts).map(|t| t.as_secs_f64());
     }
-    if let Some(revision) = format.metadata().skip_to_latest() {
-        tag_text(&revision.media.tags, &mut info);
-        if let Some(visual) = revision.media.visuals.first()
-            && visual.data.len() < 16 << 20
-        {
-            info.cover = Some(visual.data.to_vec());
+    // Every revision of the metadata (a file may carry several tags - an ID3v2
+    // before an APE, two ID3v2): the newest first, an older one fills in what
+    // it lacks (the cover was only in the first tag of a file that had two).
+    let mut revisions = Vec::new();
+    {
+        let mut metadata = format.metadata();
+        while let Some(revision) = metadata.pop() {
+            revisions.push(revision);
         }
+        if let Some(revision) = metadata.current() {
+            revisions.push(revision.clone());
+        }
+    }
+    for revision in revisions.iter().rev() {
+        tag_text(&revision.media.tags, &mut info);
+    }
+    let visuals = || {
+        revisions
+            .iter()
+            .rev()
+            .flat_map(|r| r.media.visuals.iter())
+            .filter(|v| v.data.len() < 16 << 20)
+    };
+    let front = visuals().find(|v| matches!(v.usage, Some(StandardVisualKey::FrontCover)));
+    info.cover = front.or_else(|| visuals().next()).map(|v| v.data.to_vec());
+    // MP4 / M4A: the edit list says where the sound begins and how long it
+    // is (symphonia does not apply it yet)
+    let edit = if seekable && is_mp4(path) {
+        crate::mp4edit::read_edit(Path::new(path))
+    } else {
+        None
+    };
+    if let Some(length) = edit.and_then(|e| e.length) {
+        info.duration = Some(length as f64 / rate as f64);
     }
     let decoding = Decoding {
         format,
@@ -483,6 +518,10 @@ fn open(path: &str, out_rate: u32, generation: u64) -> Result<(Decoding, TrackIn
         scratch: Vec::new(),
         stereo: Vec::new(),
         resampled: Vec::new(),
+        rate,
+        skip: edit.map(|e| e.skip).unwrap_or(0),
+        left: edit.and_then(|e| e.length),
+        edit,
     };
     Ok((decoding, info))
 }
@@ -493,7 +532,11 @@ impl Decoding {
         if !self.seekable {
             return None;
         }
-        let time = Time::try_from_secs_f64(secs.max(0.0))?;
+        let secs = secs.max(0.0);
+        // in the media, the sound begins after the edit's delay
+        let delay = self.edit.map(|e| e.skip).unwrap_or(0);
+        let media = secs + delay as f64 / self.rate.max(1) as f64;
+        let time = Time::try_from_secs_f64(media)?;
         let seeked = self
             .format
             .seek(
@@ -506,12 +549,28 @@ impl Decoding {
             .ok()?;
         self.decoder.reset();
         self.eof = false;
-        let landed = self
-            .time_base
-            .and_then(|tb| tb.calc_time(seeked.actual_ts))
-            .map(|t| t.as_secs_f64())
+        // An accurate seek lands at the start of the packet holding the time
+        // asked for: the frames before it are dropped (the sound began about
+        // a packet early).
+        let to_secs = |ts| {
+            self.time_base
+                .and_then(|tb| tb.calc_time(ts))
+                .map(|t| t.as_secs_f64())
+        };
+        let (required, actual) = (to_secs(seeked.required_ts), to_secs(seeked.actual_ts));
+        self.skip = match (required, actual) {
+            (Some(r), Some(a)) if r > a => ((r - a) * self.rate as f64).round() as u64,
+            _ => 0,
+        };
+        let played = (secs * self.rate as f64) as u64;
+        self.left = self
+            .edit
+            .and_then(|e| e.length)
+            .map(|l| l.saturating_sub(played));
+        let landed = required
+            .map(|r| r - delay as f64 / self.rate.max(1) as f64)
             .unwrap_or(secs);
-        Some((landed.max(0.0) * 1000.0) as u64)
+        Some((landed.max(0.0) * 1000.0).round() as u64)
     }
 
     /// Decode the next packet into `out` (stereo at the output's rate,
@@ -531,6 +590,22 @@ impl Decoding {
             match self.decoder.decode(&packet) {
                 Ok(buffer) => {
                     to_stereo(&buffer, &mut self.scratch, &mut self.stereo);
+                    if self.skip > 0 {
+                        let drop = (self.skip as usize * 2).min(self.stereo.len());
+                        self.stereo.drain(..drop);
+                        self.skip -= (drop / 2) as u64;
+                    }
+                    if let Some(left) = self.left.as_mut() {
+                        let keep = (*left as usize * 2).min(self.stereo.len());
+                        self.stereo.truncate(keep);
+                        *left -= (keep / 2) as u64;
+                        if *left == 0 && self.stereo.is_empty() {
+                            return Ok(false); // the padding after the sound
+                        }
+                    }
+                    if self.stereo.is_empty() {
+                        continue;
+                    }
                     self.resampled.clear();
                     self.resampler.process(&self.stereo, &mut self.resampled);
                     eq.process(&mut self.resampled);
@@ -542,6 +617,40 @@ impl Decoding {
             }
         }
     }
+}
+
+/// Decode all of `path` as the player would (stereo at `rate`): the
+/// frames made and the track's info. For tests and measurements.
+pub fn decode_file(path: &str, rate: u32) -> Result<(usize, TrackInfo), String> {
+    let (mut decoding, info) = open(path, rate, 0)?;
+    let mut eq = Equalizer::new(rate);
+    let mut out = Vec::new();
+    let mut frames = 0;
+    while decoding.step(&mut eq, &mut out)? {
+        frames += out.len() / 2;
+        out.clear();
+    }
+    Ok((frames, info))
+}
+
+/// symphonia's decoders and Opus (libopus, built in: symphonia has no Opus
+/// decoder of its own; Ogg Opus and WebM / MKV Opus).
+fn codecs() -> &'static symphonia::core::codecs::registry::CodecRegistry {
+    static REGISTRY: std::sync::OnceLock<symphonia::core::codecs::registry::CodecRegistry> =
+        std::sync::OnceLock::new();
+    REGISTRY.get_or_init(|| {
+        let mut registry = symphonia::core::codecs::registry::CodecRegistry::new();
+        symphonia::default::register_enabled_codecs(&mut registry);
+        registry.register_audio_decoder::<symphonia_adapter_libopus::OpusDecoder>();
+        registry
+    })
+}
+
+fn is_mp4(path: &str) -> bool {
+    let lower = path.to_ascii_lowercase();
+    [".m4a", ".m4b", ".mp4", ".m4v", ".mov", ".3gp"]
+        .iter()
+        .any(|e| lower.ends_with(e))
 }
 
 /// Any channel layout as stereo: mono doubled, more than two folded into
@@ -769,5 +878,37 @@ mod tests {
                 f.write_all(&v.to_le_bytes()).unwrap();
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod resample_more {
+    use super::Resampler;
+
+    fn peak_hz(out: &[f32], rate: f32) -> f32 {
+        // zero crossings of the left channel
+        let left: Vec<f32> = out.as_chunks::<2>().0.iter().map(|f| f[0]).collect();
+        let crossings = left
+            .windows(2)
+            .filter(|w| w[0] <= 0.0 && w[1] > 0.0)
+            .count();
+        crossings as f32 * rate / left.len() as f32
+    }
+
+    #[test]
+    fn downsampling_by_two_keeps_the_tone() {
+        let mut r = Resampler::new(96_000, 48_000);
+        let input: Vec<f32> = (0..96_000)
+            .flat_map(|i| {
+                let v = (std::f32::consts::TAU * 440.0 * i as f32 / 96_000.0).sin();
+                [v, v]
+            })
+            .collect();
+        let mut out = Vec::new();
+        for c in input.chunks(4608) {
+            r.process(c, &mut out);
+        }
+        println!("frames {} hz {}", out.len() / 2, peak_hz(&out, 48_000.0));
+        assert!((peak_hz(&out, 48_000.0) - 440.0).abs() < 5.0);
     }
 }

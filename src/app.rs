@@ -46,9 +46,15 @@ pub struct App {
     eq_open: bool,
     playlist_open: bool,
     big_visual: bool,
+    /// A click on the picture waits until it cannot become a double-click
+    /// (which shows it large and leaves the face as it is).
+    pending_click: Option<f64>,
     generation: u64,
     loaded: Option<u64>,
     failures: usize,
+    /// The track playing came by itself (the one before ended): a track that
+    /// cannot be played is then skipped; one the user chose stays, with why.
+    automatic: bool,
     duration: Option<f64>,
     seek_drag: Option<f64>,
     output: String,
@@ -107,9 +113,11 @@ impl App {
             eq_open: saved.equalizer_open,
             playlist_open: saved.playlist_open,
             big_visual: false,
+            pending_click: None,
             generation: 0,
             loaded: None,
             failures: 0,
+            automatic: false,
             duration: None,
             seek_drag: None,
             output: String::new(),
@@ -156,6 +164,26 @@ impl App {
         self.mode
     }
 
+    /// The equalizer as set.
+    pub fn equalizer_settings(&self) -> &EqSettings {
+        &self.eq
+    }
+
+    /// The message of the status line.
+    pub fn status(&self) -> &str {
+        &self.status
+    }
+
+    /// Whether the track asked for last has been opened.
+    pub fn is_loaded(&self) -> bool {
+        self.loaded == Some(self.generation)
+    }
+
+    /// Whether the visualization is shown large.
+    pub fn big_visual(&self) -> bool {
+        self.big_visual
+    }
+
     /// Show the visualization `key` (tests, screenshots).
     pub fn set_mode(&mut self, key: &str) {
         self.mode = viz::known(key);
@@ -179,6 +207,7 @@ impl App {
             return;
         };
         self.generation += 1;
+        self.automatic = false;
         self.playlist.current = Some(index);
         self.selected = Some(index);
         self.info = TrackInfo::default();
@@ -193,7 +222,7 @@ impl App {
         self.dirty = true;
     }
 
-    fn playing(&self) -> bool {
+    pub fn playing(&self) -> bool {
         self.engine
             .shared
             .playing
@@ -220,7 +249,10 @@ impl App {
 
     fn next(&mut self, ended: bool) {
         match self.playlist.next(ended) {
-            Some(i) => self.play_index(i, 0, true),
+            Some(i) => {
+                self.play_index(i, 0, true);
+                self.automatic = ended;
+            }
             None => {
                 self.engine.send(Command::Stop);
                 self.status = "End of the playlist".into();
@@ -310,18 +342,14 @@ impl App {
                         .unwrap_or_default();
                     self.status = format!("Cannot play {name}: {message}");
                     self.failures += 1;
-                    // the next one - unless every track failed in a row
-                    if self.failures < self.playlist.tracks.len() && self.playing_was_wanted() {
-                        self.next(false);
+                    // playing on its own: the next one - unless every track failed in a row
+                    if self.automatic && self.failures < self.playlist.tracks.len() {
+                        self.next(true);
                     }
                 }
                 _ => {}
             }
         }
-    }
-
-    fn playing_was_wanted(&self) -> bool {
-        self.loaded.is_some()
     }
 
     fn save(&mut self, force: bool) {
@@ -344,7 +372,8 @@ impl App {
         }
     }
 
-    fn snapshot(&self) -> PlayerState {
+    /// What would be saved now (also for tests).
+    pub fn snapshot(&self) -> PlayerState {
         let current = self.playlist.current.map(|i| i as i64).unwrap_or(-1);
         let position_ms = if self.loaded == Some(self.generation) && !self.current_is_stream() {
             (self.engine.shared.position() * 1000.0) as u64
@@ -602,11 +631,23 @@ impl App {
             &mut self.viz_state,
             dt,
         );
+        let now = ui.input(|i| i.time);
+        let wait = ui.ctx().options(|o| o.input_options.max_double_click_delay);
         if response.double_clicked() {
+            self.pending_click = None;
             self.big_visual = !self.big_visual;
         } else if response.clicked() {
-            self.mode = viz::next(self.mode);
-            self.dirty = true;
+            self.pending_click = Some(now);
+        }
+        if let Some(at) = self.pending_click {
+            if now - at > wait {
+                self.pending_click = None;
+                self.mode = viz::next(self.mode);
+                self.dirty = true;
+            } else {
+                ui.ctx()
+                    .request_repaint_after(std::time::Duration::from_secs_f64(wait));
+            }
         }
         response.on_hover_text(format!(
             "{} - click: next face, double-click: larger (V)",
@@ -656,6 +697,7 @@ impl App {
             let big = vec2(46.0, 34.0);
             if ui
                 .add(egui::Button::new(RichText::new("⏮").size(18.0)).min_size(big))
+                .accessible_name("Previous")
                 .on_hover_text("Previous (P)")
                 .clicked()
             {
@@ -668,6 +710,7 @@ impl App {
                 .corner_radius(CornerRadius::same(19));
             if ui
                 .add(button)
+                .accessible_name(if self.playing() { "Pause" } else { "Play" })
                 .on_hover_text("Play / pause (Space)")
                 .clicked()
             {
@@ -675,6 +718,7 @@ impl App {
             }
             if ui
                 .add(egui::Button::new(RichText::new("⏹").size(18.0)).min_size(big))
+                .accessible_name("Stop")
                 .on_hover_text("Stop")
                 .clicked()
             {
@@ -682,6 +726,7 @@ impl App {
             }
             if ui
                 .add(egui::Button::new(RichText::new("⏭").size(18.0)).min_size(big))
+                .accessible_name("Next")
                 .on_hover_text("Next (N)")
                 .clicked()
             {
@@ -698,6 +743,7 @@ impl App {
                     }))
                     .selected(shuffle),
                 )
+                .accessible_name("Shuffle")
                 .on_hover_text("Shuffle")
                 .clicked()
             {
@@ -719,6 +765,7 @@ impl App {
                     }))
                     .selected(on),
                 )
+                .accessible_name("Repeat")
                 .on_hover_text(tip)
                 .clicked()
             {
@@ -747,6 +794,7 @@ impl App {
                 };
                 if ui
                     .add(egui::Button::new(RichText::new(icon).size(16.0)).frame(false))
+                    .accessible_name("Mute")
                     .on_hover_text("Mute (M)")
                     .clicked()
                 {
@@ -1170,6 +1218,14 @@ impl eframe::App for App {
     }
 
     fn on_exit(&mut self) {
+        self.save(true);
+    }
+}
+
+impl Drop for App {
+    /// The last changes are kept also when the window ends without
+    /// `on_exit` (a test harness, a platform that skips it).
+    fn drop(&mut self) {
         self.save(true);
     }
 }
