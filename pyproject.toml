@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "axross-amp"
+version = "0.15.178"
+description = "axross's Media Player, Audio Mixer and Bluetooth connector as one program: playlists, a 10-band equalizer, visualizations, internet radio, a mixer per source and Bluetooth headphones and speakers"
+readme = "README.md"
+license = {text = "Apache-2.0"}
+requires-python = ">=3.11"
+dependencies = [
+    "PyQt6>=6.6,<6.12",
+    "numpy>=2.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/c0decave/axross-amp"
+Source = "https://github.com/c0decave/axross-amp"
+axross = "https://github.com/c0decave/axross"
+
+[project.scripts]
+axross-amp = "axross_amp.__main__:main"
+
+[project.gui-scripts]
+axross-amp-gui = "axross_amp.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"*" = ["*.json"]
