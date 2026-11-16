@@ -756,6 +756,25 @@ impl Shared {
         r
     }
 
+    /// As [`Shared::with`], counted and told only when `f` says it changed something.
+    fn with_if(&self, f: impl FnOnce(&mut Inner) -> bool) {
+        let mut inner = self.inner.lock().unwrap_or_else(|p| p.into_inner());
+        if f(&mut inner) {
+            inner.changes += 1;
+            drop(inner);
+            (self.wake)();
+        }
+    }
+
+    /// BlueZ's unique name now (read only: no change, no repaint).
+    fn owner(&self) -> String {
+        self.inner
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .owner
+            .clone()
+    }
+
     fn finish(&self, path: &str, op: Op, error: String, timed_out: bool) {
         self.with(|inner| {
             if inner.busy.get(path) == Some(&op) {
@@ -1467,7 +1486,7 @@ fn handle(shared: &Arc<Shared>, conn: &Connection, msg: &Message) {
                 }
                 return;
             }
-            let owner = shared.with(|inner| inner.owner.clone());
+            let owner = shared.owner();
             if owner.is_empty() || sender != owner {
                 return; // only BlueZ speaks for BlueZ
             }
@@ -1516,13 +1535,15 @@ fn handle(shared: &Arc<Shared>, conn: &Connection, msg: &Message) {
                         msg.body()
                             .deserialize::<(String, HashMap<String, OwnedValue>, Vec<String>)>()
                     {
-                        shared.with(|inner| {
+                        // (an object not kept - a media transport's volume, say - is
+                        // no change and no repaint)
+                        shared.with_if(|inner| {
                             let Some(p) = inner
                                 .objects
                                 .get_mut(&path)
                                 .and_then(|i| i.get_mut(&changed_iface))
                             else {
-                                return;
+                                return false;
                             };
                             p.extend(props(&changed));
                             for name in &invalidated {
@@ -1531,6 +1552,7 @@ fn handle(shared: &Arc<Shared>, conn: &Connection, msg: &Message) {
                             if changed_iface == ADAPTER && !get_bool(p, "Discovering") {
                                 inner.scans.remove(&path);
                             }
+                            true
                         });
                     }
                 }
@@ -1541,7 +1563,7 @@ fn handle(shared: &Arc<Shared>, conn: &Connection, msg: &Message) {
             if path != shared.agent_path {
                 return;
             }
-            let owner = shared.with(|inner| inner.owner.clone());
+            let owner = shared.owner();
             if sender.is_empty() || sender != owner || iface != AGENT {
                 let _ = conn.reply_error(&header, "org.bluez.Error.Rejected", &"not BlueZ");
                 return;
