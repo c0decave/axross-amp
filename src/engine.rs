@@ -51,6 +51,9 @@ pub enum Command {
         gains: [f32; 10],
         enabled: bool,
     },
+    /// Play on this output device (an id of [`output_devices`]; None: the
+    /// default) - also while playing.
+    Output(Option<String>),
     Quit,
 }
 
@@ -175,16 +178,56 @@ impl Drop for Engine {
 
 /// The default output (PulseAudio / PipeWire first on Linux, else the
 /// system's default host), as (stream, rate, channels).
-fn open_output(shared: Arc<Shared>) -> Result<(cpal::Stream, u32, String), String> {
+/// The hosts to try: PulseAudio / PipeWire first on Linux, then the
+/// system's default (ALSA, CoreAudio, WASAPI).
+fn hosts() -> Vec<cpal::Host> {
     let mut hosts: Vec<cpal::Host> = Vec::new();
     #[cfg(target_os = "linux")]
     if let Ok(host) = cpal::host_from_id(cpal::HostId::PulseAudio) {
         hosts.push(host);
     }
     hosts.push(cpal::default_host());
+    hosts
+}
+
+/// The output devices to choose from: (id, name).
+pub fn output_devices() -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = Vec::new();
+    for host in hosts() {
+        let Ok(devices) = host.output_devices() else {
+            continue;
+        };
+        for device in devices {
+            let (Ok(id), Ok(description)) = (device.id(), device.description()) else {
+                continue;
+            };
+            let id = id.to_string();
+            if !out.iter().any(|(i, _)| *i == id) {
+                out.push((id, description.name().to_owned()));
+            }
+        }
+        if !out.is_empty() {
+            break; // (the first host that has devices: the others list the same ones)
+        }
+    }
+    out
+}
+
+/// The output stream on `device` (an id of [`output_devices`]), else the
+/// default: (stream, rate, what it is).
+fn open_output(
+    shared: Arc<Shared>,
+    device: Option<&str>,
+) -> Result<(cpal::Stream, u32, String), String> {
     let mut last = String::from("no audio output");
-    for host in hosts {
-        let Some(device) = host.default_output_device() else {
+    for host in hosts() {
+        let chosen = device
+            .and_then(|id| id.parse::<cpal::DeviceId>().ok())
+            .and_then(|id| host.device_by_id(&id));
+        if device.is_some() && chosen.is_none() {
+            continue;
+        }
+        let Some(device) = chosen.or_else(|| host.default_output_device()) else {
             continue;
         };
         let config = match device.default_output_config() {
@@ -194,7 +237,10 @@ fn open_output(shared: Arc<Shared>) -> Result<(cpal::Stream, u32, String), Strin
                 continue;
             }
         };
-        let name = format!("{:?}", host.id());
+        let name = match device.description() {
+            Ok(d) => format!("{} ({:?})", d.name(), host.id()),
+            Err(_) => format!("{:?}", host.id()),
+        };
         let rate = config.sample_rate();
         let result = match config.sample_format() {
             cpal::SampleFormat::F32 => build::<f32>(&device, config.into(), shared.clone()),
@@ -351,6 +397,7 @@ struct Decoding {
     skip: u64,
     left: Option<u64>,
     edit: Option<crate::mp4edit::Edit>,
+    path: String,
 }
 
 fn hint_for(path: &str, content_type: Option<&str>) -> Hint {
@@ -522,6 +569,7 @@ fn open(path: &str, out_rate: u32, generation: u64) -> Result<(Decoding, TrackIn
         skip: edit.map(|e| e.skip).unwrap_or(0),
         left: edit.and_then(|e| e.length),
         edit,
+        path: path.to_owned(),
     };
     Ok((decoding, info))
 }
@@ -692,8 +740,7 @@ fn run(
         let _ = events.send(event);
         wake();
     };
-    let output = open_output(shared.clone());
-    let (_stream, out_rate) = match output {
+    let connect = |device: Option<&str>| match open_output(shared.clone(), device) {
         Ok((stream, rate, name)) => {
             shared.device_rate.store(rate, Ordering::Relaxed);
             send(Event::Output(name));
@@ -704,10 +751,12 @@ fn run(
             (None, 48_000)
         }
     };
+    let (mut stream, mut out_rate) = connect(None);
     let mut eq = Equalizer::new(out_rate);
+    let mut gains = ([0.0f32; 10], true);
     let mut current: Option<Decoding> = None;
     let mut chunk = Vec::<f32>::with_capacity(16_384);
-    let ahead = (out_rate as f32 * AHEAD_SECS) as usize;
+    let mut ahead = (out_rate as f32 * AHEAD_SECS) as usize;
     loop {
         let busy =
             current.as_ref().is_some_and(|d| !d.eof) && shared.playing.load(Ordering::Relaxed);
@@ -768,9 +817,36 @@ fn run(
                     eq.reset();
                 }
             }
-            Some(Command::Equalizer { gains, enabled }) => {
-                eq.set_gains(gains);
+            Some(Command::Equalizer { gains: g, enabled }) => {
+                gains = (g, enabled);
+                eq.set_gains(g);
                 eq.enabled = enabled;
+            }
+            Some(Command::Output(device)) => {
+                let playing = shared.playing.load(Ordering::Relaxed);
+                let at = shared.position();
+                drop(stream.take()); // (the old device lets go first)
+                let (new_stream, rate) = connect(device.as_deref());
+                stream = new_stream;
+                if rate != out_rate {
+                    // another rate: the resampler and the equalizer anew, the
+                    // track opened again where it was
+                    out_rate = rate;
+                    ahead = (out_rate as f32 * AHEAD_SECS) as usize;
+                    eq = Equalizer::new(out_rate);
+                    eq.set_gains(gains.0);
+                    eq.enabled = gains.1;
+                    if let Some(old) = current.take()
+                        && let Ok((mut reopened, _)) = open(&old.path, out_rate, old.generation)
+                    {
+                        let landed = reopened.seek(at).unwrap_or(0);
+                        shared.restart_at(landed);
+                        current = Some(reopened);
+                    }
+                }
+                shared
+                    .playing
+                    .store(playing && current.is_some(), Ordering::Relaxed);
             }
             None => {}
         }

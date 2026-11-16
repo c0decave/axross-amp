@@ -329,6 +329,19 @@ pub fn write_eq(path: &Path, eq: &EqSettings) -> std::io::Result<()> {
     write_object(path, &map)
 }
 
+/// The output device axross-amp plays on (`amp_output` in audio.json: a
+/// device id of cpal; "" is the system's default). axross's own
+/// `media_output` holds a Qt device id - another thing - and is left alone.
+pub fn read_output(path: &Path) -> String {
+    text(&read_object(path), "amp_output").unwrap_or_default()
+}
+
+pub fn write_output(path: &Path, id: &str) -> std::io::Result<()> {
+    let mut map = read_object(path);
+    map.insert("amp_output".into(), json!(id));
+    write_object(path, &map)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

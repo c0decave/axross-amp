@@ -70,6 +70,10 @@ pub struct App {
     last_save: Instant,
     last_frame: Instant,
     state_path: PathBuf,
+    tab: Tab,
+    mixer_page: crate::mixer_ui::MixerPage,
+    /// The output device chosen for the player ("" the default).
+    output_choice: String,
     audio_path: PathBuf,
 }
 
@@ -82,7 +86,11 @@ impl App {
         let audio_path = state::audio_path();
         let saved = state::read_state(&state_path);
         let eq_settings = state::read_eq(&audio_path);
-        engine.shared.set_volume(saved.volume as f32 / 100.0);
+        engine.shared.set_volume(volume_curve(saved.volume));
+        let output = state::read_output(&audio_path);
+        if !output.is_empty() {
+            engine.send(Command::Output(Some(output.clone())));
+        }
         engine
             .shared
             .muted
@@ -140,6 +148,9 @@ impl App {
             last_save: Instant::now(),
             last_frame: Instant::now(),
             state_path,
+            tab: Tab::Player,
+            mixer_page: Default::default(),
+            output_choice: output,
             audio_path,
         };
         if !args.is_empty() {
@@ -162,6 +173,46 @@ impl App {
     /// The visualization shown.
     pub fn mode(&self) -> &'static str {
         self.mode
+    }
+
+    /// The tab shown.
+    pub fn tab(&self) -> Tab {
+        self.tab
+    }
+
+    pub fn set_tab(&mut self, tab: Tab) {
+        self.tab = tab;
+    }
+
+    /// The output device chosen ("" the default).
+    pub fn output_choice(&self) -> &str {
+        &self.output_choice
+    }
+
+    /// What the Mixer tab changed of the player.
+    fn apply(&mut self, change: crate::mixer_ui::PlayerChange) {
+        use crate::mixer_ui::PlayerChange;
+        match change {
+            PlayerChange::Output(id) => {
+                self.engine
+                    .send(Command::Output((!id.is_empty()).then(|| id.clone())));
+                if let Err(e) = state::write_output(&self.audio_path, &id) {
+                    self.status = format!("Cannot save the output: {e}");
+                }
+                self.output_choice = id;
+            }
+            PlayerChange::Volume(v) => self.set_volume(v),
+            PlayerChange::Muted(m) => self.set_muted(m),
+            PlayerChange::Equalizer(on) => {
+                self.eq.enabled = on;
+                let preset = self.eq.preset.clone();
+                self.set_eq(self.eq.gains, Some(&preset));
+            }
+        }
+    }
+
+    fn bluetooth_tab(&mut self, ui: &mut Ui) {
+        ui.label("Bluetooth");
     }
 
     /// The equalizer as set.
@@ -271,10 +322,7 @@ impl App {
 
     fn set_volume(&mut self, volume: u32) {
         self.volume = volume.min(100);
-        // a curve: the slider's middle sounds like the middle
-        self.engine
-            .shared
-            .set_volume((self.volume as f32 / 100.0).powf(1.6));
+        self.engine.shared.set_volume(volume_curve(self.volume));
         self.dirty = true;
     }
 
@@ -463,6 +511,23 @@ impl App {
                     .size(16.0),
             );
             ui.add_space(8.0);
+            for (tab, label) in [
+                (Tab::Player, "Player"),
+                (Tab::Mixer, "Mixer"),
+                (Tab::Bluetooth, "Bluetooth"),
+            ] {
+                if ui.selectable_label(self.tab == tab, label).clicked() {
+                    self.tab = tab;
+                }
+            }
+        });
+        if self.tab != Tab::Player {
+            return;
+        }
+        // the player's actions: a row of their own (they did not fit beside
+        // the tabs at the window's default width)
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
             if ui
                 .button("➕ Files")
                 .on_hover_text("Add files and playlists")
@@ -1183,6 +1248,29 @@ impl eframe::App for App {
                     .inner_margin(10.0),
             )
             .show(ui, |ui| {
+                match self.tab {
+                    Tab::Mixer => {
+                        let wake = ui.ctx().clone();
+                        let changes = crate::mixer_ui::show(
+                            ui,
+                            &mut self.mixer_page,
+                            &self.output_choice,
+                            self.volume,
+                            self.muted,
+                            self.eq.enabled,
+                            move || wake.request_repaint(),
+                        );
+                        for change in changes {
+                            self.apply(change);
+                        }
+                        return;
+                    }
+                    Tab::Bluetooth => {
+                        self.bluetooth_tab(ui);
+                        return;
+                    }
+                    Tab::Player => {}
+                }
                 if self.big_visual {
                     let h = ui.available_height() - 90.0;
                     self.visual(ui, h.max(120.0));
@@ -1228,6 +1316,20 @@ impl Drop for App {
     fn drop(&mut self) {
         self.save(true);
     }
+}
+
+/// The tabs of the window.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Tab {
+    Player,
+    Mixer,
+    Bluetooth,
+}
+
+/// The slider's volume (0-100) as a gain: a curve, so the middle of the
+/// slider sounds like the middle.
+fn volume_curve(volume: u32) -> f32 {
+    (volume.min(100) as f32 / 100.0).powf(1.6)
 }
 
 fn band_name(hz: f32) -> String {
