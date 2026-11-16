@@ -1,0 +1,32 @@
+[package]
+name = "axross-amp"
+version = "0.2.0"
+description = "axross's Media Player as a program of its own, in Rust: playlists, a ten-band equalizer, visualizations, internet radio"
+license = "Apache-2.0"
+repository = "https://github.com/c0decave/axross-amp"
+keywords = ["audio", "music", "player", "visualizer", "equalizer"]
+categories = ["multimedia::audio"]
+readme = "README.md"
+edition = "2024"
+
+[dependencies]
+cpal = { version = "0.18.2", features = ["pulseaudio"] }
+crossbeam-channel = "0.5.17"
+dirs = "7.0.0"
+eframe = "0.37.0"
+egui = "0.37"
+egui-file-dialog = "0.16.0"
+image = { version = "0.25.10", default-features = false, features = ["jpeg", "png"] }
+rustfft = "6.4.1"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+symphonia = { version = "0.6.1", features = ["all"] }
+ureq = { version = "3.5.2", default-features = false, features = ["rustls"] }
+
+[dev-dependencies]
+egui_kittest = { version = "0.37.0", features = ["wgpu", "snapshot", "eframe"] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true

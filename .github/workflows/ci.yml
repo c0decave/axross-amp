@@ -1,0 +1,40 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-14, windows-2022]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - name: Linux libraries (ALSA headers; Mesa's software Vulkan for the window test)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libasound2-dev pkg-config mesa-vulkan-drivers
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets -- -D warnings
+      - name: Tests (the window test renders with Mesa's lavapipe on Linux)
+        if: runner.os == 'Linux'
+        run: cargo test
+      - name: Tests (no GPU on these runners: the window test is skipped)
+        if: runner.os != 'Linux'
+        run: cargo test --lib --bins
+      - run: cargo build --release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: axross-amp-${{ runner.os }}
+          path: |
+            target/release/axross-amp
+            target/release/axross-amp.exe
+          if-no-files-found: ignore
