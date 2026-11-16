@@ -763,7 +763,8 @@ pub fn parse_version(text: &str) -> Option<(u32, u32)> {
 }
 
 /// One refresh: every list and the defaults.
-fn refresh() -> Result<Snapshot, String> {
+/// The lists as they are now (one round of pactl calls).
+pub fn refresh() -> Result<Snapshot, String> {
     let commands: [(&str, &[&str]); 7] = [
         ("sinks", &["-f", "json", "list", "sinks"]),
         ("sources", &["-f", "json", "list", "sources"]),

@@ -1,6 +1,6 @@
 [package]
 name = "axross-amp"
-version = "0.2.0"
+version = "0.3.0"
 description = "axross's Media Player as a program of its own, in Rust: playlists, a ten-band equalizer, visualizations, internet radio"
 license = "Apache-2.0"
 repository = "https://github.com/c0decave/axross-amp"
@@ -31,3 +31,7 @@ egui_kittest = { version = "0.37.0", features = ["wgpu", "snapshot", "eframe"] }
 lto = "thin"
 codegen-units = 1
 strip = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# BlueZ over D-Bus (the Bluetooth tab); already in the tree through accesskit
+zbus = "5.19"

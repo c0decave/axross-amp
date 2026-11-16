@@ -72,6 +72,8 @@ pub struct App {
     state_path: PathBuf,
     tab: Tab,
     mixer_page: crate::mixer_ui::MixerPage,
+    #[cfg(target_os = "linux")]
+    bluetooth_page: crate::bluetooth_ui::BluetoothPage,
     /// The output device chosen for the player ("" the default).
     output_choice: String,
     audio_path: PathBuf,
@@ -150,6 +152,8 @@ impl App {
             state_path,
             tab: Tab::Player,
             mixer_page: Default::default(),
+            #[cfg(target_os = "linux")]
+            bluetooth_page: Default::default(),
             output_choice: output,
             audio_path,
         };
@@ -211,8 +215,36 @@ impl App {
         }
     }
 
+    #[cfg(target_os = "linux")]
     fn bluetooth_tab(&mut self, ui: &mut Ui) {
-        ui.label("Bluetooth");
+        let wake = ui.ctx().clone();
+        let changes =
+            crate::bluetooth_ui::show(ui, &mut self.bluetooth_page, move || wake.request_repaint());
+        for change in changes {
+            if matches!(change, crate::mixer_ui::PlayerChange::Output(_)) {
+                self.mixer_page.devices = None; // (the Mixer tab lists them again)
+            }
+            self.apply(change);
+        }
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn bluetooth_tab(&mut self, ui: &mut Ui) {
+        ui.label(RichText::new("Bluetooth").strong().size(16.0));
+        ui.label(
+            RichText::new(
+                "Bluetooth devices are connected here through BlueZ, the Linux Bluetooth \
+                 service. On this system, pair and connect them in the system's settings; \
+                 they then appear as outputs in the Mixer tab.",
+            )
+            .color(MUTED),
+        );
+    }
+
+    /// The Bluetooth page (tests).
+    #[cfg(target_os = "linux")]
+    pub fn bluetooth_page(&self) -> &crate::bluetooth_ui::BluetoothPage {
+        &self.bluetooth_page
     }
 
     /// The equalizer as set.

@@ -3,7 +3,8 @@
 //!
 //! Local files, folders, M3U / PLS playlists and internet radio (http /
 //! https); a ten-band equalizer with axross's presets; visualizations that
-//! a click steps through; shuffle and repeat. The playlist, the position,
+//! a click steps through; shuffle and repeat; the system mixer and (Linux)
+//! Bluetooth in tabs of their own. The playlist, the position,
 //! the volume, the visualization and the equalizer are axross's own
 //! (`~/.config/axross/media_player.json`, `audio.json`): the player inside
 //! axross and this program share them.
@@ -14,6 +15,7 @@ const USAGE: &str = "axross-amp [FILE|FOLDER|PLAYLIST|URL ...]
 
 Play local audio (MP3, FLAC, Ogg Vorbis, Opus, AAC / M4A, ALAC, WAV, AIFF, CAF),
 folders and M3U / PLS playlists, and internet radio by its http(s) URL.
+The Mixer tab drives the sound server (pactl), the Bluetooth tab BlueZ.
 
 Keys: Space play / pause, Left / Right seek 5 s, Up / Down volume,
 M mute, N next, P previous, V next visualization, Enter play the selected

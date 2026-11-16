@@ -3,6 +3,10 @@
 
 pub mod analyzer;
 pub mod app;
+#[cfg(target_os = "linux")]
+pub mod bluetooth;
+#[cfg(target_os = "linux")]
+pub mod bluetooth_ui;
 pub mod engine;
 pub mod eq;
 pub mod mixer;
