@@ -309,17 +309,12 @@ pub struct Shared {
     latency: AtomicU64,
 }
 
-/// A soft limiter: below 0.9 nothing changes; above, the sample bends
-/// towards full scale instead of being cut off there (an equalizer's boost,
-/// a hot master: no harsh clipping).
-pub fn soft_limit(x: f32) -> f32 {
-    const KNEE: f32 = 0.9;
-    let a = x.abs();
-    if a <= KNEE {
-        return x;
-    }
-    let bent = KNEE + (1.0 - KNEE) * ((a - KNEE) / (1.0 - KNEE)).tanh();
-    bent.copysign(x)
+/// What goes to the device: the sample as it is within full scale (bit for
+/// bit - nothing bends a hot master at unity gain); beyond it, full scale.
+/// A track made louder is kept below the ceiling before it gets here
+/// ([`crate::limiter`]), and the equalizer makes room for its boosts.
+pub fn clip(x: f32) -> f32 {
+    x.clamp(-1.0, 1.0)
 }
 
 /// The fades that keep pause, seek, stop and a new track from clicking.
@@ -517,13 +512,13 @@ impl Shared {
                 }
             };
             if channels == 1 {
-                slot[0] = soft_limit((l + r) * 0.5);
+                slot[0] = clip((l + r) * 0.5);
                 continue;
             }
             for (c, sample) in slot.iter_mut().enumerate() {
                 *sample = match c {
-                    0 => soft_limit(l),
-                    1 => soft_limit(r),
+                    0 => clip(l),
+                    1 => clip(r),
                     _ => 0.0,
                 };
             }
@@ -1063,6 +1058,8 @@ struct Decoding {
     length: Option<u64>,
     /// ReplayGain's factor for this track.
     gain: f32,
+    /// Holds the peaks below the ceiling once the factor is above 1.
+    limiter: crate::limiter::Limiter,
     /// At its end (and the resampler's tail given out).
     eof: bool,
 }
@@ -1388,6 +1385,7 @@ fn open_media(
         delay: edit.map(|(s, _)| s).unwrap_or(0),
         length: edit.and_then(|(_, l)| l),
         gain: loudness.factor(&info),
+        limiter: crate::limiter::Limiter::new(rate),
         eof: false,
     };
     Ok((decoding, info))
@@ -1429,6 +1427,7 @@ impl Decoding {
             )
             .ok()?;
         self.decoder.reset();
+        self.limiter.reset();
         self.eof = false;
         self.resampler = Resampler::new(self.rate, self.resampler.to);
         // An accurate seek lands at the start of the packet holding the time
@@ -1506,6 +1505,14 @@ impl Decoding {
                             *s *= self.gain;
                         }
                     }
+                    // made louder: no peak above the ceiling (at unity gain
+                    // the samples stay as they are, bit for bit)
+                    if self.gain > 1.0 || self.limiter.active {
+                        self.limiter.process(&mut self.stereo);
+                        if self.stereo.is_empty() {
+                            continue;
+                        }
+                    }
                     if self.resample {
                         self.resampler.process(&self.stereo, out);
                     } else {
@@ -1522,8 +1529,16 @@ impl Decoding {
     /// The end: what the resampler still holds.
     fn finish(&mut self, out: &mut Vec<f32>) {
         if !self.eof {
+            // what the limiter held back
+            self.stereo.clear();
+            self.limiter.flush(&mut self.stereo);
             if self.resample {
+                if !self.stereo.is_empty() {
+                    self.resampler.process(&self.stereo, out);
+                }
                 self.resampler.flush(out);
+            } else {
+                out.extend_from_slice(&self.stereo);
             }
             self.eof = true;
         }
@@ -2913,12 +2928,9 @@ mod tests {
             .map(|w| (w[1] - w[0]).abs())
             .fold(0.0f32, f32::max);
         assert!(worst < 0.02, "a cut of {worst} where the sound ran out");
-        // the soft limiter
-        assert_eq!(soft_limit(0.5), 0.5);
-        assert!(soft_limit(2.0) <= 1.0 && soft_limit(2.0) > 0.99);
-        assert!(soft_limit(1.0) < 1.0, "full scale itself bends a little");
-        assert!(soft_limit(-1.5) > -1.0);
-        assert!(soft_limit(0.95) > soft_limit(0.92));
+        // what is within full scale goes out as it is
+        assert_eq!(clip(0.95), 0.95);
+        assert_eq!(clip(-1.5), -1.0);
     }
 
     #[test]

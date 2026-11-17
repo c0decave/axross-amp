@@ -565,3 +565,131 @@ fn a_lost_output_is_opened_again_and_a_failing_one_is_said() {
     );
     assert!(!engine.shared.playing.load(Ordering::Relaxed));
 }
+
+/// A 16-bit stereo WAV of `samples` (interleaved, -1..1).
+fn wav_of(rate: u32, samples: &[f32]) -> Vec<u8> {
+    let data = samples.len() as u32 * 2;
+    let mut out = Vec::new();
+    out.extend_from_slice(b"RIFF");
+    out.extend_from_slice(&(36 + data).to_le_bytes());
+    out.extend_from_slice(b"WAVEfmt ");
+    for v in [
+        16u32.to_le_bytes().as_slice(),
+        &1u16.to_le_bytes(),
+        &2u16.to_le_bytes(),
+        &rate.to_le_bytes(),
+        &(rate * 4).to_le_bytes(),
+        &4u16.to_le_bytes(),
+        &16u16.to_le_bytes(),
+    ] {
+        out.extend_from_slice(v);
+    }
+    out.extend_from_slice(b"data");
+    out.extend_from_slice(&data.to_le_bytes());
+    for s in samples {
+        out.extend_from_slice(&((s * 32767.0).round() as i16).to_le_bytes());
+    }
+    out
+}
+
+/// A "modern master": dense, loud, its peaks at -0.3 dBFS (where the old
+/// soft knee above 0.9 bent it).
+fn hot_master(secs: f32) -> Vec<f32> {
+    let frames = (RATE as f32 * secs) as usize;
+    let mut raw: Vec<f32> = (0..frames)
+        .flat_map(|i| {
+            let t = i as f32 / RATE as f32;
+            let kick = (-(t * 2.0).fract() * 12.0).exp() * (t * 60.0 * std::f32::consts::TAU).sin();
+            let pad: f32 = [110.0, 165.0, 220.0, 330.0, 2_200.0]
+                .iter()
+                .map(|hz| (t * hz * std::f32::consts::TAU).sin())
+                .sum::<f32>()
+                / 5.0;
+            [kick * 0.7 + pad * 0.6, kick * 0.6 + pad * 0.7]
+        })
+        .collect();
+    let peak = raw.iter().fold(0.0f32, |m, v| m.max(v.abs()));
+    let target = 10f32.powf(-0.3 / 20.0);
+    for v in &mut raw {
+        // (as 16-bit can hold it: what the file gives back exactly)
+        *v = ((*v / peak * target) * 32767.0).round() / 32767.0;
+    }
+    raw
+}
+
+/// What was heard of the track, from its first sound (the fade-in left out).
+fn heard_from_start(heard: &[f32]) -> &[f32] {
+    let first = heard.iter().position(|s| *s != 0.0).unwrap_or(0);
+    &heard[first - first % 2..]
+}
+
+#[test]
+fn at_unity_gain_a_hot_master_is_played_bit_for_bit() {
+    // nothing may bend a master that peaks just under full scale: no
+    // limiter, no soft knee - what the file holds is what the device gets
+    let dir = folder("unity");
+    let master = hot_master(1.0);
+    std::fs::write(dir.join("hot.wav"), wav_of(RATE, &master)).unwrap();
+    let engine = Engine::start_headless(|| {});
+    engine.shared.set_volume(1.0);
+    load(&engine, &dir.join("hot.wav").to_string_lossy(), 1);
+    let mut output = Output::new();
+    output.play(&engine, 1.6, |_, _| {});
+    let heard = heard_from_start(&output.heard);
+    let want: Vec<f32> = master
+        .iter()
+        .map(|v| ((v * 32767.0).round() as i16) as f32 / 32768.0)
+        .collect();
+    // (after the 8 ms fade-in at the start; where the file's frames begin
+    // among the first heard: its first ones are near silence)
+    let from = 2 * 2048;
+    let compared = &heard[from..from + 2 * 30_000];
+    let shift = (0..16)
+        .min_by_key(|k| {
+            let w = &want[from + 2 * k..from + 2 * k + 64];
+            (compared[..64]
+                .iter()
+                .zip(w)
+                .map(|(a, b)| (a - b).abs())
+                .sum::<f32>()
+                * 1e6) as u64
+        })
+        .unwrap();
+    let want = &want[from + 2 * shift..from + 2 * shift + 2 * 30_000];
+    let differ = compared.iter().zip(want).filter(|(a, b)| a != b).count();
+    assert_eq!(differ, 0, "{differ} samples changed at unity gain");
+}
+
+#[test]
+fn a_track_made_louder_is_held_below_the_ceiling() {
+    // ReplayGain's gain for an untagged track at +9 dB: 8.7 dB too loud for
+    // a master at -0.3 dBFS - the limiter keeps the peaks at -1 dBTP,
+    // smoothly (no flat tops of a clipper)
+    let dir = folder("louder");
+    let master = hot_master(1.0);
+    std::fs::write(dir.join("hot.wav"), wav_of(RATE, &master)).unwrap();
+    let engine = Engine::start_headless(|| {});
+    engine.shared.set_volume(1.0);
+    engine.send(Command::Loudness(axross_amp::engine::Loudness {
+        mode: axross_amp::engine::GainMode::Track,
+        preamp_db: 0.0,
+        untagged_db: 9.0,
+    }));
+    load(&engine, &dir.join("hot.wav").to_string_lossy(), 1);
+    let mut output = Output::new();
+    output.play(&engine, 1.6, |_, _| {});
+    let heard = heard_from_start(&output.heard);
+    let highest = heard.iter().fold(0.0f32, |m, v| m.max(v.abs()));
+    let ceiling = 10f32.powf(-1.0 / 20.0);
+    assert!(highest <= ceiling + 1e-3, "a peak at {highest}");
+    assert!(highest > ceiling * 0.9, "it was made louder: {highest}");
+    // no flat tops: the loudest samples are not held at one value
+    let at_top = heard.iter().filter(|v| v.abs() > highest - 1e-5).count();
+    assert!(at_top < 40, "{at_top} samples at the top: clipped");
+    // and the whole track was heard (the held back frames at its end too)
+    let sound = heard
+        .chunks(2)
+        .filter(|f| f[0] != 0.0 || f[1] != 0.0)
+        .count();
+    assert!((sound as i64 - RATE as i64).abs() < 100, "{sound} frames");
+}
