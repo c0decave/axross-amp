@@ -313,18 +313,18 @@ impl App {
     }
 
     fn play_index(&mut self, index: usize, start_ms: u64, play: bool) {
-        let Some(track) = self.playlist.tracks.get(index) else {
+        let Some(track) = self.playlist.tracks.get(index).cloned() else {
             return;
         };
         self.generation += 1;
         self.automatic = false;
-        self.playlist.current = Some(index);
+        self.playlist.play(index);
         self.selected = Some(index);
         self.info = TrackInfo::default();
         self.cover = None;
         self.duration = (track.duration_ms > 0).then(|| track.duration_ms as f64 / 1000.0);
         self.engine.send(Command::Load {
-            path: track.path.clone(),
+            path: track.path,
             start_ms,
             play,
             generation: self.generation,

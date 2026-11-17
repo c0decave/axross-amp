@@ -88,7 +88,18 @@ pub struct Playlist {
     /// before a round began, empty when every track of it was played.
     order: Option<Vec<usize>>,
     seed: u64,
+    /// The tracks played before the current one, oldest first (Previous
+    /// with shuffle goes back through them; axross keeps 1000).
+    history: Vec<usize>,
+    /// Previous handed out the last of `history`: playing it is no new step.
+    going_back: Option<usize>,
+    /// Where the current track was when it was removed (it plays on; the
+    /// one after it follows).
+    resume_at: Option<usize>,
 }
+
+/// How many tracks Previous can go back through.
+const HISTORY: usize = 1000;
 
 impl Default for Playlist {
     fn default() -> Self {
@@ -99,6 +110,9 @@ impl Default for Playlist {
             repeat: Repeat::Off,
             order: None,
             seed: 0x9e3779b97f4a7c15,
+            history: Vec::new(),
+            going_back: None,
+            resume_at: None,
         }
     }
 }
@@ -131,6 +145,37 @@ impl Playlist {
         self.order = Some(order);
     }
 
+    /// `index` is the track playing now.
+    pub fn play(&mut self, index: usize) {
+        if index >= self.tracks.len() {
+            return;
+        }
+        if self.going_back.take() != Some(index)
+            && let Some(c) = self.current
+            && c != index
+        {
+            self.history.push(c);
+            if self.history.len() > HISTORY {
+                self.history.remove(0);
+            }
+        }
+        self.current = Some(index);
+        self.resume_at = None;
+        if let Some(order) = self.order.as_mut() {
+            order.retain(|i| *i != index);
+        }
+    }
+
+    /// Every index kept (current, history, the place of a removed track)
+    /// through `map`: None drops it.
+    fn remap(&mut self, map: impl Fn(usize) -> Option<usize>) {
+        self.current = self.current.and_then(&map);
+        self.history = self.history.iter().filter_map(|i| map(*i)).collect();
+        self.history.dedup();
+        self.going_back = None;
+        self.order = None;
+    }
+
     pub fn set_shuffle(&mut self, on: bool) {
         self.shuffle = on;
         self.order = None;
@@ -150,18 +195,27 @@ impl Playlist {
             return;
         }
         self.tracks.remove(index);
-        self.current = match self.current {
-            Some(c) if c == index => None,
-            Some(c) if c > index => Some(c - 1),
-            other => other,
-        };
-        self.order = None;
+        if self.current == Some(index) {
+            self.resume_at = Some(index);
+        } else if let Some(r) = self.resume_at.as_mut()
+            && *r > index
+        {
+            *r -= 1;
+        }
+        self.remap(|i| match i.cmp(&index) {
+            std::cmp::Ordering::Less => Some(i),
+            std::cmp::Ordering::Equal => None,
+            std::cmp::Ordering::Greater => Some(i - 1),
+        });
     }
 
     pub fn clear(&mut self) {
         self.tracks.clear();
         self.current = None;
         self.order = None;
+        self.history.clear();
+        self.going_back = None;
+        self.resume_at = None;
     }
 
     /// Move the track at `from` to `to` (the current one stays current).
@@ -171,7 +225,7 @@ impl Playlist {
         }
         let track = self.tracks.remove(from);
         self.tracks.insert(to, track);
-        self.current = self.current.map(|c| {
+        let moved = |c: usize| {
             if c == from {
                 to
             } else if from < c && c <= to {
@@ -181,8 +235,9 @@ impl Playlist {
             } else {
                 c
             }
-        });
-        self.order = None;
+        };
+        self.resume_at = None;
+        self.remap(|i| Some(moved(i)));
     }
 
     /// The track after the current one at the end of a track (`ended`) or
@@ -191,8 +246,21 @@ impl Playlist {
         if self.tracks.is_empty() {
             return None;
         }
-        if ended && self.repeat == Repeat::One {
+        if ended && self.repeat == Repeat::One && self.current.is_some() {
             return self.current;
+        }
+        if self.current.is_none()
+            && !self.shuffle
+            && let Some(at) = self.resume_at
+        {
+            // the current track was removed: the one that came after it
+            return if at < self.tracks.len() {
+                Some(at)
+            } else if self.repeat != Repeat::Off || !ended {
+                Some(0)
+            } else {
+                None
+            };
         }
         if self.shuffle {
             if self.order.as_ref().is_some_and(Vec::is_empty) {
@@ -205,7 +273,15 @@ impl Playlist {
             if self.order.is_none() {
                 self.reshuffle();
             }
-            return self.order.as_mut().and_then(Vec::pop).or(self.current);
+            if let Some(i) = self.order.as_mut().and_then(Vec::pop) {
+                return Some(i);
+            }
+            // a round of one track (the current one): it again only with repeat
+            // or on Next
+            return self
+                .current
+                .filter(|_| self.repeat != Repeat::Off || !ended)
+                .or_else(|| (!ended).then_some(0));
         }
         match self.current {
             None => Some(0),
@@ -215,12 +291,22 @@ impl Playlist {
         }
     }
 
-    pub fn previous(&self) -> Option<usize> {
-        match self.current {
+    /// The track before: with shuffle the one played before (as long as
+    /// the history goes back), else the one above; at the first one the last
+    /// with repeat all, else the first again.
+    pub fn previous(&mut self) -> Option<usize> {
+        if self.shuffle
+            && let Some(i) = self.history.pop()
+        {
+            self.going_back = Some(i);
+            return Some(i);
+        }
+        match self.current.or(self.resume_at) {
             None if !self.tracks.is_empty() => Some(0),
-            Some(0) => Some(self.tracks.len().saturating_sub(1)),
-            Some(c) => Some(c - 1),
             None => None,
+            Some(0) if self.repeat == Repeat::All => Some(self.tracks.len().saturating_sub(1)),
+            Some(0) => Some(0),
+            Some(c) => Some((c - 1).min(self.tracks.len().saturating_sub(1))),
         }
     }
 }
@@ -448,7 +534,7 @@ mod tests {
         assert_eq!(p.next(true), Some(2));
         assert_eq!(p.next(false), Some(0)); // Next leaves the one
         p.current = Some(0);
-        assert_eq!(p.previous(), Some(2));
+        assert_eq!(p.previous(), Some(0)); // (wraps with repeat all only)
     }
 
     #[test]
@@ -479,6 +565,59 @@ mod tests {
         let current = p.current.unwrap();
         p.remove(current);
         assert_eq!(p.current, None);
+    }
+
+    #[test]
+    fn shuffle_of_one_track_ends_after_it() {
+        let mut p = list(1);
+        p.set_shuffle(true);
+        p.play(0);
+        assert_eq!(p.next(true), None, "the only track played twice");
+        p.repeat = Repeat::All;
+        assert_eq!(p.next(true), Some(0));
+    }
+
+    #[test]
+    fn the_track_after_a_removed_current_one_comes_next() {
+        // (axross: the track removed keeps playing; Next continues from its place)
+        let mut p = list(5);
+        p.play(2);
+        p.remove(2);
+        assert_eq!(p.current, None);
+        assert_eq!(p.next(true), Some(2), "/m/3.mp3 moved up to 2");
+        p.play(3);
+        p.remove(3);
+        assert_eq!(p.next(true), None, "it was the last one");
+        assert_eq!(p.next(false), Some(0), "Next wraps");
+    }
+
+    #[test]
+    fn previous_with_shuffle_goes_back_the_way_it_came() {
+        let mut p = list(10);
+        p.set_shuffle(true);
+        p.play(3);
+        let mut played = vec![3];
+        for _ in 0..4 {
+            let i = p.next(true).unwrap();
+            p.play(i);
+            played.push(i);
+        }
+        for want in played.iter().rev().skip(1) {
+            let back = p.previous().unwrap();
+            assert_eq!(back, *want);
+            p.play(back);
+        }
+        // the history used up: the track before in the list
+        assert_eq!(p.previous(), Some(2));
+    }
+
+    #[test]
+    fn previous_at_the_first_track_wraps_only_with_repeat_all() {
+        let mut p = list(3);
+        p.play(0);
+        assert_eq!(p.previous(), Some(0));
+        p.repeat = Repeat::All;
+        assert_eq!(p.previous(), Some(2));
     }
 
     #[test]

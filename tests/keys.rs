@@ -70,3 +70,31 @@ fn space_on_a_focused_button_presses_only_the_button() {
     );
     assert!(h.state().playing(), "Space also paused the player");
 }
+
+#[test]
+fn the_player_keys_belong_to_the_player_tab() {
+    // (the Bluetooth tab's filter, the Mixer's sliders: letters typed there
+    // must not skip, mute or pause)
+    let dir = folder("keys-tab");
+    let files = tracks(&dir, &["a.wav", "b.wav"], 3.0);
+    let mut h = harness(&dir, files);
+    assert!(until(&mut h, 5.0, |a| a.is_loaded() && a.playing()));
+    h.state_mut().set_tab(axross_amp::app::Tab::Mixer);
+    settle(&mut h, 1);
+    let before = h.state().snapshot();
+    for key in [Key::N, Key::M, Key::Space, Key::ArrowDown, Key::V] {
+        h.key_press(key);
+        settle(&mut h, 1);
+    }
+    let after = h.state().snapshot();
+    assert_eq!(
+        (after.current, after.muted, after.volume, &after.visualizer),
+        (
+            before.current,
+            before.muted,
+            before.volume,
+            &before.visualizer
+        )
+    );
+    assert!(h.state().playing());
+}
