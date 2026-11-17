@@ -65,7 +65,7 @@ fn play(path: &str, start_ms: u64, setup: impl FnOnce(&Engine)) -> Played {
             Ok(Event::Loaded { info, .. }) => played.info = Some(info),
             Ok(Event::Ended { .. }) => played.ended = true,
             Ok(Event::Failed { message, .. }) => played.failed = Some(message),
-            Err(_) => {}
+            Ok(_) | Err(_) => {}
         }
     }
     drop(engine);
@@ -316,7 +316,10 @@ fn real_sound_from_every_format_with_eq_volume_seek_streams_and_errors() {
             "{name}: right {right_hz}"
         );
         assert!((2.99..=3.01).contains(&secs), "{name}: {secs} s");
-        assert!(left_rms > 0.12, "{name}: level {left_rms}");
+        // (5.1 is downmixed as ITU-R BS.775 has it, scaled so it cannot
+        // clip: the front's tone is about 7.7 dB below its stereo level)
+        let least = if name == "tone51.wav" { 0.08 } else { 0.12 };
+        assert!(left_rms > least, "{name}: level {left_rms}");
         if title && name != "tone51.wav" && name != "tone.wav" {
             assert_eq!(info.title, format!("Tone {name}"), "{name}");
             assert_eq!(info.artist, "Test Artist", "{name}");

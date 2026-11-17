@@ -12,6 +12,7 @@ pub mod eq;
 pub mod mixer;
 pub mod mixer_ui;
 pub mod mp4edit;
+pub mod net;
 pub mod playlist;
 pub mod state;
 pub mod viz;

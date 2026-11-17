@@ -8,12 +8,21 @@ use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 
-/// (frames to drop at the start, frames that sound) in the media's own
-/// time scale - which, for audio, is the sample rate.
+/// (what to drop at the start, what sounds) in the media's own time scale
+/// (`scale` units a second) - for audio mostly, not always, the sample rate.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Edit {
     pub skip: u64,
     pub length: Option<u64>,
+    pub scale: u32,
+}
+
+impl Edit {
+    /// The edit in frames of sound at `rate`: (frames to drop, frames that sound).
+    pub fn frames(&self, rate: u32) -> (u64, Option<u64>) {
+        let at = |v: u64| (v as u128 * rate as u128 / self.scale.max(1) as u128) as u64;
+        (at(self.skip), self.length.map(at))
+    }
 }
 
 const MAX_ATOMS: usize = 10_000;
@@ -135,6 +144,7 @@ pub fn read_edit(path: &Path) -> Option<Edit> {
             return Some(Edit {
                 skip: media_time as u64,
                 length,
+                scale: media_scale,
             });
         }
         return None;
@@ -181,9 +191,17 @@ mod tests {
             read_edit(&path),
             Some(Edit {
                 skip: 2112,
-                length: Some(132_300)
+                length: Some(132_300),
+                scale: 44_100,
             })
         );
+        // a media time scale other than the sample rate (90 kHz, as some muxers write)
+        let edit = Edit {
+            skip: 4310,
+            length: Some(270_000),
+            scale: 90_000,
+        };
+        assert_eq!(edit.frames(44_100), (2111, Some(132_300)));
         std::fs::write(&path, b"not an mp4 at all").unwrap();
         assert_eq!(read_edit(&path), None);
     }
