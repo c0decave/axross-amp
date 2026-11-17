@@ -45,6 +45,11 @@ use symphonia::core::units::{Time, TimeBase, Timestamp};
 const AHEAD_SECS: f32 = 0.35;
 const STAGE_SECS: f32 = 3.0;
 
+/// Tests: told when the output callback begins (true) and ends (false) -
+/// on the audio thread itself (an allocation counter watches it).
+#[doc(hidden)]
+pub static CALLBACK_HOOK: OnceLock<fn(bool)> = OnceLock::new();
+
 /// Tests: every file takes this long to open (a sleeping disk, NFS).
 #[doc(hidden)]
 pub static OPEN_DELAY_MS: AtomicU64 = AtomicU64::new(0);
@@ -696,6 +701,10 @@ where
         .build_output_stream(
             config,
             move |data: &mut [T], info: &cpal::OutputCallbackInfo| {
+                let hook = CALLBACK_HOOK.get();
+                if let Some(h) = hook {
+                    h(true);
+                }
                 // what is written now is heard this much later, the buffer's
                 // length on top: the position and the pictures wait for it
                 let ts = info.timestamp();
@@ -710,6 +719,9 @@ where
                     for (out, v) in chunk.iter_mut().zip(mixed.iter()) {
                         *out = T::from_sample(*v);
                     }
+                }
+                if let Some(h) = hook {
+                    h(false);
                 }
             },
             move |err| {
