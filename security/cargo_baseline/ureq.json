@@ -1,7 +1,7 @@
 {
  "name": "ureq",
  "versions": {
-  "3.5.2": {
+  "3.5.1": {
    "accepted_findings": [
     "raw-ip-url|src/io_timeout_tests.rs|084acd2b2531bdb9",
     "raw-ip-url|src/io_timeout_tests.rs|8dff2ce92d6bce34",
@@ -23,7 +23,7 @@
     "yara|capability_network_outbound|src/unversioned/resolver.rs|76f847ca5c9e7c61",
     "yara|capability_network_outbound|src/unversioned/transport/connect.rs|a0e5736c4f6124d5",
     "yara|capability_network_outbound|src/unversioned/transport/socks.rs|2886b19030f7e53e",
-    "yara|capability_network_outbound|src/unversioned/transport/tcp.rs|a275c20b4cf661b8",
+    "yara|capability_network_outbound|src/unversioned/transport/tcp.rs|633aca14845c5571",
     "yara|capability_network_outbound|tests/native_tls.rs|d36de2e20df52bc6",
     "yara|capability_network_outbound|tests/socks.rs|e2976fe5265b4b35",
     "yara|capability_process_spawn|examples/mpsc-transport.rs|2467cb144f054270",
@@ -39,23 +39,23 @@
     "build_scripts": {},
     "files": 64,
     "links": "",
-    "manifest": "4bee9d6a92bcaabb8a4c669e525fd523bc070a87b2a91b7e352cebc14d26ba99",
+    "manifest": "1711ded0788c8f7b9cefd3dcea1918fbd3cc6b0843bcec6e9d975588093e1f3a",
     "native": {},
     "native_profiles": {},
     "native_sources": {},
     "proc_macro": false,
-    "sha256": "3ac5cecf619ca81f66a96482db09687c9f7465af65f4300a8c30cca05bd5a59d",
+    "sha256": "e7be76686bdf7198002062423ca0d8cf9b75a27c8e1de804513b97e97b555d9d",
     "vcs": {
      "git": {
-      "sha1": "51bb001154f44cfab69653a74f7d45fbe1995b22"
+      "sha1": "33ca9d35e97b6a10e767fb0fa3139f01d315e89c"
      },
      "path_in_vcs": ""
     }
    },
    "crates_io": {
-    "checksum": "3ac5cecf619ca81f66a96482db09687c9f7465af65f4300a8c30cca05bd5a59d",
-    "crate_size": 187913,
-    "created_at": "2026-11-12T11:20:05.748623Z",
+    "checksum": "e7be76686bdf7198002062423ca0d8cf9b75a27c8e1de804513b97e97b555d9d",
+    "crate_size": 186237,
+    "created_at": "2026-11-02T18:02:33.553904Z",
     "description": "Simple, safe HTTP client",
     "license": "MIT OR Apache-2.0",
     "published_by": "algesten",
@@ -66,7 +66,7 @@
    "reviewed": {
     "by": "claude",
     "date": "2026-11-17",
-    "note": "127.0.0.1 URLs in its timeout/pool/socks tests. HTTP client used by axross-amp for streams (rustls). Nothing else flagged. No binary; checksum = crates.io's; published by algesten on 2026-11-12; other medium findings read: ['raw-ip-url']."
+    "note": "127.0.0.1 URLs in its timeout/pool/socks tests; include_bytes of LICENSE-MIT and the test cert/key. Diff against the reviewed 3.5.2 is only 3.5.2's NetworkDown connect handling (here absent). No advisories in RustSec or OSV; no binary; checksum = crates.io's; published by algesten on 2026-11-02 (same publisher)."
    },
    "scans": {
     "capa": {},
@@ -76,7 +76,7 @@
      "yara|capability_network_outbound|src/unversioned/resolver.rs|76f847ca5c9e7c61",
      "yara|capability_network_outbound|src/unversioned/transport/connect.rs|a0e5736c4f6124d5",
      "yara|capability_network_outbound|src/unversioned/transport/socks.rs|2886b19030f7e53e",
-     "yara|capability_network_outbound|src/unversioned/transport/tcp.rs|a275c20b4cf661b8",
+     "yara|capability_network_outbound|src/unversioned/transport/tcp.rs|633aca14845c5571",
      "yara|capability_network_outbound|tests/native_tls.rs|d36de2e20df52bc6",
      "yara|capability_network_outbound|tests/socks.rs|e2976fe5265b4b35",
      "yara|capability_process_spawn|examples/mpsc-transport.rs|2467cb144f054270",
@@ -107,7 +107,7 @@
      "capability_process_spawn:capability_process_spawn tests/socks.rs"
     ]
    },
-   "version": "3.5.2"
+   "version": "3.5.1"
   }
  }
 }
