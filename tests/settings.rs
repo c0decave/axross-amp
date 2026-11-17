@@ -121,3 +121,54 @@ fn an_equalizer_slider_dragged_is_one_write_off_the_window() {
     let audio = std::fs::read_to_string(dir.join("config/audio.json")).unwrap();
     assert!(audio.contains("9.5"), "{audio}");
 }
+
+#[test]
+fn another_programs_playlist_is_taken_over_not_undone() {
+    // axross's player edits the playlist in the shared file while this one
+    // runs; this one then changes only its volume, twice
+    let dir = folder("adopt");
+    let files = tracks(&dir, &["mine.wav"], 30.0);
+    let theirs = tracks(&dir, &["theirs-1.wav", "theirs-2.wav"], 1.0);
+    let mut h = harness(&dir, files);
+    assert!(until(&mut h, 5.0, |a| a.is_loaded()));
+    let file = dir.join("config/media_player.json");
+    assert!(until(&mut h, 6.0, |_| axross_amp::state::read_state(&file)
+        .tracks
+        .len()
+        == 1));
+    let mut raw: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+    raw["tracks"] = serde_json::json!([
+        {"path": theirs[0], "title": "", "duration": 1},
+        {"path": theirs[1], "title": "", "duration": 1}
+    ]);
+    raw["current"] = serde_json::json!(1);
+    std::fs::write(&file, raw.to_string()).unwrap();
+    for _ in 0..2 {
+        h.key_press(egui::Key::ArrowDown);
+        settle(&mut h, 2);
+        std::thread::sleep(Duration::from_millis(3200));
+        settle(&mut h, 5);
+        std::thread::sleep(Duration::from_millis(200));
+        settle(&mut h, 3);
+        let saved = axross_amp::state::read_state(&file);
+        assert_eq!(
+            saved
+                .tracks
+                .iter()
+                .map(|t| t.path.clone())
+                .collect::<Vec<_>>(),
+            theirs,
+            "the other program's playlist was undone"
+        );
+    }
+    // the window shows theirs
+    let shown: Vec<String> = h
+        .state()
+        .snapshot()
+        .tracks
+        .iter()
+        .map(|t| t.path.clone())
+        .collect();
+    assert_eq!(shown, theirs);
+}

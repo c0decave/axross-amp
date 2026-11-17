@@ -1251,6 +1251,9 @@ impl App {
         for why in self.saver.errors() {
             self.status = why;
         }
+        for (kept, version) in self.saver.adopted() {
+            self.adopt(&kept, version);
+        }
         let due = self.last_save.elapsed() >= SAVE_EVERY;
         // while playing, the position is kept every 30 s (as axross: a crash
         // or a power cut loses no more)
@@ -1258,7 +1261,10 @@ impl App {
             self.dirty = true;
         }
         if force || (self.dirty && due) {
-            self.saver.save(crate::saver::Job::State(self.snapshot()));
+            self.saver.save(crate::saver::Job::State(
+                self.snapshot(),
+                self.playlist.version,
+            ));
             self.dirty = false;
             self.last_save = Instant::now();
         }
@@ -1275,6 +1281,57 @@ impl App {
         }
         if force {
             self.saver.flush(Duration::from_secs(5));
+        }
+    }
+
+    /// Take over what another program (axross's player, a second
+    /// axross-amp) wrote and the merge kept - else this window would write
+    /// its own values back at the next change. The playlist only when it was
+    /// not changed here meanwhile (a change here is newer).
+    fn adopt(&mut self, kept: &serde_json::Map<String, serde_json::Value>, version: u64) {
+        use serde_json::Value;
+        if let Some(tracks) = kept.get("tracks")
+            && version == self.playlist.version
+        {
+            let tracks = state::tracks_of(tracks);
+            let playing = self
+                .playlist
+                .current
+                .and_then(|i| self.playlist.tracks.get(i))
+                .map(|t| t.path.clone());
+            let theirs = kept
+                .get("current")
+                .and_then(Value::as_i64)
+                .filter(|c| *c >= 0)
+                .map(|c| c as usize);
+            // the track playing here stays the current one where it is in theirs
+            let current = match &playing {
+                Some(p) if self.playing() => tracks.iter().position(|t| t.path == *p),
+                _ => theirs,
+            };
+            self.playlist.replace(tracks, current);
+            self.select(None);
+            self.queued = None;
+            self.scanner.scan(&self.playlist.tracks);
+            self.status = "The playlist was changed by another program: taken over.".into();
+        }
+        if let Some(v) = kept.get("volume").and_then(Value::as_u64) {
+            self.set_volume(v.min(100) as u32);
+        }
+        if let Some(m) = kept.get("muted").and_then(Value::as_bool) {
+            self.set_muted(m);
+        }
+        if let Some(on) = kept.get("shuffle").and_then(Value::as_bool) {
+            self.playlist.set_shuffle(on);
+        }
+        if let Some(r) = kept.get("repeat").and_then(Value::as_str) {
+            self.playlist.repeat = Repeat::from_key(r);
+        }
+        if let Some(v) = kept.get("visualizer").and_then(Value::as_str) {
+            self.mode = viz::known(v);
+        }
+        if let Some(v) = kept.get("visual_scheme").and_then(Value::as_str) {
+            self.scheme_key = v.to_owned();
         }
     }
 

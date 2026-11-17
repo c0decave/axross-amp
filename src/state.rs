@@ -253,7 +253,10 @@ fn write_object(path: &Path, object: &Map<String, Value>) -> std::io::Result<()>
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
-    let tmp = path.with_extension(format!("json.tmp-{}", std::process::id()));
+    // (a name of this write's own: two writes at once never share one)
+    static WRITES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = WRITES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let tmp = path.with_extension(format!("json.tmp-{}-{n}", std::process::id()));
     {
         let mut options = fs::OpenOptions::new();
         options.write(true).create_new(true);
@@ -292,7 +295,10 @@ fn text(map: &Map<String, Value>, key: &str) -> Option<String> {
 }
 
 pub fn read_state(path: &Path) -> PlayerState {
-    let map = read_object(path);
+    read_state_from(read_object(path))
+}
+
+fn read_state_from(map: Map<String, Value>) -> PlayerState {
     let mut state = PlayerState::default();
     if let Some(v) = int(&map, "volume") {
         state.volume = v.clamp(0, 100) as u32;
@@ -384,26 +390,47 @@ pub fn read_base(path: &Path) -> Map<String, Value> {
     read_object(path)
 }
 
-/// Keys written together: the playlist, the track in it and its position
-/// belong to each other.
-const GROUPS: [&[&str]; 1] = [&["tracks", "current", "position_ms"]];
+/// Keys written together: the playlist and the track in it belong to each
+/// other. (The position follows the playlist's winner, it decides nothing:
+/// a position that moved while playing is no change of the playlist.)
+const GROUPS: [&[&str]; 1] = [&["tracks", "current"]];
+const FOLLOWS_TRACKS: &str = "position_ms";
+
+/// The lock that keeps two of these programs from reading, merging and
+/// writing the file at once (an advisory lock on a file beside it: flock
+/// on Unix, LockFileEx on Windows). axross's player takes none - the merge
+/// is what protects its writes.
+fn lock(path: &Path) -> std::io::Result<fs::File> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let file = fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(path.with_extension("json.lock"))?;
+    file.lock()?;
+    Ok(file)
+}
 
 /// Write `state` into `path` without undoing what another program (axross's
-/// player, a second axross-amp) wrote there since `base` - what this
-/// program last read or wrote: a three-way merge by key. A key (or group)
-/// this program did not change since `base` and the other did keeps the
-/// other's value; one this program changed is its. `base` becomes what was
-/// written. Returns the keys of the other program's that were kept.
+/// player, a second axross-amp) wrote there: a three-way merge by key
+/// against `base` - what this program last wrote of each key. A key (or
+/// group) another program changed since, and this one did not, keeps the
+/// other's value; one this program changed is its. Returns what was kept
+/// of the other's (the window takes it over, so it is not undone later).
 pub fn write_state_merged(
     path: &Path,
     state: &PlayerState,
     base: &mut Option<Map<String, Value>>,
-) -> std::io::Result<Vec<String>> {
+) -> std::io::Result<Map<String, Value>> {
+    let _lock = lock(path)?;
     let theirs = read_object(path);
     let ours = state_object(state, &theirs);
     let mut out = theirs.clone();
-    let mut kept = Vec::new();
-    let mut done: Vec<&str> = Vec::new();
+    let mut kept = Map::new();
+    let mut written: Vec<String> = Vec::new();
+    let mut done: Vec<&str> = vec![FOLLOWS_TRACKS];
     for key in ours.keys() {
         if done.contains(&key.as_str()) {
             continue;
@@ -422,20 +449,42 @@ pub fn write_state_merged(
             .as_ref()
             .is_some_and(|b| value(b) != value(&theirs) && theirs.contains_key(group[0]));
         let mine_changed = base.as_ref().is_none_or(|b| value(b) != mine);
+        let mut keys: Vec<&str> = group.clone();
+        if group.contains(&"tracks") {
+            keys.push(FOLLOWS_TRACKS);
+        }
         if theirs_changed && !mine_changed {
-            kept.extend(group.iter().map(|k| (*k).to_owned()));
+            for k in keys {
+                if let Some(v) = theirs.get(k) {
+                    kept.insert(k.to_owned(), v.clone());
+                }
+            }
             continue;
         }
-        for k in &group {
-            if let Some(v) = ours.get(*k) {
-                out.insert((*k).to_owned(), v.clone());
+        for k in keys {
+            if let Some(v) = ours.get(k) {
+                out.insert(k.to_owned(), v.clone());
+                written.push(k.to_owned());
             }
         }
     }
     fit(&mut out);
     write_object(path, &out)?;
-    *base = Some(out);
+    // what this program wrote of each key, as written (trimmed to fit)
+    let next = base.get_or_insert_with(Map::new);
+    for k in written {
+        if let Some(v) = out.get(&k) {
+            next.insert(k, v.clone());
+        }
+    }
     Ok(kept)
+}
+
+/// The tracks of a `tracks` value of the file (as [`read_state`] reads them).
+pub fn tracks_of(value: &Value) -> Vec<Track> {
+    let mut map = Map::new();
+    map.insert("tracks".into(), value.clone());
+    read_state_from(map).tracks
 }
 
 /// axross's player reads its file only up to 4 MiB (a larger one it sets
@@ -715,14 +764,19 @@ mod tests {
         theirs["current"] = json!(1);
         theirs["python_only"] = json!(true);
         fs::write(&path, theirs.to_string()).unwrap();
-        // this program changes only the volume
+        // this program changes only the volume, then the position (it plays)
         state.volume = 33;
         let kept = write_state_merged(&path, &state, &mut base).unwrap();
         let file = read_state(&path);
         assert_eq!(file.volume, 33, "ours");
         assert_eq!(file.tracks.len(), 2, "theirs: not clobbered");
         assert_eq!(file.current, 1, "the track goes with its playlist");
-        assert!(kept.contains(&"tracks".to_owned()));
+        assert!(kept.contains_key("tracks"));
+        // a second save (the window did not take theirs over): still theirs
+        state.position_ms = 30_000;
+        write_state_merged(&path, &state, &mut base).unwrap();
+        assert_eq!(read_state(&path).tracks.len(), 2, "lost at the second save");
+        assert_eq!(read_state(&path).tracks[0].path, "/m/theirs.flac");
         // a change of ours to the playlist wins over theirs
         state.tracks.push(Track {
             path: "/m/new.mp3".into(),
@@ -790,6 +844,44 @@ mod tests {
         assert!(back.tracks.len() > 5_000, "{}", back.tracks.len());
         assert_eq!(back.tracks[0].path, state.tracks[0].path);
         assert!(back.current < back.tracks.len() as i64);
+    }
+
+    #[test]
+    fn writers_at_once_keep_each_others_changes() {
+        // four programs, each changing a key of its own, fifty times, at once
+        let (_dir, path) = temp("writers");
+        write_state(&path, &PlayerState::default()).unwrap();
+        let threads: Vec<_> = (0..4)
+            .map(|t| {
+                let path = path.clone();
+                std::thread::spawn(move || {
+                    let mut base = Some(read_base(&path));
+                    let mut state = read_state(&path);
+                    for _ in 0..50 {
+                        match t {
+                            0 => state.volume = 33,
+                            1 => state.visualizer = "ring".into(),
+                            2 => state.shuffle = true,
+                            _ => state.repeat = "all".into(),
+                        }
+                        write_state_merged(&path, &state, &mut base).unwrap();
+                    }
+                })
+            })
+            .collect();
+        for t in threads {
+            t.join().unwrap();
+        }
+        let file = read_state(&path);
+        assert_eq!(
+            (
+                file.volume,
+                file.visualizer.as_str(),
+                file.shuffle,
+                file.repeat.as_str()
+            ),
+            (33, "ring", true, "all")
+        );
     }
 
     #[test]

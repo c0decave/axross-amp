@@ -14,7 +14,8 @@ use std::time::Duration;
 
 /// What is to be written.
 pub enum Job {
-    State(PlayerState),
+    /// The player's state, and the playlist's version it was taken at.
+    State(PlayerState, u64),
     Eq(EqSettings),
     Amp(AmpSettings),
     /// The output device chosen (`amp_output` in audio.json).
@@ -31,12 +32,13 @@ pub struct Saver {
     tx: Sender<Message>,
     errors: Receiver<String>,
     writes: Arc<AtomicUsize>,
+    adopted: Receiver<(Map<String, Value>, u64)>,
 }
 
 /// The newest of each kind, waiting to be written.
 #[derive(Default)]
 struct Pending {
-    state: Option<PlayerState>,
+    state: Option<(PlayerState, u64)>,
     eq: Option<EqSettings>,
     amp: Option<AmpSettings>,
     output: Option<String>,
@@ -48,6 +50,7 @@ impl Saver {
     pub fn start(dir: PathBuf, base: Map<String, Value>) -> Saver {
         let (tx, rx) = crossbeam_channel::unbounded::<Message>();
         let (etx, errors) = crossbeam_channel::unbounded();
+        let (atx, adopted) = crossbeam_channel::unbounded();
         let writes = Arc::new(AtomicUsize::new(0));
         let w = writes.clone();
         let _ = std::thread::Builder::new()
@@ -60,7 +63,7 @@ impl Saver {
                     for message in std::iter::once(first).chain(rx.try_iter()) {
                         match message {
                             Message::Job(job) => match *job {
-                                Job::State(s) => pending.state = Some(s),
+                                Job::State(s, v) => pending.state = Some((s, v)),
                                 Job::Eq(e) => pending.eq = Some(e),
                                 Job::Amp(a) => pending.amp = Some(a),
                                 Job::Output(o) => pending.output = Some(o),
@@ -71,12 +74,16 @@ impl Saver {
                     let fail = |what: &str, e: std::io::Error| {
                         let _ = etx.send(format!("Cannot save {what}: {e}"));
                     };
-                    if let Some(s) = pending.state {
+                    if let Some((s, version)) = pending.state {
                         w.fetch_add(1, Ordering::Relaxed);
-                        if let Err(e) =
-                            state::write_state_merged(&dir.join(state::STATE_FILE), &s, &mut base)
+                        match state::write_state_merged(&dir.join(state::STATE_FILE), &s, &mut base)
                         {
-                            fail("the player state", e);
+                            // another program's changes kept: the window takes them over
+                            Ok(kept) if !kept.is_empty() => {
+                                let _ = atx.send((kept, version));
+                            }
+                            Ok(_) => {}
+                            Err(e) => fail("the player state", e),
                         }
                     }
                     if let Some(e) = pending.eq {
@@ -102,7 +109,12 @@ impl Saver {
                     }
                 }
             });
-        Saver { tx, errors, writes }
+        Saver {
+            tx,
+            errors,
+            writes,
+            adopted,
+        }
     }
 
     pub fn save(&self, job: Job) {
@@ -120,6 +132,12 @@ impl Saver {
     /// What could not be written since the last look.
     pub fn errors(&self) -> Vec<String> {
         self.errors.try_iter().collect()
+    }
+
+    /// What another program wrote and the merge kept (the keys and their
+    /// values), with the playlist's version the state was taken at.
+    pub fn adopted(&self) -> Vec<(Map<String, Value>, u64)> {
+        self.adopted.try_iter().collect()
     }
 
     /// Files written so far (tests).

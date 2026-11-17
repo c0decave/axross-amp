@@ -185,6 +185,19 @@ impl Playlist {
         self.order = None;
     }
 
+    /// The list replaced by `tracks` (another program's), `current` the
+    /// track playing in it.
+    pub fn replace(&mut self, tracks: Vec<Track>, current: Option<usize>) {
+        self.tracks = tracks;
+        self.tracks.truncate(MAX_TRACKS);
+        self.current = current.filter(|c| *c < self.tracks.len());
+        self.order = None;
+        self.history.clear();
+        self.going_back = None;
+        self.resume_at = None;
+        self.version += 1;
+    }
+
     /// Add tracks (paths or stream URLs); returns how many were added.
     pub fn add_tracks(&mut self, tracks: Vec<Track>) -> usize {
         let room = MAX_TRACKS.saturating_sub(self.tracks.len());
