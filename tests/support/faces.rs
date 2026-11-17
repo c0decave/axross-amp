@@ -54,6 +54,10 @@ pub struct FaceApp {
     pub render_state: Option<eframe::egui_wgpu::RenderState>,
     /// A cover (the cover face's), made on the first frame.
     pub cover: Option<egui::TextureHandle>,
+    /// Frames a second (FPS unless a test asks for more).
+    pub fps: f32,
+    /// No cover (the cover face's look without one).
+    pub without_cover: bool,
 }
 
 /// A made-up cover: a dusk sky, a sun, hills (256 x 256 RGBA).
@@ -94,6 +98,8 @@ impl FaceApp {
             live: true,
             render_state: None,
             cover: None,
+            fps: FPS,
+            without_cover: false,
         }
     }
 
@@ -101,7 +107,7 @@ impl FaceApp {
     pub fn step(&mut self) {
         self.frame += 1;
         let frames = self.sound.len() / 2;
-        let end = (((self.frame as f32 / FPS) + 0.2) * RATE as f32) as usize;
+        let end = (((self.frame as f32 / self.fps) + 0.2) * RATE as f32) as usize;
         let end = end.min(frames);
         let start = end.saturating_sub(8192);
         let tap = &self.sound[start * 2..end * 2];
@@ -110,7 +116,7 @@ impl FaceApp {
             end as u64,
             RATE,
             &self.options,
-            1.0 / FPS,
+            1.0 / self.fps,
             self.live,
             viz::needs_now(self.key, &self.state),
         );
@@ -118,7 +124,7 @@ impl FaceApp {
 
     pub fn paint(&mut self, ui: &mut egui::Ui) {
         let rect = ui.max_rect();
-        if self.cover.is_none() {
+        if self.cover.is_none() && !self.without_cover {
             self.cover = Some(ui.ctx().load_texture(
                 "cover",
                 demo_cover(),
@@ -132,10 +138,10 @@ impl FaceApp {
             rect,
             a: &self.analyzer,
             s: &scheme,
-            dt: 1.0 / FPS,
+            dt: 1.0 / self.fps,
             title: &self.title,
             overview: self.overview.as_ref(),
-            position: self.frame as f32 / FPS,
+            position: self.frame as f32 / self.fps,
             duration: 180.0,
             hover: None,
             opacity: 1.0,

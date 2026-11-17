@@ -519,13 +519,35 @@ fn cover(f: &Frame<'_>, cv: &mut super::Canvas, st: &mut State) {
             );
         }
         None => {
-            p.rect_filled(art, 12.0, mix(s.background, s.mid, 0.25));
+            // no cover: a record of the scheme's colours, its light turning
+            // slowly (not a giant note on a flat square)
+            let t = f.a.time as f32;
+            cv.draw(p, |pen| {
+                pen.vertical(
+                    art,
+                    mix(s.background, s.low, 0.30),
+                    mix(s.background, s.mid, 0.18),
+                );
+                pen.circle(c, side * 0.47, mix(s.background, Color32::BLACK, 0.35));
+                for k in 0..16 {
+                    pen.ring(
+                        c,
+                        side * (0.17 + k as f32 * 0.018),
+                        1.0,
+                        glow(s.peak, 0.05 + 0.02 * (k % 3) as f32),
+                    );
+                }
+                let sheen = c + Vec2::angled(t * 0.3) * side * 0.22;
+                pen.radial(sheen, side * 0.35, glow(s.high, 0.16), Color32::TRANSPARENT);
+                pen.circle(c, side * 0.14, mix(s.mid, s.high, 0.35));
+                pen.circle(c, side * 0.015, s.background);
+            });
             p.text(
-                c,
+                c + vec2(0.0, -side * 0.06),
                 egui::Align2::CENTER_CENTER,
                 "♫",
-                FontId::proportional(side * 0.45),
-                mix(s.mid, s.peak, 0.4),
+                FontId::proportional(side * 0.08),
+                mix(s.mid, s.background, 0.6),
             );
         }
     }

@@ -88,6 +88,10 @@ pub struct App {
     big_visual: bool,
     /// The playlist shown under the large picture too.
     big_list: bool,
+    /// The photosensitivity warning shown (the intense motion asked for),
+    /// and whether the desktop asks for reduced motion (None: not known).
+    intense_asked: bool,
+    reduced_motion: Arc<Mutex<Option<bool>>>,
     /// The height of what lies between the picture and the playlist (the
     /// position, the transport, the switch), as last laid out.
     controls_height: f32,
@@ -414,11 +418,7 @@ impl App {
                 if gpu { "GPU" } else { "CPU" },
                 choice.gpu_ms_per_pixel,
                 choice.cpu_ms_per_pixel,
-                if slow {
-                    "; a slow renderer: at most 20 frames a second"
-                } else {
-                    ""
-                }
+                slow_note(slow)
             );
         }
         let mut app = App {
@@ -450,6 +450,8 @@ impl App {
             playlist_open: saved.playlist_open,
             big_visual: false,
             big_list: false,
+            intense_asked: false,
+            reduced_motion: desktop_reduced_motion(),
             controls_height: 110.0,
             overview: None,
             pending_click: None,
@@ -680,6 +682,11 @@ impl App {
     }
 
     /// Whether the visualization is shown large.
+    /// How the pictures move: "calm" or "intense" (tests).
+    pub fn motion(&self) -> &str {
+        &self.amp.motion
+    }
+
     pub fn big_visual(&self) -> bool {
         self.big_visual
     }
@@ -2053,6 +2060,33 @@ impl App {
     }
 
     fn options_menu(&mut self, ui: &mut Ui) {
+        ui.label(RichText::new("Motion").strong());
+        if ui
+            .radio(
+                self.amp.motion != "intense",
+                "Calm - flash-safe (the default)",
+            )
+            .clicked()
+        {
+            self.amp.motion = "calm".into();
+            self.amp_dirty = true;
+        }
+        let reduce = self.desktop_reduces_motion();
+        let intense = ui.add_enabled(
+            !reduce,
+            egui::RadioButton::new(self.amp.motion == "intense", "Intense…"),
+        );
+        let intense = if reduce {
+            intense.on_disabled_hover_text("The desktop asks for reduced motion")
+        } else {
+            intense
+        };
+        if intense.clicked() && self.amp.motion != "intense" {
+            // (only after the warning: a window of its own)
+            self.intense_asked = true;
+            ui.close();
+        }
+        ui.separator();
         if ui
             .checkbox(
                 &mut self.amp.waterfall_hd,
@@ -2526,8 +2560,10 @@ impl App {
         if self.slow {
             fps = fps.min(SLOW_FPS).min(self.budget_fps);
         }
-        if viz::find(self.mode).is_some_and(|f| f.calm) {
-            fps = fps.min(if self.slow { CALM_FPS / 2.0 } else { CALM_FPS });
+        // (a calm face on a slow renderer: fewer frames; on a GPU its beat
+        // ring and spectrum move at the full rate)
+        if self.slow && viz::find(self.mode).is_some_and(|f| f.calm) {
+            fps = fps.min(CALM_FPS / 2.0);
         }
         fps
     }
@@ -2652,6 +2688,11 @@ impl App {
         // (off: no analysis, no frames for it; paused: the picture stands
         // as it was, not emptied)
         let frozen = self.frozen();
+        self.analyzer.motion = if self.amp.motion == "intense" && !self.desktop_reduces_motion() {
+            crate::analyzer::guard::Motion::Intense
+        } else {
+            crate::analyzer::guard::Motion::Calm
+        };
         if self.mode != "off" && !frozen {
             self.analyzer.set_readings(self.meters.read());
             self.analyzer.update(
@@ -3492,6 +3533,58 @@ impl App {
         }
     }
 
+    /// Whether the desktop asks for less motion (GNOME's animations off).
+    fn desktop_reduces_motion(&self) -> bool {
+        self.reduced_motion
+            .lock()
+            .ok()
+            .and_then(|r| *r)
+            .unwrap_or(false)
+    }
+
+    /// The photosensitivity warning, before the intense motion is used.
+    fn intense_window(&mut self, ctx: &egui::Context) {
+        if !self.intense_asked {
+            return;
+        }
+        let mut open = true;
+        egui::Window::new("Intense motion")
+            .collapsible(false)
+            .resizable(false)
+            .open(&mut open)
+            .pivot(egui::Align2::CENTER_CENTER)
+            .default_pos(ctx.content_rect().center())
+            .show(ctx, |ui| {
+                ui.set_max_width(380.0);
+                ui.label(
+                    RichText::new("Photosensitivity warning")
+                        .font(bold(16.0))
+                        .color(Color32::from_rgb(0xe3, 0xb3, 0x41)),
+                );
+                ui.label(
+                    "Intense motion makes the pictures faster and livelier, with more \
+                     movement on the beat. A small share of people have seizures when they \
+                     see flashing light or patterns; some do not know they are at risk. \
+                     Even intense, no picture flashes more than three times a second - but \
+                     if you or anyone watching has epilepsy or feels unwell, keep Calm.",
+                );
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Keep calm").clicked() {
+                        self.intense_asked = false;
+                    }
+                    if ui.button("Use intense motion").clicked() {
+                        self.amp.motion = "intense".into();
+                        self.amp_dirty = true;
+                        self.intense_asked = false;
+                    }
+                });
+            });
+        if !open {
+            self.intense_asked = false;
+        }
+    }
+
     fn url_window(&mut self, ctx: &egui::Context) {
         if !self.url_open {
             return;
@@ -3796,6 +3889,7 @@ impl eframe::App for App {
                 }
             });
         self.url_window(&ctx);
+        self.intense_window(&ctx);
         self.details_window(&ctx);
         self.file_dialog(&ctx);
         if let Some((path, frames, written)) = self.stats.as_mut() {
@@ -4025,6 +4119,45 @@ fn accent_style(ctx: &egui::Context, accent: Color32) {
     ctx.set_visuals(visuals);
 }
 
+/// What the start says of a slow renderer (its frame rates from the
+/// constants that set them).
+fn slow_note(slow: bool) -> String {
+    if slow {
+        format!(
+            "; a slow renderer: at most {SLOW_FPS:.0} frames a second, fewer (down to \
+             {MIN_SLOW_FPS:.0}) as a frame costs more"
+        )
+    } else {
+        String::new()
+    }
+}
+
+/// Whether the desktop asks for reduced motion, found out on a thread
+/// (GNOME: animations off); None until known, or where there is no way to
+/// ask.
+fn desktop_reduced_motion() -> Arc<Mutex<Option<bool>>> {
+    let out = Arc::new(Mutex::new(None));
+    #[cfg(target_os = "linux")]
+    {
+        let found = out.clone();
+        let _ = std::thread::Builder::new()
+            .name("amp-motion".into())
+            .spawn(move || {
+                let answer = std::process::Command::new("gsettings")
+                    .args(["get", "org.gnome.desktop.interface", "enable-animations"])
+                    .stderr(std::process::Stdio::null())
+                    .output()
+                    .ok()
+                    .filter(|o| o.status.success())
+                    .map(|o| String::from_utf8_lossy(&o.stdout).trim() == "false");
+                if let Ok(mut f) = found.lock() {
+                    *f = answer;
+                }
+            });
+    }
+    out
+}
+
 /// The cover's accent: the strongest of its colourful hues (weighed by how
 /// colourful and how bright), made readable on the window as text (WCAG AA,
 /// 4.5:1); none for a grey cover.
@@ -4099,6 +4232,17 @@ fn faces_list(ui: &mut Ui, mode: &mut &'static str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_start_tells_the_slow_frame_rate_as_it_is() {
+        let note = slow_note(true);
+        assert!(
+            note.contains(&format!("at most {SLOW_FPS:.0} frames")),
+            "{note}"
+        );
+        assert!(!note.contains("20 frames"));
+        assert!(slow_note(false).is_empty());
+    }
 
     #[test]
     fn the_card_says_the_bits_or_the_bit_rate() {

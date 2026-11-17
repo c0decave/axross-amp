@@ -14,6 +14,7 @@
 
 pub mod beat;
 pub mod fine;
+pub mod guard;
 pub mod loudness;
 pub mod notes;
 
@@ -118,6 +119,17 @@ pub struct Analyzer {
     /// The meters' thread's readings, when it runs (then loudness, beat and
     /// notes come from it, which hears every sample).
     external: Option<crate::meters::Readings>,
+    /// How the pictures may move: what drives their brightness (the bars,
+    /// the beat's pulse) turns no faster than the flash guard allows.
+    pub motion: guard::Motion,
+    guards: Vec<guard::Guard>,
+    /// The bars as axross smooths them (the guard follows these); the VU
+    /// meter's likewise.
+    smooth: Vec<f32>,
+    vu_smooth: [f32; 2],
+    vu_guards: [guard::Guard; 2],
+    pulse_guard: guard::Guard,
+    raw_pulse: f32,
 }
 
 impl Default for Analyzer {
@@ -175,6 +187,13 @@ impl Analyzer {
             rate: 48_000,
             last_written: 0,
             external: None,
+            motion: guard::Motion::Calm,
+            guards: vec![guard::Guard::default(); MAX_BARS],
+            smooth: vec![0.0; MAX_BARS],
+            vu_smooth: [0.0; 2],
+            vu_guards: [guard::Guard::default(); 2],
+            pulse_guard: guard::Guard::default(),
+            raw_pulse: 0.0,
         };
         a.resize(32, 48_000);
         a
@@ -261,7 +280,7 @@ impl Analyzer {
         self.last_written = written;
         let live = live && frames >= 256;
         if live {
-            self.time += dt as f64;
+            self.time += (dt * self.motion.pace()) as f64;
             self.spectrum(tap);
         } else {
             self.raw.fill(0.0);
@@ -272,12 +291,15 @@ impl Analyzer {
         let fall = options.peak_fall as f32 / 100.0 * dt;
         for i in 0..n {
             let value = self.raw[i];
-            let level = self.bars[i];
-            self.bars[i] = if value > level {
+            let level = self.smooth[i];
+            let smoothed = if value > level {
                 value
             } else {
                 level * keep + value * (1.0 - keep)
             };
+            self.smooth[i] = smoothed;
+            // (the flash guard: no faster to and fro than it allows)
+            self.bars[i] = self.guards[i].step(smoothed, dt, self.motion);
             self.peaks[i] = self.bars[i].max(self.peaks[i] - fall);
         }
         self.bass =
@@ -304,6 +326,8 @@ impl Analyzer {
         self.phase += (self.phase_target - self.phase) * follow;
 
         self.samples(tap, frames, live, dt);
+        // (the beat's own pulse, then the guarded one the faces see)
+        self.beat.pulse = self.raw_pulse;
         if let Some(r) = self.external {
             self.take(&r);
         } else if live && new > 0 {
@@ -312,6 +336,8 @@ impl Analyzer {
             self.beat.push(tap, new, rate);
         }
         self.beat.frame(dt, live);
+        self.raw_pulse = self.beat.pulse;
+        self.beat.pulse = self.pulse_guard.step(self.raw_pulse, dt, self.motion);
         self.fine.external = self.external.map(|r| (r.keys, r.chroma));
         if needs.fine && live {
             self.fine.update(tap, rate, dt);
@@ -445,11 +471,13 @@ impl Analyzer {
         // second; its peak falls 0.01 a 30th
         let keep = 0.85f32.powf(dt * 30.0);
         for c in 0..2 {
-            self.vu[c] = if rms[c] > self.vu[c] {
+            self.vu_smooth[c] = if rms[c] > self.vu_smooth[c] {
                 rms[c]
             } else {
-                self.vu[c] * keep + rms[c] * (1.0 - keep)
+                self.vu_smooth[c] * keep + rms[c] * (1.0 - keep)
             };
+            // (the meter's bars light half the picture: guarded)
+            self.vu[c] = self.vu_guards[c].step(self.vu_smooth[c], dt, self.motion);
             self.vu_peak[c] = peaks[c].max(self.vu_peak[c] - 0.3 * dt);
         }
         let follow = 1.0 - (-dt * 6.0).exp();
@@ -540,7 +568,10 @@ mod tests {
         let tap = sine(48_000, 1000.0, 0.5, 4096);
         let mut a = Analyzer::new();
         let options = VisualOptions::default();
-        run(&mut a, &tap, 4096, &options);
+        // (a few frames: the flash guard lets the bars rise over 60 ms)
+        for _ in 0..8 {
+            run(&mut a, &tap, 4096, &options);
+        }
         let loudest = a
             .bars
             .iter()

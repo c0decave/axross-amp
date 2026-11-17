@@ -667,3 +667,63 @@ fn the_starfield_is_axrosss_unless_asked() {
     assert!(lit[0] < 0.03, "axross's dots: {lit:?}");
     assert!(lit[1] > lit[0] * 2.0, "the trails: {lit:?}");
 }
+
+#[test]
+fn a_shader_face_drawn_small_is_scaled_up_smoothly() {
+    // a quarter of the size each way (a slow renderer): shown four times
+    // larger, it must not stand in blocks - the plain bilinear's kinks
+    // every four pixels (the second difference there and only there)
+    let mut h = faces::harness("plasma", vec2(320.0, 180.0), true, 3.0);
+    h.state_mut().state.gpu.max_pixels = 3600.0;
+    for _ in 0..20 {
+        faces::frame(&mut h);
+        h.render().unwrap();
+    }
+    let img = h.render().unwrap();
+    img.save(shots().join("plasma-small.png")).unwrap();
+    // |second difference| along the rows, by column phase (mod 4)
+    let mut by_phase = [0.0f64; 4];
+    for y in (10..170).step_by(2) {
+        for x in 10..309u32 {
+            let v = |x: u32| {
+                let p = img.get_pixel(x, y);
+                p[0] as f64 + p[1] as f64 + p[2] as f64
+            };
+            by_phase[(x % 4) as usize] += (v(x + 1) - 2.0 * v(x) + v(x - 1)).abs();
+        }
+    }
+    let (most, least) = (
+        by_phase.iter().cloned().fold(0.0, f64::max),
+        by_phase.iter().cloned().fold(f64::MAX, f64::min),
+    );
+    assert!(most / least < 1.6, "blocks: {by_phase:?}");
+}
+
+#[test]
+fn the_cover_face_without_a_cover_is_a_picture_not_a_flat_square() {
+    // it was a giant note on a flat mustard square: two fifths of the
+    // picture one colour
+    let mut h = faces::harness("cover", vec2(620.0, 300.0), true, 3.0);
+    h.state_mut().without_cover = true;
+    h.state_mut().cover = None;
+    for _ in 0..20 {
+        faces::frame(&mut h);
+    }
+    let img = h.render().unwrap();
+    img.save(shots().join("cover-none.png")).unwrap();
+    let mut counts = std::collections::HashMap::new();
+    for p in img.pixels() {
+        *counts
+            .entry([p[0] / 4, p[1] / 4, p[2] / 4])
+            .or_insert(0usize) += 1;
+    }
+    let total = (img.width() * img.height()) as f32;
+    let flat = counts
+        .iter()
+        .filter(|(c, _)| c.iter().map(|v| *v as u32).sum::<u32>() > 30)
+        .map(|(_, n)| *n)
+        .max()
+        .unwrap_or(0) as f32
+        / total;
+    assert!(flat < 0.15, "{flat} of the picture one (light) colour");
+}

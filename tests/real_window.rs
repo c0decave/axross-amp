@@ -219,7 +219,6 @@ fn in_a_real_window_it_keeps_its_frame_rate_and_rests_when_the_music_stops() {
         ));
         let cap = match (r.slow, face) {
             (true, "cover") => 4.0,
-            (false, "cover") => 8.0,
             (true, _) => 12.0,
             _ => 30.0,
         };

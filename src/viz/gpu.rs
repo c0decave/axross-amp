@@ -1291,15 +1291,15 @@ fn fire(u: &Uniforms, uv: [f32; 2], aspect: f32) -> V3 {
     let t = u.time();
     let y = 1.0 - uv[1];
     let x = uv[0] * aspect;
-    let turb = fbm([x * 3.0, y * 2.0 - t * (1.6 + 1.2 * u.energy())]);
-    let lick = fbm([x * 7.0 + 3.0, y * 4.0 - t * 3.2]);
+    let turb = fbm([x * 3.0, y * 2.0 - t * (1.0 + 0.6 * u.energy())]);
+    let lick = fbm([x * 5.0 + 3.0, y * 3.0 - t * 1.6]);
     let height = 0.5 + 0.4 * u.band(uv[0] * 0.7) + 0.15 * u.pulse();
     let shape = 1.0 - y / height.max(0.05);
     let heat = (shape * 0.85 + (turb - 0.5) * 1.2 + (lick - 0.5) * 0.6 * (1.0 - y)).clamp(0.0, 1.0);
     let h = heat.powf(1.4);
     let mut col = mix3(
-        [0.02, 0.0, 0.0],
-        [0.55, 0.05, 0.0],
+        [0.02, 0.008, 0.006],
+        [0.55, 0.17, 0.03],
         smoothstep(0.0, 0.35, h),
     );
     col = mix3(col, [0.95, 0.35, 0.02], smoothstep(0.3, 0.6, h));
@@ -1307,7 +1307,7 @@ fn fire(u: &Uniforms, uv: [f32; 2], aspect: f32) -> V3 {
     col = mix3(col, [1.0, 0.97, 0.85], smoothstep(0.85, 1.0, h));
     let tinted = mul(col, add([0.6; 3], scale(u.colour(3), 0.8)));
     add(
-        mix3(col, tinted, 0.25),
+        mix3(col, tinted, 0.1),
         scale(u.colour(0), (1.0 - smoothstep(0.0, 0.2, h)) * 0.6),
     )
 }

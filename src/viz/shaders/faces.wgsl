@@ -145,19 +145,22 @@ fn fire(uv: vec2<f32>, aspect: f32) -> vec3<f32> {
     let t = u.t.x;
     let y = 1.0 - uv.y;
     let x = uv.x * aspect;
-    let turb = fbm(vec2<f32>(x * 3.0, y * 2.0 - t * (1.6 + 1.2 * u.t.z)));
-    let lick = fbm(vec2<f32>(x * 7.0 + 3.0, y * 4.0 - t * 3.2));
+    // (flames lick slowly: a fast flicker of red is what a photosensitive
+    // eye cannot bear)
+    let turb = fbm(vec2<f32>(x * 3.0, y * 2.0 - t * (1.0 + 0.6 * u.t.z)));
+    let lick = fbm(vec2<f32>(x * 5.0 + 3.0, y * 3.0 - t * 1.6));
     let height = 0.5 + 0.4 * band(uv.x * 0.7) + 0.15 * u.t.y;
     let shape = 1.0 - y / max(height, 0.05);
     let heat = clamp(shape * 0.85 + (turb - 0.5) * 1.2 + (lick - 0.5) * 0.6 * (1.0 - y), 0.0, 1.0);
     // a fire's own colours: black, ember, flame, yellow, white
     let h = pow(heat, 1.4);
-    var c = mix(vec3<f32>(0.02, 0.0, 0.0), vec3<f32>(0.55, 0.05, 0.0), smoothstep(0.0, 0.35, h));
+    // (embers orange, not a saturated red)
+    var c = mix(vec3<f32>(0.02, 0.008, 0.006), vec3<f32>(0.55, 0.17, 0.03), smoothstep(0.0, 0.35, h));
     c = mix(c, vec3<f32>(0.95, 0.35, 0.02), smoothstep(0.3, 0.6, h));
     c = mix(c, vec3<f32>(1.0, 0.8, 0.25), smoothstep(0.55, 0.85, h));
     c = mix(c, vec3<f32>(1.0, 0.97, 0.85), smoothstep(0.85, 1.0, h));
     // the scheme's loud colour in the embers, a little
-    return mix(c, c * (0.6 + 0.8 * colour(3)), 0.25) + colour(0) * (1.0 - smoothstep(0.0, 0.2, h)) * 0.6;
+    return mix(c, c * (0.6 + 0.8 * colour(3)), 0.1) + colour(0) * (1.0 - smoothstep(0.0, 0.2, h)) * 0.6;
 }
 
 fn metaballs(p: vec2<f32>) -> vec3<f32> {
@@ -480,6 +483,30 @@ fn face_colour(uv: vec2<f32>, aspect: f32, pixel: f32) -> vec3<f32> {
     return clamp(c, vec3<f32>(0.0), vec3<f32>(1.0));
 }
 
+// The data texture at uv by a cubic B-spline: four bilinear fetches, each
+// weighing two texels on each axis.
+fn smooth_sample(uv: vec2<f32>) -> vec4<f32> {
+    let size = vec2<f32>(textureDimensions(data));
+    let p = uv * size - 0.5;
+    let i = floor(p);
+    let f = p - i;
+    let f2 = f * f;
+    let f3 = f2 * f;
+    let w0 = (1.0 - f) * (1.0 - f) * (1.0 - f) / 6.0;
+    let w1 = (4.0 - 6.0 * f2 + 3.0 * f3) / 6.0;
+    let w2 = (1.0 + 3.0 * f + 3.0 * f2 - 3.0 * f3) / 6.0;
+    let w3 = f3 / 6.0;
+    let g0 = w0 + w1;
+    let g1 = w2 + w3;
+    let at0 = (i - 1.0 + w1 / g0 + 0.5) / size;
+    let at1 = (i + 1.0 + w3 / g1 + 0.5) / size;
+    let s00 = textureSampleLevel(data, data_sampler, vec2<f32>(at0.x, at0.y), 0.0);
+    let s10 = textureSampleLevel(data, data_sampler, vec2<f32>(at1.x, at0.y), 0.0);
+    let s01 = textureSampleLevel(data, data_sampler, vec2<f32>(at0.x, at1.y), 0.0);
+    let s11 = textureSampleLevel(data, data_sampler, vec2<f32>(at1.x, at1.y), 0.0);
+    return (s00 * g0.x + s10 * g1.x) * g0.y + (s01 * g0.x + s11 * g1.x) * g1.y;
+}
+
 @fragment
 fn fs_main(in: Out) -> @location(0) vec4<f32> {
     let px = in.position.xy;
@@ -490,8 +517,9 @@ fn fs_main(in: Out) -> @location(0) vec4<f32> {
     var c: vec3<f32>;
     var a = 1.0;
     if face == 14 {
-        // a face drawn smaller (a slow GPU), shown scaled up
-        let t = textureSampleLevel(data, data_sampler, uv, 0.0);
+        // a face drawn smaller (a slow GPU), shown scaled up - smoothly (a
+        // cubic B-spline: no blocks, no diamonds of the plain bilinear)
+        let t = smooth_sample(uv);
         c = t.rgb;
         a = t.a;
     } else {

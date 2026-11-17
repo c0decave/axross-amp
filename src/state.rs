@@ -170,6 +170,10 @@ pub struct AmpSettings {
     /// The starfield and the stereo scope with trails and glow (not as
     /// axross draws them).
     pub classic_plus: bool,
+    /// How the pictures move: "calm" (flash-safe, the default) or
+    /// "intense" (livelier, still never more than three flashes a second;
+    /// chosen only after a photosensitivity warning).
+    pub motion: String,
 }
 
 /// The loudness targets offered: LUFS and what aims at it.
@@ -192,6 +196,7 @@ impl Default for AmpSettings {
             waterfall_hd: true,
             fade_on_skip: false,
             classic_plus: false,
+            motion: "calm".into(),
         }
     }
 }
@@ -251,6 +256,9 @@ pub fn read_amp(path: &Path) -> AmpSettings {
     if let Some(on) = map.get("classic_plus").and_then(Value::as_bool) {
         settings.classic_plus = on;
     }
+    if let Some(m) = text(&map, "motion").filter(|m| m == "calm" || m == "intense") {
+        settings.motion = m;
+    }
     settings
 }
 
@@ -275,6 +283,7 @@ pub fn write_amp(path: &Path, settings: &AmpSettings) -> std::io::Result<()> {
     map.insert("waterfall_hd".into(), json!(settings.waterfall_hd));
     map.insert("fade_on_skip".into(), json!(settings.fade_on_skip));
     map.insert("classic_plus".into(), json!(settings.classic_plus));
+    map.insert("motion".into(), json!(settings.motion));
     write_object(path, &map)
 }
 
@@ -800,6 +809,7 @@ mod tests {
             waterfall_hd: false,
             fade_on_skip: true,
             classic_plus: true,
+            motion: "intense".into(),
         };
         write_amp(&path, &settings).unwrap();
         let back = read_amp(&path);
@@ -811,6 +821,8 @@ mod tests {
         assert!(back.fade_on_skip && back.classic_plus);
         let fresh = AmpSettings::default();
         assert!(fresh.waterfall_hd && !fresh.classic_plus && !fresh.fade_on_skip);
+        assert_eq!(back.motion, "intense");
+        assert_eq!(fresh.motion, "calm", "flash-safe by default");
         assert!(AmpSettings::default().cover_colours);
         assert_eq!(back.replay_gain, "album");
         assert_eq!(back.preamp_db, 15.0);

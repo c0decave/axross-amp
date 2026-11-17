@@ -991,11 +991,19 @@ fn one(f: &Frame<'_>, key: &'static str, state: &mut VizState, opacity: f32, sec
         .painter
         .with_clip_rect(inner.intersect(f.painter.clip_rect()));
     clipped.multiply_opacity(opacity);
+    // (the pictures' own motion at the pace the motion setting asks for:
+    // calm, slower; axross's faces as axross moves them)
+    let dt = if face.group == Group::Generative {
+        f.dt * f.a.motion.pace()
+    } else {
+        f.dt
+    };
     let frame = Frame {
         rect: inner,
         painter: &clipped,
         opacity,
         second,
+        dt,
         ..*f
     };
     match face.group {

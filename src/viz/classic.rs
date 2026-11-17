@@ -75,6 +75,11 @@ pub struct State {
     /// that quiet or near-mono music still fills them.
     scope_peak: f32,
     figure_peak: f32,
+    /// The scope's shown height (guarded: noise in bursts made it flash),
+    /// and its last loud wave (kept, fading, when the sound stops short).
+    scope_guard: crate::analyzer::guard::Guard,
+    scope_last: Vec<f32>,
+    scope_last_height: f32,
 }
 
 /// A scope's gain for the highest sample lately `peak` (kept up to date,
@@ -1021,28 +1026,72 @@ fn kaleidoscope(f: &Frame<'_>, g: Area, cv: &mut Canvas) {
     });
 }
 
+/// Points of the scope's trace kept (its last loud one, fading).
+const SCOPE_KEPT: usize = 1024;
+
 fn scope(f: &Frame<'_>, g: Area, cv: &mut Canvas, st: &mut State) {
     let (a, s) = (f.a, f.s);
     let mid = g.h / 2.0;
     let n = a.mono.len();
     let loudest = a.mono.iter().fold(0.0f32, |m, v| m.max(v.abs()));
     let gain = auto_gain(&mut st.scope_peak, loudest, f.dt);
+    // the wave's height as shown no faster to and fro than the flash guard
+    // allows: rising, the wave is scaled down to it; when the sound stops
+    // short, the last loud wave stays and fades (it does not vanish at once)
+    let height = (loudest * gain).min(1.0);
+    let shown_height = st.scope_guard.step(height, f.dt, a.motion);
+    let scale = if height > 1e-4 {
+        gain * (shown_height / height).min(1.0)
+    } else {
+        gain
+    };
+    if st.scope_last.len() != SCOPE_KEPT {
+        st.scope_last = vec![0.0; SCOPE_KEPT];
+        st.scope_last_height = 0.0;
+    }
+    let points = (g.w as usize).clamp(2, SCOPE_KEPT);
+    let start = (1..n / 2)
+        .find(|&i| a.mono[i - 1] <= 0.0 && a.mono[i] > 0.0)
+        .unwrap_or(0);
+    let wave = &a.mono[start.min(n)..(start + n / 2).min(n)];
+    // (while the guard holds the height - the wave would come and go
+    // faster than it allows - the last wave it let through is shown, as
+    // tall as it says; a new one only once they agree)
+    let fading = (shown_height - height).abs() > 0.03 && st.scope_last_height > 1e-3;
+    if !fading && wave.len() >= 2 && height > 0.0 {
+        for p in 0..points {
+            let k = p * (wave.len() - 1) / (points - 1);
+            st.scope_last[p] = (wave[k] * scale).clamp(-1.0, 1.0);
+        }
+        st.scope_last_height = shown_height.max(1e-3);
+    }
+    let kept = &st.scope_last;
+    let kept_height = st.scope_last_height;
     cv.draw(f.painter, |pen| {
         pen.rect(g.r(0.0, mid - 0.5, g.w, 1.0), s.grid());
-        if n < 4 {
+        if n < 4 || wave.len() < 2 {
+            return;
+        }
+        // the held wave: the last let through, as tall as the guard says
+        if fading {
+            pen.points.clear();
+            let k = shown_height / kept_height;
+            for (p, v) in kept.iter().take(points).enumerate() {
+                pen.points.push(g.p(
+                    p as f32 / (points - 1) as f32 * (g.w - 1.0),
+                    mid - v * k * (mid - 2.0),
+                ));
+            }
+            pen.line(TRACE, s.trace());
             return;
         }
         // (here: from a rising zero crossing - the wave stands still -
         // half the samples, a point a pixel at most)
-        let start = (1..n / 2)
-            .find(|&i| a.mono[i - 1] <= 0.0 && a.mono[i] > 0.0)
-            .unwrap_or(0);
-        let shown = &a.mono[start..(start + n / 2).min(n)];
-        let points = (g.w as usize).clamp(2, shown.len());
+        let points = points.min(wave.len());
         pen.points.clear();
         for p in 0..points {
-            let k = p * (shown.len() - 1) / (points - 1);
-            let v = (shown[k] * gain).clamp(-1.0, 1.0);
+            let k = p * (wave.len() - 1) / (points - 1);
+            let v = (wave[k] * scale).clamp(-1.0, 1.0);
             pen.points.push(g.p(
                 p as f32 / (points - 1) as f32 * (g.w - 1.0),
                 mid - v * (mid - 2.0),

@@ -158,3 +158,39 @@ fn the_menus_lowest_rows_take_their_clicks() {
     settle(&mut h, 2);
     assert!(!h.state().snapshot().playlist_open, "the click was missed");
 }
+
+#[test]
+fn intense_motion_only_after_the_photosensitivity_warning() {
+    // calm (flash-safe) by default; "Intense…" shows a warning first, and
+    // only its own button turns it on
+    let dir = folder("visual-motion");
+    let files = tracks(&dir, &["a.wav"], 3.0);
+    let mut h = harness(&dir, files);
+    assert!(until(&mut h, 5.0, |a| a.is_loaded()));
+    settle(&mut h, 2);
+    assert_eq!(h.state().motion(), "calm");
+    h.get_by_label("⚙").click();
+    settle(&mut h, 3);
+    let options = h
+        .get_by_role_and_label(egui::accesskit::Role::Button, "Options")
+        .rect();
+    h.hover_at(options.center());
+    settle(&mut h, 2);
+    if h.query_by_label("Intense…").is_none() {
+        h.get_by_role_and_label(egui::accesskit::Role::Button, "Options")
+            .click();
+        settle(&mut h, 3);
+    }
+    h.get_by_label("Intense…").click();
+    settle(&mut h, 3);
+    assert!(h.query_by_label("Photosensitivity warning").is_some());
+    assert_eq!(
+        h.state().motion(),
+        "calm",
+        "not before the warning is answered"
+    );
+    h.get_by_label("Keep calm").click();
+    settle(&mut h, 2);
+    assert_eq!(h.state().motion(), "calm");
+    assert!(h.query_by_label("Photosensitivity warning").is_none());
+}
