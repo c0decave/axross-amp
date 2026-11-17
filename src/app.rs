@@ -19,6 +19,8 @@ const ACCENT: Color32 = Color32::from_rgb(0x4c, 0x9a, 0xff);
 const MUTED: Color32 = Color32::from_rgb(0x8b, 0x94, 0x9e);
 const PANEL: Color32 = Color32::from_rgb(0x16, 0x1b, 0x22);
 const SAVE_EVERY: Duration = Duration::from_secs(3);
+/// A track that could not be played (axross's red).
+const BROKEN: Color32 = Color32::from_rgb(0xe0, 0x5a, 0x4b);
 
 #[derive(PartialEq)]
 enum Picking {
@@ -50,8 +52,21 @@ pub struct App {
     /// (which shows it large and leaves the face as it is).
     pending_click: Option<f64>,
     generation: u64,
+    /// The last generation handed out (the current track's or the queued one's).
+    generations: u64,
     loaded: Option<u64>,
+    /// The track asked for is still opening (a stream connects).
+    opening: bool,
     failures: usize,
+    /// Tracks that could not be played, by path: why (shown in the playlist).
+    broken: std::collections::HashMap<String, String>,
+    /// The track named to the engine to follow: (index, path, generation).
+    queued: Option<(usize, String, u64)>,
+    /// What a radio says it plays, and what the engine tells meanwhile.
+    stream_title: String,
+    notice: String,
+    /// The window's title as last set.
+    window_title: String,
     /// The track playing came by itself (the one before ended): a track that
     /// cannot be played is then skipped; one the user chose stays, with why.
     automatic: bool,
@@ -89,6 +104,9 @@ pub struct Setup {
     /// Offer the player to the desktop (MPRIS on the session D-Bus: media
     /// keys, the desktop's sound menu).
     pub desktop: bool,
+    /// No sound device: the sound is taken by whoever calls
+    /// [`crate::engine::Shared::render`] (tests).
+    pub headless_audio: bool,
 }
 
 impl Default for Setup {
@@ -96,6 +114,7 @@ impl Default for Setup {
         Setup {
             config_dir: state::config_dir(),
             desktop: true,
+            headless_audio: false,
         }
     }
 }
@@ -109,7 +128,12 @@ impl App {
     pub fn with_setup(cc: &eframe::CreationContext<'_>, args: Vec<String>, setup: Setup) -> Self {
         style(&cc.egui_ctx);
         let ctx = cc.egui_ctx.clone();
-        let engine = Engine::start(move || ctx.request_repaint());
+        let wake = move || ctx.request_repaint();
+        let engine = if setup.headless_audio {
+            Engine::start_headless(wake)
+        } else {
+            Engine::start(wake)
+        };
         let state_path = setup.config_dir.join(state::STATE_FILE);
         let audio_path = setup.config_dir.join(state::AUDIO_FILE);
         let saved = state::read_state(&state_path);
@@ -151,8 +175,15 @@ impl App {
             big_visual: false,
             pending_click: None,
             generation: 0,
+            generations: 0,
             loaded: None,
+            opening: false,
             failures: 0,
+            broken: Default::default(),
+            queued: None,
+            stream_title: String::new(),
+            notice: String::new(),
+            window_title: String::new(),
             automatic: false,
             duration: None,
             seek_drag: None,
@@ -316,13 +347,20 @@ impl App {
         let Some(track) = self.playlist.tracks.get(index).cloned() else {
             return;
         };
-        self.generation += 1;
+        self.generation = self.new_generation();
         self.automatic = false;
+        self.opening = true;
+        self.queued = None;
         self.playlist.play(index);
         self.selected = Some(index);
         self.info = TrackInfo::default();
         self.cover = None;
+        self.stream_title.clear();
+        self.notice.clear();
         self.duration = (track.duration_ms > 0).then(|| track.duration_ms as f64 / 1000.0);
+        if playlist::is_stream(&track.path) {
+            self.status = format!("Connecting to {}…", host_of(&track.path));
+        }
         self.engine.send(Command::Load {
             path: track.path,
             start_ms,
@@ -330,6 +368,87 @@ impl App {
             generation: self.generation,
         });
         self.dirty = true;
+    }
+
+    fn new_generation(&mut self) -> u64 {
+        self.generations += 1;
+        self.generations
+    }
+
+    /// Name the track that follows the current one to the engine (it
+    /// decodes it on without a gap), whenever that changes.
+    fn sync_queue(&mut self) {
+        let want = if self.loaded == Some(self.generation) && !self.current_is_stream() {
+            self.playlist
+                .peek_next()
+                .and_then(|i| Some((i, self.playlist.tracks.get(i)?.path.clone())))
+                .filter(|(_, p)| !playlist::is_stream(p))
+        } else {
+            None
+        };
+        let same = match (&self.queued, &want) {
+            (Some((i, p, _)), Some((wi, wp))) => i == wi && p == wp,
+            (None, None) => true,
+            _ => false,
+        };
+        if same {
+            return;
+        }
+        self.queued = want.map(|(i, p)| (i, p, self.new_generation()));
+        self.engine
+            .send(Command::Queue(self.queued.as_ref().map(|(_, p, g)| {
+                crate::engine::Queued {
+                    path: p.clone(),
+                    generation: *g,
+                }
+            })));
+    }
+
+    /// The details of the track that plays now.
+    fn take_info(&mut self, ctx: &egui::Context, info: TrackInfo) {
+        self.loaded = Some(self.generation);
+        self.opening = false;
+        self.failures = 0;
+        self.duration = info.duration.or(self.duration);
+        if let Some(i) = self.playlist.current
+            && let Some(track) = self.playlist.tracks.get_mut(i)
+        {
+            self.broken.remove(&track.path);
+            if track.title.is_empty() {
+                if !info.title.is_empty() {
+                    track.title = if info.artist.is_empty() {
+                        info.title.clone()
+                    } else {
+                        format!("{} – {}", info.artist, info.title)
+                    };
+                } else if !info.station.is_empty() {
+                    track.title = info.station.clone();
+                }
+            }
+            if let Some(d) = info.duration {
+                track.duration_ms = (d * 1000.0) as u64;
+            }
+        }
+        self.cover = info
+            .cover
+            .as_deref()
+            .and_then(|bytes| cover_texture(ctx, bytes));
+        self.info = info;
+        // (a note about a track skipped on the way stays)
+        if !(self.automatic && self.status.ends_with("skipped.")) {
+            self.status.clear();
+        }
+        self.dirty = true;
+    }
+
+    fn stop(&mut self) {
+        self.engine.send(Command::Stop);
+        if self.current_is_stream() {
+            // (the engine lets the stream go: Play connects anew)
+            self.loaded = None;
+            self.opening = false;
+            self.stream_title.clear();
+        }
     }
 
     pub fn playing(&self) -> bool {
@@ -342,7 +461,7 @@ impl App {
     fn toggle_play(&mut self) {
         if self.playing() {
             self.engine.send(Command::Pause);
-        } else if self.loaded.is_some() && self.loaded == Some(self.generation) {
+        } else if self.loaded == Some(self.generation) || self.opening {
             self.engine.send(Command::Play);
         } else if let Some(i) = self
             .playlist
@@ -364,7 +483,7 @@ impl App {
                 self.automatic = ended;
             }
             None => {
-                self.engine.send(Command::Stop);
+                self.stop();
                 self.status = "End of the playlist".into();
             }
         }
@@ -411,47 +530,74 @@ impl App {
             match event {
                 Event::Output(name) => self.output = name,
                 Event::Loaded { generation, info } if generation == self.generation => {
-                    self.loaded = Some(generation);
-                    self.failures = 0;
-                    self.duration = info.duration.or(self.duration);
-                    if let Some(i) = self.playlist.current
-                        && let Some(track) = self.playlist.tracks.get_mut(i)
+                    self.take_info(ctx, info);
+                }
+                Event::Advanced { generation, info } => {
+                    // the queued track is heard: it is the current one now
+                    let Some((index, path, queued)) = self.queued.take() else {
+                        continue;
+                    };
+                    if queued != generation {
+                        continue;
+                    }
+                    let index = if self
+                        .playlist
+                        .tracks
+                        .get(index)
+                        .is_some_and(|t| t.path == path)
                     {
-                        if !info.title.is_empty() && track.title.is_empty() {
-                            track.title = if info.artist.is_empty() {
-                                info.title.clone()
-                            } else {
-                                format!("{} – {}", info.artist, info.title)
-                            };
-                        }
-                        if let Some(d) = info.duration {
-                            track.duration_ms = (d * 1000.0) as u64;
+                        Some(index)
+                    } else {
+                        self.playlist.tracks.iter().position(|t| t.path == path)
+                    };
+                    self.generation = generation;
+                    self.automatic = true;
+                    if let Some(index) = index {
+                        let before = self.playlist.current;
+                        self.playlist.play(index);
+                        if self.selected == before {
+                            self.selected = Some(index); // (the selection follows the music)
                         }
                     }
-                    self.cover = info
-                        .cover
-                        .as_deref()
-                        .and_then(|bytes| cover_texture(ctx, bytes));
-                    self.info = info;
-                    self.status.clear();
-                    self.dirty = true;
+                    self.duration = None;
+                    self.stream_title.clear();
+                    self.take_info(ctx, info);
                 }
                 Event::Ended { generation } if generation == self.generation => self.next(true),
+                Event::StreamTitle { generation, title } if generation == self.generation => {
+                    self.stream_title = title;
+                }
+                Event::Notice {
+                    generation,
+                    message,
+                } if generation == self.generation => self.notice = message,
                 Event::Failed {
                     generation,
                     message,
                 } if generation == self.generation => {
-                    let name = self
+                    self.opening = false;
+                    self.notice.clear();
+                    let track = self
                         .playlist
                         .current
-                        .and_then(|i| self.playlist.tracks.get(i))
+                        .and_then(|i| self.playlist.tracks.get(i));
+                    let name = track
                         .map(|t| playlist::default_title(&t.path))
                         .unwrap_or_default();
-                    self.status = format!("Cannot play {name}: {message}");
+                    if let Some(t) = track {
+                        self.broken.insert(t.path.clone(), message.clone());
+                    }
                     self.failures += 1;
                     // playing on its own: the next one - unless every track failed in a row
                     if self.automatic && self.failures < self.playlist.tracks.len() {
+                        self.status = format!("Cannot play {name}: {message} – skipped.");
                         self.next(true);
+                    } else if self.automatic {
+                        self.status = format!(
+                            "Cannot play {name}: {message}. No track in the list could be played."
+                        );
+                    } else {
+                        self.status = format!("Cannot play {name}: {message}");
                     }
                 }
                 _ => {}
@@ -700,32 +846,10 @@ impl App {
                         );
                     }
                     ui.vertical(|ui| {
-                        let track = self
-                            .playlist
-                            .current
-                            .and_then(|i| self.playlist.tracks.get(i));
-                        let title = if !self.info.title.is_empty() {
-                            self.info.title.clone()
-                        } else {
-                            track
-                                .map(|t| {
-                                    if t.title.is_empty() {
-                                        playlist::default_title(&t.path)
-                                    } else {
-                                        t.title.clone()
-                                    }
-                                })
-                                .unwrap_or_else(|| "Nothing playing".into())
-                        };
+                        let (title, by) = self.now_playing_text();
                         ui.add(
                             egui::Label::new(RichText::new(title).size(18.0).strong()).truncate(),
                         );
-                        let by = [self.info.artist.as_str(), self.info.album.as_str()]
-                            .iter()
-                            .filter(|s| !s.is_empty())
-                            .cloned()
-                            .collect::<Vec<_>>()
-                            .join(" · ");
                         if !by.is_empty() {
                             ui.add(egui::Label::new(RichText::new(by).color(MUTED)).truncate());
                         }
@@ -742,6 +866,83 @@ impl App {
                     });
                 });
             });
+    }
+
+    /// What plays now: (the title, who / where from).
+    fn now_playing_text(&self) -> (String, String) {
+        let track = self
+            .playlist
+            .current
+            .and_then(|i| self.playlist.tracks.get(i));
+        let stream = track.is_some_and(|t| playlist::is_stream(&t.path));
+        if stream {
+            // a radio: what it says it plays, by the station's name
+            let station = if !self.info.station.is_empty() {
+                self.info.station.clone()
+            } else {
+                track.map(|t| t.title.clone()).unwrap_or_default()
+            };
+            let url = track.map(|t| t.path.clone()).unwrap_or_default();
+            let station = if station.is_empty() { url } else { station };
+            let mut by = vec![];
+            if !self.info.station_genre.is_empty() {
+                by.push(self.info.station_genre.clone());
+            }
+            return if self.stream_title.is_empty() {
+                (station, by.join(" · "))
+            } else {
+                by.insert(0, station);
+                (self.stream_title.clone(), by.join(" · "))
+            };
+        }
+        let title = if !self.info.title.is_empty() {
+            self.info.title.clone()
+        } else {
+            track
+                .map(|t| {
+                    if t.title.is_empty() {
+                        playlist::default_title(&t.path)
+                    } else {
+                        t.title.clone()
+                    }
+                })
+                .unwrap_or_else(|| "Nothing playing".into())
+        };
+        let by = [self.info.artist.as_str(), self.info.album.as_str()]
+            .iter()
+            .filter(|s| !s.is_empty())
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(" · ");
+        (title, by)
+    }
+
+    /// The window's title: the program and what plays (as axross-amp's).
+    fn window_title(&mut self, ctx: &egui::Context) {
+        let title = if self.playlist.current.is_some() {
+            let (title, by) = self.now_playing_text();
+            if by.is_empty() {
+                format!("axross-amp – {title}")
+            } else {
+                format!("axross-amp – {title} – {by}")
+            }
+        } else {
+            "axross-amp".to_owned()
+        };
+        if title != self.window_title {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
+            self.window_title = title;
+        }
+    }
+
+    /// The window's title (tests).
+    pub fn title(&self) -> &str {
+        &self.window_title
+    }
+
+    /// Why the track at `path` could not be played, if it could not.
+    pub fn broken(&self, path: &str) -> Option<&str> {
+        self.broken.get(path).map(String::as_str)
     }
 
     fn visual(&mut self, ui: &mut Ui, height: f32) {
@@ -861,7 +1062,7 @@ impl App {
                 .on_hover_text("Stop")
                 .clicked()
             {
-                self.engine.send(Command::Stop);
+                self.stop();
             }
             if ui
                 .add(egui::Button::new(RichText::new("⏭").size(18.0)).min_size(big))
@@ -1104,7 +1305,10 @@ impl App {
                             };
                             ui.painter().rect_filled(rect, 4.0, fill);
                         }
-                        let colour = if current {
+                        let broken = self.broken.get(&track.path);
+                        let colour = if broken.is_some() {
+                            BROKEN
+                        } else if current {
                             Color32::WHITE
                         } else {
                             Color32::from_rgb(0xc9, 0xd1, 0xd9)
@@ -1142,6 +1346,12 @@ impl App {
                             font,
                             colour,
                         );
+                        // the path, and why it could not be played (axross's tooltip)
+                        let tip = match broken {
+                            Some(why) => format!("{}\nCannot play: {why}", track.path),
+                            None => track.path.clone(),
+                        };
+                        let response = response.on_hover_text(tip);
                         if response.clicked() {
                             self.selected = Some(i);
                         }
@@ -1288,6 +1498,8 @@ impl eframe::App for App {
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         self.handle_events(&ctx);
+        self.sync_queue();
+        self.window_title(&ctx);
         self.gate = self.key_gate(&ctx);
         self.keys(ui);
         // dropped files and folders
@@ -1321,7 +1533,12 @@ impl eframe::App for App {
             )
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
-                    ui.label(RichText::new(&self.status).small().color(MUTED));
+                    let line = if self.notice.is_empty() {
+                        &self.status
+                    } else {
+                        &self.notice
+                    };
+                    ui.add(egui::Label::new(RichText::new(line).small().color(MUTED)).truncate());
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         ui.label(RichText::new(&self.output).small().color(MUTED));
                     });
@@ -1432,6 +1649,13 @@ fn band_name(hz: f32) -> String {
     } else {
         format!("{hz}")
     }
+}
+
+/// The host of an http(s) URL (for "Connecting to …").
+fn host_of(url: &str) -> String {
+    let rest = url.split_once("://").map(|(_, r)| r).unwrap_or(url);
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or(rest);
+    authority.rsplit('@').next().unwrap_or(authority).to_owned()
 }
 
 pub fn clock(secs: f64) -> String {

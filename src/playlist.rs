@@ -243,6 +243,17 @@ impl Playlist {
     /// The track after the current one at the end of a track (`ended`) or
     /// on Next: repeat one plays it again only when it ended by itself.
     pub fn next(&mut self, ended: bool) -> Option<usize> {
+        self.choose(ended, true)
+    }
+
+    /// The track that will follow the current one when it ends (what
+    /// `next(true)` will answer), to have it ready: gapless.
+    pub fn peek_next(&mut self) -> Option<usize> {
+        self.current?;
+        self.choose(true, false)
+    }
+
+    fn choose(&mut self, ended: bool, take: bool) -> Option<usize> {
         if self.tracks.is_empty() {
             return None;
         }
@@ -265,7 +276,9 @@ impl Playlist {
         if self.shuffle {
             if self.order.as_ref().is_some_and(Vec::is_empty) {
                 if self.repeat == Repeat::Off && ended {
-                    self.order = None; // (every track played once: the end; Next starts anew)
+                    if take {
+                        self.order = None; // (every track played once: the end; Next starts anew)
+                    }
                     return None;
                 }
                 self.order = None;
@@ -273,7 +286,12 @@ impl Playlist {
             if self.order.is_none() {
                 self.reshuffle();
             }
-            if let Some(i) = self.order.as_mut().and_then(Vec::pop) {
+            let chosen = if take {
+                self.order.as_mut().and_then(Vec::pop)
+            } else {
+                self.order.as_ref().and_then(|o| o.last().copied())
+            };
+            if let Some(i) = chosen {
                 return Some(i);
             }
             // a round of one track (the current one): it again only with repeat
@@ -565,6 +583,28 @@ mod tests {
         let current = p.current.unwrap();
         p.remove(current);
         assert_eq!(p.current, None);
+    }
+
+    #[test]
+    fn the_track_to_follow_is_known_ahead() {
+        for shuffle in [false, true] {
+            for repeat in [Repeat::Off, Repeat::All, Repeat::One] {
+                let mut p = list(6);
+                p.set_shuffle(shuffle);
+                p.repeat = repeat;
+                p.play(2);
+                for _ in 0..14 {
+                    let peeked = p.peek_next();
+                    assert_eq!(peeked, p.peek_next(), "a second look sees the same");
+                    let next = p.next(true);
+                    assert_eq!(peeked, next, "shuffle {shuffle} repeat {repeat:?}");
+                    match next {
+                        Some(i) => p.play(i),
+                        None => break,
+                    }
+                }
+            }
+        }
     }
 
     #[test]

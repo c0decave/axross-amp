@@ -69,6 +69,7 @@ pub fn harness_sized(dir: &Path, args: Vec<String>, size: egui::Vec2) -> Harness
     let setup = Setup {
         config_dir: dir.join("config"),
         desktop: false,
+        headless_audio: true,
     };
     Harness::builder()
         .with_size(size)
@@ -108,4 +109,43 @@ pub fn key_with(harness: &mut Harness<'_, App>, key: egui::Key, modifiers: egui:
         });
     }
     harness.run_steps(1);
+}
+
+/// The sound card: what the window plays, taken at a device's pace for
+/// `secs` (10 ms at a time, a frame of the window between); returns the
+/// left channel heard.
+pub fn listen(
+    harness: &mut Harness<'_, App>,
+    output: &mut axross_amp::engine::RenderState,
+    secs: f32,
+) -> Vec<f32> {
+    let end = std::time::Instant::now() + std::time::Duration::from_secs_f32(secs);
+    let mut buf = vec![0.0f32; 480 * 2];
+    let mut heard = Vec::new();
+    while std::time::Instant::now() < end {
+        harness.state().engine().shared.render(&mut buf, 2, output);
+        heard.extend(buf.chunks(2).map(|f| f[0]));
+        harness.run_steps(1);
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    heard
+}
+
+/// Runs of silence (8 frames or more) between the first and the last sound.
+pub fn gaps(heard: &[f32]) -> Vec<(usize, usize)> {
+    let first = heard.iter().position(|s| *s != 0.0).unwrap_or(0);
+    let last = heard.iter().rposition(|s| *s != 0.0).unwrap_or(0);
+    let mut out = Vec::new();
+    let mut run = 0;
+    for (i, s) in heard[first..=last].iter().enumerate() {
+        if *s == 0.0 {
+            run += 1;
+        } else {
+            if run >= 8 {
+                out.push((first + i - run, run));
+            }
+            run = 0;
+        }
+    }
+    out
 }
