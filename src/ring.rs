@@ -24,6 +24,13 @@ pub struct Ring {
     /// there were (the reader keeps the count it honoured).
     flush_at: AtomicU64,
     flushes: AtomicU64,
+    /// A cut: frames from..to written but not to be read (taken back),
+    /// as two halves of one u128 would be - the generation tells them apart.
+    cut_from: AtomicU64,
+    cut_to: AtomicU64,
+    cuts: AtomicU64,
+    /// The cuts the reader has seen (honoured, or passed already).
+    cuts_seen: AtomicU64,
 }
 
 impl Ring {
@@ -37,6 +44,10 @@ impl Ring {
             tail: AtomicU64::new(0),
             flush_at: AtomicU64::new(0),
             flushes: AtomicU64::new(0),
+            cut_from: AtomicU64::new(0),
+            cut_to: AtomicU64::new(0),
+            cuts: AtomicU64::new(0),
+            cuts_seen: AtomicU64::new(0),
         }
     }
 
@@ -72,13 +83,19 @@ impl Ring {
         head
     }
 
-    /// Take back what was written from `at` on (not yet read: the reader
-    /// is before it). False when the reader is already past it.
-    pub fn unwrite_to(&self, at: u64) -> bool {
-        if self.tail.load(Ordering::Acquire) > at || at > self.head.load(Ordering::Relaxed) {
+    /// Take back what was written from `at` on: the reader skips it when it
+    /// gets there. The writer never moves back (what the reader may be
+    /// reading is never written over); a reader already past `at` keeps
+    /// what it has. False when the reader is that close (`margin` frames:
+    /// more than it reads at a call) - then nothing is taken back.
+    pub fn cut(&self, at: u64, margin: u64) -> bool {
+        let head = self.head.load(Ordering::Relaxed);
+        if at > head || self.tail.load(Ordering::Acquire) + margin > at {
             return false;
         }
-        self.head.store(at, Ordering::Release);
+        self.cut_from.store(at, Ordering::Relaxed);
+        self.cut_to.store(head, Ordering::Relaxed);
+        self.cuts.fetch_add(1, Ordering::Release);
         true
     }
 
@@ -89,7 +106,18 @@ impl Ring {
             .tail
             .load(Ordering::Acquire)
             .max(self.flush_at.load(Ordering::Relaxed));
-        head.saturating_sub(from)
+        let mut left = head.saturating_sub(from);
+        // (a cut the reader has not reached: not to be heard)
+        if self.cuts.load(Ordering::Acquire) != self.cuts_seen.load(Ordering::Acquire) {
+            let (cf, ct) = (
+                self.cut_from.load(Ordering::Relaxed),
+                self.cut_to.load(Ordering::Relaxed),
+            );
+            if from <= cf {
+                left = left.saturating_sub(ct - cf);
+            }
+        }
+        left
     }
 
     /// Where the next frame written will be read.
@@ -108,17 +136,34 @@ impl Ring {
     /// it has not honoured yet.
     pub fn begin(&self, honoured: u64) -> Reading {
         let flushes = self.flushes.load(Ordering::Acquire);
+        let cuts = self.cuts.load(Ordering::Acquire);
+        let cut = (cuts != self.cuts_seen.load(Ordering::Relaxed)).then(|| {
+            (
+                self.cut_from.load(Ordering::Relaxed),
+                self.cut_to.load(Ordering::Relaxed),
+            )
+        });
+        let tail = self.tail.load(Ordering::Relaxed);
         Reading {
             head: self.head.load(Ordering::Acquire),
-            tail: self.tail.load(Ordering::Relaxed),
+            tail,
             flush: (flushes != honoured).then(|| self.flush_at.load(Ordering::Relaxed)),
             flushes,
+            // (a cut the reader is past already: what it read stays read)
+            cut: cut.filter(|(from, _)| tail <= *from),
+            cuts,
         }
     }
 
     /// The frame at the reading's place, which moves on (None: nothing there
     /// before the end or the flush point).
     pub fn next(&self, r: &mut Reading) -> Option<(f32, f32)> {
+        if let Some((from, to)) = r.cut
+            && r.tail >= from
+        {
+            r.tail = r.tail.max(to);
+            r.cut = None;
+        }
         let limit = r.flush.unwrap_or(r.head);
         if r.tail >= limit {
             return None;
@@ -142,6 +187,10 @@ impl Ring {
     /// The reading done: its place is the ring's.
     pub fn end(&self, r: Reading) {
         self.tail.store(r.tail, Ordering::Release);
+        // (the cut seen: honoured, or passed already)
+        if r.cut.is_none() {
+            self.cuts_seen.store(r.cuts, Ordering::Release);
+        }
     }
 }
 
@@ -151,6 +200,8 @@ pub struct Reading {
     tail: u64,
     pub flush: Option<u64>,
     flushes: u64,
+    cut: Option<(u64, u64)>,
+    cuts: u64,
 }
 
 /// The latest frames played, for the visualizations.
@@ -250,6 +301,52 @@ mod tests {
         ring.end(r);
         assert!(ring.begin(honoured).flush.is_none());
         assert_eq!(ring.read(), at + 1);
+    }
+
+    #[test]
+    fn taking_back_never_writes_over_what_is_read() {
+        // a writer that takes back its last frames now and then, a reader
+        // reading all the while: every frame read is newer than the one
+        // before (a frame written over, a writer gone back below the reader
+        // would show; the old take-back could even panic in debug)
+        let ring = std::sync::Arc::new(Ring::new(4096));
+        let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (r, d) = (ring.clone(), done.clone());
+        let reader = std::thread::spawn(move || {
+            let mut last = -1.0f32;
+            let mut seen = 0usize;
+            while !d.load(Ordering::Relaxed) || r.buffered() > 0 {
+                let mut reading = r.begin(0);
+                for _ in 0..97 {
+                    match r.next(&mut reading) {
+                        Some((v, _)) => {
+                            assert!(v > last, "{v} after {last}");
+                            last = v;
+                            seen += 1;
+                        }
+                        None => break,
+                    }
+                }
+                r.end(reading);
+            }
+            seen
+        });
+        let mut n = 0u64;
+        let mut taken = 0;
+        for round in 0..20_000u64 {
+            let frames: Vec<f32> = (0..32).flat_map(|i| [(n + i) as f32, 0.0]).collect();
+            let mut put = 0;
+            while put < 32 {
+                put += ring.push(&frames[put * 2..]);
+            }
+            n += 32;
+            if round % 7 == 0 && ring.cut(ring.written() - 16, 64) {
+                taken += 1;
+            }
+        }
+        done.store(true, Ordering::Relaxed);
+        let seen = reader.join().unwrap();
+        assert!(taken > 0 && seen > 0, "{taken} cuts, {seen} read");
     }
 
     #[test]

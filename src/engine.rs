@@ -51,6 +51,10 @@ pub static OPEN_DELAY_MS: AtomicU64 = AtomicU64::new(0);
 /// Tests: no output device can be opened (as on a system without sound).
 #[doc(hidden)]
 pub static NO_OUTPUT: AtomicBool = AtomicBool::new(false);
+/// A take-back of the ring keeps clear of the output by this many frames
+/// (more than it reads at a call).
+const CUT_MARGIN: u64 = 16_384;
+
 /// How often the output is tried again while there is none.
 const OUTPUT_RETRY: Duration = Duration::from_secs(5);
 /// Stereo frames of the most recent output the visualizations may read.
@@ -1830,7 +1834,8 @@ impl Player {
         let boundary = self.shared.boundary.load(Ordering::Relaxed);
         if boundary != u64::MAX {
             // its start is in the ring already: taken out of it
-            if !self.shared.ring.unwrite_to(boundary) {
+            // (not when the output is within a call's reading of it)
+            if !self.shared.ring.cut(boundary, CUT_MARGIN) {
                 return false;
             }
             self.staged.clear();
