@@ -27,13 +27,20 @@ pub const STATE_VERSION: i64 = 1;
 pub const MAX_TRACKS: usize = 10_000;
 const MAX_FILE_BYTES: u64 = 16 << 20;
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Track {
     pub path: String,
     /// "" for the default (the file's name); `duration_ms` 0 when unknown -
     /// kept in the file as whole seconds, as axross does.
     pub title: String,
     pub duration_ms: u64,
+    /// From the tags (read in the background; kept in the file under keys
+    /// axross's player does not know - it reads past them): for sorting by
+    /// album and by artist. "" / 0 when unknown.
+    pub artist: String,
+    pub album: String,
+    pub disc: u32,
+    pub track: u32,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -255,6 +262,13 @@ fn int(map: &Map<String, Value>, key: &str) -> Option<i64> {
     map.get(key).and_then(Value::as_i64)
 }
 
+/// A small count (a disc's, a track's number): 0 when there is none.
+fn small(map: &Map<String, Value>, key: &str) -> u32 {
+    int(map, key)
+        .filter(|n| (0..=100_000).contains(n))
+        .unwrap_or(0) as u32
+}
+
 fn boolean(map: &Map<String, Value>, key: &str) -> Option<bool> {
     map.get(key).and_then(Value::as_bool)
 }
@@ -293,6 +307,10 @@ pub fn read_state(path: &Path) -> PlayerState {
                     .filter(|d| d.is_finite() && *d > 0.0)
                     .map(|d| (d.min(1e9) * 1000.0) as u64)
                     .unwrap_or(0),
+                artist: text(obj, "artist").unwrap_or_default(),
+                album: text(obj, "album").unwrap_or_default(),
+                disc: small(obj, "disc"),
+                track: small(obj, "track"),
             });
         }
     }
@@ -400,9 +418,59 @@ pub fn write_state_merged(
             }
         }
     }
+    fit(&mut out);
     write_object(path, &out)?;
     *base = Some(out);
     Ok(kept)
+}
+
+/// axross's player reads its file only up to 4 MiB (a larger one it sets
+/// aside and starts empty): what is written stays below - first without
+/// this program's own track keys, then with as many tracks as fit (as
+/// axross trims, keeping the first ones).
+pub const MAX_STATE_BYTES: usize = 4 * 1024 * 1024;
+
+fn fit(out: &mut Map<String, Value>) {
+    let size = |m: &Map<String, Value>| {
+        serde_json::to_string_pretty(&Value::Object(m.clone()))
+            .map(|t| t.len())
+            .unwrap_or(usize::MAX)
+    };
+    if size(out) <= MAX_STATE_BYTES {
+        return;
+    }
+    if let Some(Value::Array(tracks)) = out.get_mut("tracks") {
+        for t in tracks.iter_mut() {
+            if let Value::Object(entry) = t {
+                entry.retain(|k, _| ["path", "title", "duration"].contains(&k.as_str()));
+            }
+        }
+    }
+    if size(out) <= MAX_STATE_BYTES {
+        return;
+    }
+    let Some(Value::Array(all)) = out.get("tracks").cloned() else {
+        return;
+    };
+    let (mut low, mut high) = (0, all.len());
+    while low < high {
+        let mid = (low + high).div_ceil(2);
+        out.insert("tracks".into(), Value::Array(all[..mid].to_vec()));
+        if size(out) <= MAX_STATE_BYTES {
+            low = mid;
+        } else {
+            high = mid - 1;
+        }
+    }
+    out.insert("tracks".into(), Value::Array(all[..low].to_vec()));
+    if out
+        .get("current")
+        .and_then(Value::as_i64)
+        .is_some_and(|c| c >= low as i64)
+    {
+        out.insert("current".into(), json!(-1));
+        out.insert("position_ms".into(), json!(0));
+    }
 }
 
 /// The keys this program writes, as they are now (`file`: what the file
@@ -413,7 +481,22 @@ fn state_object(state: &PlayerState, file: &Map<String, Value>) -> Map<String, V
         .tracks
         .iter()
         .take(MAX_TRACKS)
-        .map(|t| json!({"path": t.path, "title": t.title, "duration": t.duration_ms / 1000}))
+        .map(|t| {
+            let mut entry =
+                json!({"path": t.path, "title": t.title, "duration": t.duration_ms / 1000});
+            // (what only this program reads: written when known)
+            for (key, value) in [
+                ("artist", json!(t.artist)),
+                ("album", json!(t.album)),
+                ("disc", json!(t.disc)),
+                ("track", json!(t.track)),
+            ] {
+                if value != json!("") && value != json!(0) {
+                    entry[key] = value;
+                }
+            }
+            entry
+        })
         .collect();
     let mut options = file
         .get("visual_options")
@@ -529,7 +612,8 @@ mod tests {
             vec![Track {
                 path: "/m/a.mp3".into(),
                 title: "A".into(),
-                duration_ms: 1_234_000
+                duration_ms: 1_234_000,
+                ..Default::default()
             }]
         );
         assert_eq!(state.current, 0);
@@ -604,6 +688,7 @@ mod tests {
             path: "/m/ours.mp3".into(),
             title: String::new(),
             duration_ms: 0,
+            ..Default::default()
         });
         state.current = 0;
         let mut base = None;
@@ -628,12 +713,68 @@ mod tests {
             path: "/m/new.mp3".into(),
             title: String::new(),
             duration_ms: 0,
+            ..Default::default()
         });
         write_state_merged(&path, &state, &mut base).unwrap();
         assert_eq!(read_state(&path).tracks.len(), 2);
         assert_eq!(read_state(&path).tracks[1].path, "/m/new.mp3");
         let raw: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(raw["python_only"], json!(true));
+    }
+
+    #[test]
+    fn a_tracks_tags_are_kept_beside_axross_keys() {
+        let path = temp("tags");
+        let mut state = PlayerState::default();
+        state.tracks.push(Track {
+            path: "/m/a.flac".into(),
+            title: "X – Song".into(),
+            duration_ms: 61_000,
+            artist: "X".into(),
+            album: "Album".into(),
+            disc: 2,
+            track: 7,
+        });
+        state.tracks.push(Track {
+            path: "/m/b.flac".into(),
+            ..Default::default()
+        });
+        write_state(&path, &state).unwrap();
+        assert_eq!(read_state(&path).tracks, state.tracks);
+        let raw: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        // (nothing written where nothing is known: axross's own entry)
+        assert_eq!(
+            raw["tracks"][1],
+            json!({"path": "/m/b.flac", "title": "", "duration": 0})
+        );
+    }
+
+    #[test]
+    fn the_file_stays_small_enough_for_axross() {
+        let path = temp("big");
+        let mut state = PlayerState::default();
+        for i in 0..MAX_TRACKS {
+            state.tracks.push(Track {
+                path: format!("/music/{}/{i}.flac", "a long folder name ".repeat(18)),
+                title: "A title of some length – and an artist".into(),
+                duration_ms: 200_000,
+                artist: "An artist".into(),
+                album: "An album with a name".into(),
+                disc: 1,
+                track: 3,
+            });
+        }
+        state.current = 9_999;
+        write_state(&path, &state).unwrap();
+        let size = fs::metadata(&path).unwrap().len() as usize;
+        assert!(
+            size <= MAX_STATE_BYTES,
+            "{size} bytes: axross would not read it"
+        );
+        let back = read_state(&path);
+        assert!(back.tracks.len() > 5_000, "{}", back.tracks.len());
+        assert_eq!(back.tracks[0].path, state.tracks[0].path);
+        assert!(back.current < back.tracks.len() as i64);
     }
 
     #[test]

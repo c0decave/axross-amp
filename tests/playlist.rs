@@ -159,3 +159,56 @@ fn the_chosen_row_stays_chosen_when_one_above_it_goes() {
     settle(&mut h, 2);
     assert_eq!(rows(&h), ["b", "d"]);
 }
+
+fn row(h: &egui_kittest::Harness<'_, axross_amp::app::App>, name: &str) -> egui::Rect {
+    h.get_by_role_and_label(egui::accesskit::Role::ListItem, name)
+        .rect()
+}
+
+#[test]
+fn several_rows_are_chosen_removed_and_dragged_together() {
+    let dir = folder("pl-multi");
+    let files = tracks(&dir, &["a.wav", "b.wav", "c.wav", "d.wav"], 1.0);
+    let mut h = harness(&dir, files);
+    assert!(until(&mut h, 5.0, |a| a.is_loaded()));
+    settle(&mut h, 2);
+    // Shift-click: a to b; drag them onto d
+    h.get_by_role_and_label(egui::accesskit::Role::ListItem, "a")
+        .click();
+    settle(&mut h, 1);
+    h.get_by_role_and_label(egui::accesskit::Role::ListItem, "b")
+        .click_modifiers(egui::Modifiers::SHIFT);
+    settle(&mut h, 1);
+    let (from, to) = (row(&h, "a").center(), row(&h, "d").center());
+    h.hover_at(from);
+    h.run_steps(1);
+    h.event(egui::Event::PointerButton {
+        pos: from,
+        button: egui::PointerButton::Primary,
+        pressed: true,
+        modifiers: Default::default(),
+    });
+    for k in 1..=10 {
+        let p = from + (to - from) * (k as f32 / 10.0);
+        h.event(egui::Event::PointerMoved(p));
+        h.run_steps(1);
+    }
+    h.event(egui::Event::PointerButton {
+        pos: to,
+        button: egui::PointerButton::Primary,
+        pressed: false,
+        modifiers: Default::default(),
+    });
+    settle(&mut h, 3);
+    assert_eq!(rows(&h), ["c", "d", "a", "b"]);
+    // Ctrl-click c and b (the moved block still chosen: taken out first)
+    h.get_by_role_and_label(egui::accesskit::Role::ListItem, "c")
+        .click();
+    settle(&mut h, 1);
+    h.get_by_role_and_label(egui::accesskit::Role::ListItem, "b")
+        .click_modifiers(egui::Modifiers::COMMAND);
+    settle(&mut h, 1);
+    h.key_press(Key::Delete);
+    settle(&mut h, 2);
+    assert_eq!(rows(&h), ["d", "a"]);
+}

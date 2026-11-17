@@ -41,6 +41,7 @@ fn a_python_state_reads_and_ours_is_written_for_python() {
         path: "/music/tone.m4a".into(),
         title: String::new(),
         duration_ms: 3000,
+        ..Default::default()
     });
     state::write_state(std::path::Path::new(&rs), &s).unwrap();
 }

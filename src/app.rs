@@ -90,6 +90,8 @@ pub struct App {
     dialog: FileDialog,
     picking: Picking,
     selected: Option<usize>,
+    /// Rows chosen together (Ctrl / Shift-click); empty: only `selected`.
+    chosen: Vec<usize>,
     dragging: Option<usize>,
     dirty: bool,
     eq_dirty: bool,
@@ -175,7 +177,52 @@ enum AddMessage {
 
 /// What the scanner read of a track: its title ("" none) and length (ms,
 /// 0 unknown), or why it cannot be read.
-type Scanned = Result<(String, u64), String>;
+type Scanned = Result<Track, String>;
+
+/// What the playlist keeps of a track's tags: its title ("artist – title"),
+/// length, artist, album, disc and track number.
+fn tags_of(info: &TrackInfo) -> Track {
+    let title = match (info.artist.is_empty(), info.title.is_empty()) {
+        (_, true) => String::new(),
+        (true, false) => info.title.clone(),
+        (false, false) => format!("{} – {}", info.artist, info.title),
+    };
+    Track {
+        path: String::new(),
+        title,
+        duration_ms: info.duration.map(|d| (d * 1000.0) as u64).unwrap_or(0),
+        artist: if info.album_artist.is_empty() {
+            info.artist.clone()
+        } else {
+            info.album_artist.clone()
+        },
+        album: info.album.clone(),
+        disc: info.disc_number.unwrap_or(0).min(100_000) as u32,
+        track: info.track_number.unwrap_or(0).min(100_000) as u32,
+    }
+}
+
+/// `found`'s tags into `track` where it lacks them.
+fn fill_tags(track: &mut Track, found: &Track) {
+    if track.title.is_empty() {
+        track.title = found.title.clone();
+    }
+    if track.duration_ms == 0 {
+        track.duration_ms = found.duration_ms;
+    }
+    if track.artist.is_empty() {
+        track.artist = found.artist.clone();
+    }
+    if track.album.is_empty() {
+        track.album = found.album.clone();
+    }
+    if track.disc == 0 {
+        track.disc = found.disc;
+    }
+    if track.track == 0 {
+        track.track = found.track;
+    }
+}
 
 /// A thread that reads tracks' tags and lengths: paths in, (path, title,
 /// length in ms, or why it cannot be read) out.
@@ -193,15 +240,7 @@ impl Scanner {
             .spawn(move || {
                 let mut sent = 0usize;
                 while let Ok(path) = paths.recv() {
-                    let result = crate::engine::probe(&path).map(|info| {
-                        let title = match (info.artist.is_empty(), info.title.is_empty()) {
-                            (_, true) => String::new(),
-                            (true, false) => info.title.clone(),
-                            (false, false) => format!("{} – {}", info.artist, info.title),
-                        };
-                        let ms = info.duration.map(|d| (d * 1000.0) as u64).unwrap_or(0);
-                        (title, ms)
-                    });
+                    let result = crate::engine::probe(&path).map(|info| tags_of(&info));
                     if out.send((path, result)).is_err() {
                         return;
                     }
@@ -218,7 +257,10 @@ impl Scanner {
     /// Read what these tracks lack (local files without a title or length).
     fn scan(&self, tracks: &[Track]) {
         for t in tracks {
-            if !playlist::is_stream(&t.path) && (t.title.is_empty() || t.duration_ms == 0) {
+            let lacking = t.title.is_empty()
+                || t.duration_ms == 0
+                || (t.album.is_empty() && t.artist.is_empty());
+            if !playlist::is_stream(&t.path) && lacking {
                 let _ = self.tx.send(t.path.clone());
             }
         }
@@ -343,6 +385,7 @@ impl App {
                 .default_file_filter("Audio and playlists"),
             picking: Picking::Nothing,
             selected: None,
+            chosen: Vec::new(),
             dragging: None,
             dirty: false,
             eq_dirty: false,
@@ -627,14 +670,7 @@ impl App {
         }
         for track in &mut self.playlist.tracks {
             match found.get(&track.path) {
-                Some(Ok((title, ms))) => {
-                    if track.title.is_empty() && !title.is_empty() {
-                        track.title = title.clone();
-                    }
-                    if track.duration_ms == 0 {
-                        track.duration_ms = *ms;
-                    }
-                }
+                Some(Ok(tags)) => fill_tags(track, tags),
                 Some(Err(why)) => {
                     self.broken.insert(track.path.clone(), why.clone());
                 }
@@ -668,7 +704,7 @@ impl App {
         self.stopped = false;
         self.queued = None;
         self.playlist.play(index);
-        self.selected = Some(index);
+        self.select(Some(index));
         self.info = TrackInfo::default();
         self.cover = None;
         self.stream_title.clear();
@@ -733,20 +769,14 @@ impl App {
             && let Some(track) = self.playlist.tracks.get_mut(i)
         {
             self.broken.remove(&track.path);
-            if track.title.is_empty() {
-                if !info.title.is_empty() {
-                    track.title = if info.artist.is_empty() {
-                        info.title.clone()
-                    } else {
-                        format!("{} – {}", info.artist, info.title)
-                    };
-                } else if !info.station.is_empty() {
-                    track.title = info.station.clone();
-                }
+            fill_tags(track, &tags_of(&info));
+            if track.title.is_empty() && !info.station.is_empty() {
+                track.title = info.station.clone();
             }
             if let Some(d) = info.duration {
                 track.duration_ms = (d * 1000.0) as u64;
             }
+            self.playlist.version += 1;
         }
         self.cover = info
             .cover
@@ -1141,7 +1171,7 @@ impl App {
                         let before = self.playlist.current;
                         self.playlist.play(index);
                         if self.selected == before {
-                            self.selected = Some(index); // (the selection follows the music)
+                            self.select(Some(index)); // (the selection follows the music)
                         }
                     }
                     self.duration = None;
@@ -1411,8 +1441,76 @@ impl App {
             (Some(r), true) => r.saturating_sub(1),
             (Some(r), false) => (r + 1).min(rows.len() - 1),
         };
-        self.selected = Some(rows[next]);
+        self.select(Some(rows[next]));
         self.scroll_to = Some(rows[next]);
+    }
+
+    /// Choose one row (and only it).
+    fn select(&mut self, row: Option<usize>) {
+        self.selected = row;
+        self.chosen.clear();
+    }
+
+    /// The rows chosen: several (Ctrl / Shift-click), else the one selected.
+    fn chosen_rows(&self) -> Vec<usize> {
+        if self.chosen.is_empty() {
+            self.selected.into_iter().collect()
+        } else {
+            self.chosen.clone()
+        }
+    }
+
+    /// A click on row `i`: alone; Ctrl added / taken out; Shift the rows
+    /// from the one chosen before to it (as shown: `rows`).
+    fn click_row(&mut self, i: usize, modifiers: egui::Modifiers, rows: &[usize]) {
+        if modifiers.command {
+            let mut chosen = self.chosen_rows();
+            match chosen.iter().position(|r| *r == i) {
+                Some(at) => {
+                    chosen.remove(at);
+                }
+                None => chosen.push(i),
+            }
+            chosen.sort_unstable();
+            self.chosen = chosen;
+            self.selected = Some(i);
+        } else if modifiers.shift
+            && let Some(anchor) = self.selected
+            && let (Some(a), Some(b)) = (
+                rows.iter().position(|r| *r == anchor),
+                rows.iter().position(|r| *r == i),
+            )
+        {
+            let mut chosen: Vec<usize> = rows[a.min(b)..=a.max(b)].to_vec();
+            chosen.sort_unstable();
+            self.chosen = chosen;
+        } else {
+            self.select(Some(i));
+        }
+    }
+
+    /// Remove rows; `then_next`: the row that takes the first one's place is
+    /// chosen (Delete again goes on down the list), else the choice follows
+    /// the rows it was on.
+    fn remove_rows(&mut self, gone: &[usize], then_next: bool) {
+        let first = gone.iter().copied().min().unwrap_or(0);
+        let before = self.chosen_rows();
+        self.playlist.remove_many(gone);
+        let left = self.playlist.tracks.len();
+        if then_next || before.iter().all(|r| gone.contains(r)) {
+            self.select((left > 0 && then_next).then(|| first.min(left - 1)));
+        } else {
+            // (each row chosen moves up by the rows removed above it)
+            let shift = |r: usize| r - gone.iter().filter(|g| **g < r).count();
+            let kept: Vec<usize> = before
+                .iter()
+                .filter(|r| !gone.contains(r))
+                .map(|r| shift(*r))
+                .collect();
+            self.selected = self.selected.filter(|s| !gone.contains(s)).map(shift);
+            self.chosen = if kept.len() > 1 { kept } else { Vec::new() };
+        }
+        self.dirty = true;
     }
 
     /// The selected track one place up or down in the list.
@@ -1427,7 +1525,7 @@ impl App {
         };
         if let Some(to) = to {
             self.playlist.move_track(i, to);
-            self.selected = Some(to);
+            self.select(Some(to));
             self.scroll_to = Some(to);
             self.dirty = true;
         }
@@ -2203,7 +2301,7 @@ impl App {
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 if ui.small_button("Clear").clicked() {
                     self.playlist.clear();
-                    self.selected = None;
+                    self.select(None);
                     self.dirty = true;
                 }
                 if ui
@@ -2239,7 +2337,7 @@ impl App {
                     for (key, name) in playlist::SortKey::ALL {
                         if ui.button(name).clicked() {
                             self.playlist.sort(key);
-                            self.selected = self.playlist.current;
+                            self.select(self.playlist.current);
                             self.scroll_to = self.playlist.current;
                             self.dirty = true;
                             ui.close();
@@ -2268,6 +2366,7 @@ impl App {
             let mut remove: Option<usize> = None;
             let mut details: Option<usize> = None;
             let mut moved: Option<(usize, usize)> = None;
+            let mut clicked: Option<(usize, egui::Modifiers)> = None;
             let height = ui.available_height().max(120.0);
             let mut area = egui::ScrollArea::vertical()
                 .id_salt("playlist-rows")
@@ -2307,7 +2406,7 @@ impl App {
                         vec2(ui.available_width(), row),
                         Sense::click_and_drag(),
                     );
-                    let selected = self.selected == Some(i);
+                    let selected = self.selected == Some(i) || self.chosen.contains(&i);
                     // (a screen reader reads the row: its title, whether it is chosen)
                     response.widget_info(|| {
                         egui::WidgetInfo::selected(
@@ -2375,7 +2474,8 @@ impl App {
                     };
                     let response = response.on_hover_text(tip);
                     if response.clicked() {
-                        self.selected = Some(i);
+                        let modifiers = ui.input(|inp| inp.modifiers);
+                        clicked = Some((i, modifiers));
                     }
                     if response.double_clicked() {
                         play = Some(i);
@@ -2408,19 +2508,26 @@ impl App {
             if ui.input(|inp| inp.pointer.any_released()) {
                 self.dragging = None;
             }
+            if let Some((i, modifiers)) = clicked {
+                self.click_row(i, modifiers, &rows);
+            }
             if let Some((from, to)) = moved {
-                self.playlist.move_track(from, to);
-                self.selected = Some(to);
+                // the rows chosen go together (the one dragged among them)
+                let picked = self.chosen_rows();
+                if picked.len() > 1 && picked.contains(&from) {
+                    let placed = self.playlist.move_tracks(&picked, to);
+                    self.selected = placed.first().copied();
+                    self.chosen = placed;
+                } else {
+                    self.playlist.move_track(from, to);
+                    self.select(Some(to));
+                }
                 self.dirty = true;
             }
             if let Some(i) = remove {
-                self.playlist.remove(i);
-                self.selected = match self.selected {
-                    Some(s) if s > i => Some(s - 1),
-                    Some(s) if s == i => None,
-                    other => other,
-                };
-                self.dirty = true;
+                let picked = self.chosen_rows();
+                let gone = if picked.contains(&i) { picked } else { vec![i] };
+                self.remove_rows(&gone, false);
             }
             if let Some(i) = play {
                 self.play_index(i, 0, true);
@@ -2428,15 +2535,11 @@ impl App {
             if let Some(i) = details {
                 self.show_details(i);
             }
-            if self.gate.any
-                && ui.input(|inp| inp.key_pressed(Key::Delete))
-                && let Some(i) = self.selected
-            {
-                self.playlist.remove(i);
-                // the row that took its place is chosen: Delete again removes it
-                let left = self.playlist.tracks.len();
-                self.selected = (left > 0).then(|| i.min(left - 1));
-                self.dirty = true;
+            if self.gate.any && ui.input(|inp| inp.key_pressed(Key::Delete)) {
+                let picked = self.chosen_rows();
+                if !picked.is_empty() {
+                    self.remove_rows(&picked, true);
+                }
             }
             if self.gate.activation
                 && ui.input(|inp| inp.key_pressed(Key::Enter))
@@ -2487,6 +2590,7 @@ impl App {
                 path: url,
                 title: String::new(),
                 duration_ms: 0,
+                ..Default::default()
             }]);
             self.play_index(first, 0, true);
             self.url.clear();

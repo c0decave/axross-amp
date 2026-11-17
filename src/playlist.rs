@@ -246,6 +246,44 @@ impl Playlist {
         self.remap(|i| Some(moved(i)));
     }
 
+    /// Move the tracks at `picked` (any order) together to where the track
+    /// at `onto` is: before it when they come from below it, after it when
+    /// from above (as a row dragged onto another). Their new places.
+    pub fn move_tracks(&mut self, picked: &[usize], onto: usize) -> Vec<usize> {
+        let n = self.tracks.len();
+        let mut picked: Vec<usize> = picked.iter().copied().filter(|i| *i < n).collect();
+        picked.sort_unstable();
+        picked.dedup();
+        if picked.is_empty() || onto >= n || picked.contains(&onto) {
+            return picked;
+        }
+        let rest: Vec<usize> = (0..n).filter(|i| !picked.contains(i)).collect();
+        let at = rest.iter().position(|i| *i == onto).unwrap_or(rest.len());
+        let at = if picked[0] < onto { at + 1 } else { at };
+        let mut order = rest.clone();
+        order.splice(at..at, picked.iter().copied());
+        let mut place = vec![0; n];
+        for (new, old) in order.iter().enumerate() {
+            place[*old] = new;
+        }
+        let mut moved: Vec<Track> = order.iter().map(|i| self.tracks[*i].clone()).collect();
+        std::mem::swap(&mut self.tracks, &mut moved);
+        self.resume_at = None;
+        self.remap(|i| place.get(i).copied());
+        (at..at + picked.len()).collect()
+    }
+
+    /// Remove the tracks at `indexes` (a current one among them plays on, as
+    /// with [`Playlist::remove`]).
+    pub fn remove_many(&mut self, indexes: &[usize]) {
+        let mut indexes = indexes.to_vec();
+        indexes.sort_unstable();
+        indexes.dedup();
+        for i in indexes.into_iter().rev() {
+            self.remove(i);
+        }
+    }
+
     /// Sort the list (the current track stays current, the history follows).
     pub fn sort(&mut self, key: SortKey) {
         let mut order: Vec<usize> = (0..self.tracks.len()).collect();
@@ -263,18 +301,58 @@ impl Playlist {
                 .map(|n| n.to_string_lossy().to_lowercase())
                 .unwrap_or_else(|| t.path.to_lowercase())
         };
+        let folder = |t: &Track| {
+            Path::new(&t.path)
+                .parent()
+                .map(|d| d.to_string_lossy().to_lowercase())
+                .unwrap_or_default()
+        };
         let tracks = &self.tracks;
+        // (names compare naturally: "2 - y" before "10 - x")
+        let by = |key: &dyn Fn(&Track) -> String| {
+            let keys: Vec<String> = tracks.iter().map(key).collect();
+            move |a: &usize, b: &usize| natural_cmp(&keys[*a], &keys[*b])
+        };
         match key {
-            SortKey::Title => order.sort_by_cached_key(|i| title(&tracks[*i])),
-            SortKey::FileName => order.sort_by_cached_key(|i| name(&tracks[*i])),
-            SortKey::Path => order.sort_by_cached_key(|i| {
-                let p = Path::new(&tracks[*i].path);
-                let folder = p
-                    .parent()
-                    .map(|d| d.to_string_lossy().to_lowercase())
-                    .unwrap_or_default();
-                (folder, name(&tracks[*i]))
-            }),
+            SortKey::Title => order.sort_by(by(&title)),
+            SortKey::FileName => order.sort_by(by(&name)),
+            SortKey::Path => {
+                let (f, n) = (by(&folder), by(&name));
+                order.sort_by(|a, b| f(a, b).then_with(|| n(a, b)));
+            }
+            // an album's tracks in their order (disc, number), the albums by
+            // name; tracks without one last
+            SortKey::Album | SortKey::Artist => {
+                let artist = by(&|t: &Track| t.artist.to_lowercase());
+                let album = by(&|t: &Track| t.album.to_lowercase());
+                let (t, n) = (by(&title), by(&name));
+                let by_artist = key == SortKey::Artist;
+                order.sort_by(|a, b| {
+                    let (x, y) = (&tracks[*a], &tracks[*b]);
+                    let missing = |t: &Track| {
+                        if by_artist {
+                            t.artist.is_empty()
+                        } else {
+                            t.album.is_empty()
+                        }
+                    };
+                    missing(x)
+                        .cmp(&missing(y))
+                        .then_with(|| {
+                            if by_artist {
+                                artist(a, b)
+                            } else {
+                                std::cmp::Ordering::Equal
+                            }
+                        })
+                        .then_with(|| album(a, b))
+                        .then_with(|| x.disc.cmp(&y.disc))
+                        .then_with(|| (x.track == 0).cmp(&(y.track == 0)))
+                        .then_with(|| x.track.cmp(&y.track))
+                        .then_with(|| n(a, b))
+                        .then_with(|| t(a, b))
+                });
+            }
             // (unknown lengths last)
             SortKey::Duration => order.sort_by_key(|i| {
                 let d = tracks[*i].duration_ms;
@@ -421,6 +499,7 @@ pub fn collect_with(args: &[String], progress: &mut dyn FnMut(usize)) -> Collect
                 path: arg.clone(),
                 title: String::new(),
                 duration_ms: 0,
+                ..Default::default()
             });
             continue;
         }
@@ -437,6 +516,7 @@ pub fn collect_with(args: &[String], progress: &mut dyn FnMut(usize)) -> Collect
                 path: absolute(&path),
                 title: String::new(),
                 duration_ms: 0,
+                ..Default::default()
             });
         } else {
             skipped.push(arg.to_owned());
@@ -482,7 +562,12 @@ fn walk(
         return;
     };
     let mut entries: Vec<_> = entries.flatten().collect();
-    entries.sort_by_key(|e| e.file_name().to_string_lossy().to_lowercase());
+    entries.sort_by(|a, b| {
+        natural_cmp(
+            &a.file_name().to_string_lossy(),
+            &b.file_name().to_string_lossy(),
+        )
+    });
     for entry in entries {
         let Ok(kind) = entry.file_type() else {
             continue;
@@ -495,6 +580,7 @@ fn walk(
                 path: absolute(&path),
                 title: String::new(),
                 duration_ms: 0,
+                ..Default::default()
             });
             if out.len().is_multiple_of(100) {
                 progress(out.len());
@@ -604,6 +690,7 @@ pub fn read_playlist(path: &Path) -> Result<Vec<Track>, String> {
             path: resolved,
             title: std::mem::take(&mut title),
             duration_ms: std::mem::take(&mut seconds) * 1000,
+            ..Default::default()
         });
         if tracks.len() >= MAX_TRACKS {
             break;
@@ -697,18 +784,62 @@ pub enum SortKey {
     FileName,
     /// By folder, then file name: an album's tracks together, in order.
     Path,
+    /// By album, disc and track number (from the tags).
+    Album,
+    /// By artist, then album, disc and track number.
+    Artist,
     Duration,
     Reverse,
 }
 
 impl SortKey {
-    pub const ALL: [(SortKey, &'static str); 5] = [
+    pub const ALL: [(SortKey, &'static str); 7] = [
         (SortKey::Title, "By title"),
+        (SortKey::Artist, "By artist"),
+        (SortKey::Album, "By album"),
         (SortKey::FileName, "By file name"),
         (SortKey::Path, "By folder"),
         (SortKey::Duration, "By length"),
         (SortKey::Reverse, "Reverse the order"),
     ];
+}
+
+/// Names compared as people read them: runs of digits by their number
+/// ("2" before "10"), the rest without regard to case.
+pub fn natural_cmp(a: &str, b: &str) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    let (mut x, mut y) = (a.chars().peekable(), b.chars().peekable());
+    loop {
+        match (x.peek().copied(), y.peek().copied()) {
+            (None, None) => return a.cmp(b),
+            (None, Some(_)) => return Ordering::Less,
+            (Some(_), None) => return Ordering::Greater,
+            (Some(c), Some(d)) if c.is_ascii_digit() && d.is_ascii_digit() => {
+                let take = |it: &mut std::iter::Peekable<std::str::Chars<'_>>| {
+                    let mut run = String::new();
+                    while let Some(c) = it.peek().copied().filter(char::is_ascii_digit) {
+                        run.push(c);
+                        it.next();
+                    }
+                    run
+                };
+                let (m, n) = (take(&mut x), take(&mut y));
+                let (m, n) = (m.trim_start_matches('0'), n.trim_start_matches('0'));
+                let order = m.len().cmp(&n.len()).then_with(|| m.cmp(n));
+                if order != Ordering::Equal {
+                    return order;
+                }
+            }
+            (Some(c), Some(d)) => {
+                let order = c.to_lowercase().cmp(d.to_lowercase());
+                if order != Ordering::Equal {
+                    return order;
+                }
+                x.next();
+                y.next();
+            }
+        }
+    }
 }
 
 /// Does the track match every word of `query` (in its title or path, case
@@ -740,6 +871,7 @@ mod tests {
             path: format!("/m/{n}.mp3"),
             title: String::new(),
             duration_ms: 0,
+            ..Default::default()
         }
     }
 
@@ -893,6 +1025,65 @@ mod tests {
     }
 
     #[test]
+    fn several_tracks_move_and_go_together() {
+        let mut p = list(6);
+        p.play(1);
+        // 1 and 2 dragged onto 4: after it
+        assert_eq!(p.move_tracks(&[2, 1], 4), vec![3, 4]);
+        let names: Vec<&str> = p.tracks.iter().map(|t| &t.path[3..4]).collect();
+        assert_eq!(names, ["0", "3", "4", "1", "2", "5"]);
+        assert_eq!(p.current, Some(3), "the current track goes with them");
+        // 4 and 5 dragged onto 0: before it
+        p.move_tracks(&[4, 5], 0);
+        let names: Vec<&str> = p.tracks.iter().map(|t| &t.path[3..4]).collect();
+        assert_eq!(names, ["2", "5", "0", "3", "4", "1"]);
+        p.remove_many(&[0, 5, 2]);
+        let names: Vec<&str> = p.tracks.iter().map(|t| &t.path[3..4]).collect();
+        assert_eq!(names, ["5", "3", "4"]);
+    }
+
+    #[test]
+    fn names_sort_as_they_are_read() {
+        let mut names = vec!["10 - x", "2 - y", "Track 1", "track 01b", "B", "a", "1"];
+        names.sort_by(|a, b| natural_cmp(a, b));
+        assert_eq!(
+            names,
+            ["1", "2 - y", "10 - x", "a", "B", "Track 1", "track 01b"]
+        );
+        let mut p = Playlist::default();
+        let t = |path: &str, album: &str, disc: u32, track: u32| Track {
+            path: path.into(),
+            album: album.into(),
+            disc,
+            track,
+            ..Default::default()
+        };
+        p.add_tracks(vec![
+            t("/m/z.mp3", "B side", 1, 2),
+            t("/m/loose.mp3", "", 0, 0),
+            t("/m/y.mp3", "B side", 1, 10),
+            t("/m/x.mp3", "B side", 2, 1),
+            t("/m/w.mp3", "a side", 0, 1),
+            t("/m/10.mp3", "", 0, 0),
+            t("/m/9.mp3", "", 0, 0),
+        ]);
+        p.sort(SortKey::Album);
+        let paths: Vec<&str> = p.tracks.iter().map(|t| t.path.as_str()).collect();
+        assert_eq!(
+            paths,
+            [
+                "/m/w.mp3",
+                "/m/z.mp3",
+                "/m/y.mp3",
+                "/m/x.mp3",
+                "/m/9.mp3",
+                "/m/10.mp3",
+                "/m/loose.mp3"
+            ]
+        );
+    }
+
+    #[test]
     fn sorting_keeps_the_current_track_and_the_history() {
         let mut p = Playlist::default();
         for (name, title, secs) in [
@@ -904,6 +1095,7 @@ mod tests {
                 path: name.into(),
                 title: title.into(),
                 duration_ms: secs * 1000,
+                ..Default::default()
             }]);
         }
         p.play(0);

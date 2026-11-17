@@ -168,6 +168,7 @@ pub struct TrackInfo {
     pub genre: String,
     pub date: String,
     pub track_number: Option<u64>,
+    pub disc_number: Option<u64>,
     /// Every text tag as the file has it: (key, value) - the track's details.
     pub tags: Vec<(String, String)>,
     pub cover: Option<Vec<u8>>,
@@ -967,6 +968,9 @@ fn tag_text(tags: &[symphonia::core::meta::Tag], info: &mut TrackInfo) {
             }
             Some(StandardTag::TrackNumber(n)) if info.track_number.is_none() => {
                 info.track_number = Some(*n)
+            }
+            Some(StandardTag::DiscNumber(n)) if info.disc_number.is_none() => {
+                info.disc_number = Some(*n)
             }
             Some(StandardTag::ReplayGainTrackGain(v)) => {
                 info.track_gain = info.track_gain.or(gain_value(v))
