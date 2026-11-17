@@ -2516,10 +2516,11 @@ pub enum Tab {
     Bluetooth,
 }
 
-/// The slider's volume (0-100) as a gain: a curve, so the middle of the
-/// slider sounds like the middle.
+/// The slider's volume (0-100) as a gain: cubic, as axross's player
+/// (`perceptual_to_linear`) - the same number sounds the same in both, and
+/// the middle of the slider sounds like the middle.
 fn volume_curve(volume: u32) -> f32 {
-    (volume.min(100) as f32 / 100.0).powf(1.6)
+    (volume.min(100) as f32 / 100.0).powi(3)
 }
 
 fn band_name(hz: f32) -> String {
@@ -2625,6 +2626,14 @@ mod tests {
             "file:///m/Bob%20%26%20Alice/01%20%E2%80%93%20%C3%87a%20va%3F.flac"
         );
         assert_eq!(playlist::percent_decode(&url["file://".len()..]), path);
+    }
+
+    #[test]
+    fn the_volume_sounds_as_loud_as_in_axross() {
+        assert_eq!(volume_curve(100), 1.0);
+        assert!((volume_curve(50) - 0.125).abs() < 1e-6);
+        assert_eq!(volume_curve(0), 0.0);
+        assert_eq!(volume_curve(250), 1.0);
     }
 
     #[test]
