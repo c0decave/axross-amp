@@ -26,25 +26,59 @@ pub fn square(rgba: &[u8], width: u32, height: u32, side: u32) -> egui::ColorIma
     egui::ColorImage::from_rgba_unmultiplied([side as usize, side as usize], made.as_raw())
 }
 
-/// The sizes a cover is wanted at, made on a thread and kept (a few).
+/// What is asked of the worker: a size of a cover (of a generation).
+type Ask = (u64, u32, Arc<crate::engine::Art>);
+type Made = (u64, u32, egui::ColorImage);
+
+/// The sizes a cover is wanted at, made on one thread of its own (the
+/// newest cover's asks first; those of a cover gone are dropped unmade)
+/// and kept (a few).
 pub struct Sizer {
     source: Option<Arc<crate::engine::Art>>,
-    generation: u64,
+    generation: Arc<std::sync::atomic::AtomicU64>,
     made: Vec<(u32, egui::TextureHandle)>,
     asked: Vec<u32>,
-    tx: Sender<(u64, u32, egui::ColorImage)>,
-    rx: Receiver<(u64, u32, egui::ColorImage)>,
+    ask: Option<Sender<Ask>>,
+    rx: Receiver<Made>,
 }
 
 impl Default for Sizer {
     fn default() -> Self {
-        let (tx, rx) = crossbeam_channel::unbounded();
+        let (ask, asks) = crossbeam_channel::unbounded::<Ask>();
+        let (tx, rx) = crossbeam_channel::unbounded::<Made>();
+        let generation = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let current = generation.clone();
+        let spawned = std::thread::Builder::new()
+            .name("amp-cover".into())
+            .spawn(move || {
+                while let Ok(first) = asks.recv() {
+                    // (everything asked meanwhile: a cover gone is skipped)
+                    let mut todo = vec![first];
+                    todo.extend(asks.try_iter());
+                    let now = current.load(std::sync::atomic::Ordering::Relaxed);
+                    for (generation, side, art) in todo {
+                        if generation != now {
+                            continue;
+                        }
+                        let (w, h, rgba) = match &art.large {
+                            Some((w, h, rgba)) => (*w, *h, rgba.as_slice()),
+                            None => (art.width, art.height, art.rgba.as_slice()),
+                        };
+                        if tx
+                            .send((generation, side, square(rgba, w, h, side)))
+                            .is_err()
+                        {
+                            return;
+                        }
+                    }
+                }
+            });
         Sizer {
             source: None,
-            generation: 0,
+            generation,
             made: Vec::new(),
             asked: Vec::new(),
-            tx,
+            ask: spawned.is_ok().then_some(ask),
             rx,
         }
     }
@@ -55,21 +89,26 @@ impl Default for Sizer {
 const KEPT: usize = 5;
 
 impl Sizer {
+    fn generation(&self) -> u64 {
+        self.generation.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
     /// A new cover (None: none): what was made of the last one goes.
     pub fn set(&mut self, art: Option<Arc<crate::engine::Art>>) {
         self.source = art;
-        self.generation += 1;
+        self.generation
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         self.made.clear();
         self.asked.clear();
     }
 
-    /// What the threads have made, as textures.
+    /// What the worker has made, as textures.
     pub fn poll(&mut self, ctx: &egui::Context) {
         while let Ok((generation, side, image)) = self.rx.try_recv() {
-            self.asked.retain(|s| *s != side);
-            if generation != self.generation {
+            if generation != self.generation() {
                 continue;
             }
+            self.asked.retain(|s| *s != side);
             let texture =
                 ctx.load_texture(format!("cover-{side}"), image, egui::TextureOptions::LINEAR);
             self.made.retain(|(s, _)| *s != side);
@@ -89,21 +128,11 @@ impl Sizer {
             self.made.insert(0, hit);
             return self.made.first().map(|(_, t)| t);
         }
-        if !self.asked.contains(&side) {
+        if !self.asked.contains(&side)
+            && let Some(ask) = &self.ask
+            && ask.send((self.generation(), side, art)).is_ok()
+        {
             self.asked.push(side);
-            let (tx, generation) = (self.tx.clone(), self.generation);
-            let spawned = std::thread::Builder::new()
-                .name("amp-cover".into())
-                .spawn(move || {
-                    let (w, h, rgba) = match &art.large {
-                        Some((w, h, rgba)) => (*w, *h, rgba.as_slice()),
-                        None => (art.width, art.height, art.rgba.as_slice()),
-                    };
-                    let _ = tx.send((generation, side, square(rgba, w, h, side)));
-                });
-            if spawned.is_err() {
-                self.asked.retain(|s| *s != side);
-            }
         }
         self.made
             .iter()
@@ -120,6 +149,53 @@ impl Sizer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn art(v: u8) -> Arc<crate::engine::Art> {
+        let n = 512u32;
+        Arc::new(crate::engine::Art {
+            width: 64,
+            height: 64,
+            rgba: vec![v; 64 * 64 * 4],
+            png: Vec::new(),
+            large: Some((n, n, vec![v; (n * n * 4) as usize])),
+        })
+    }
+
+    #[test]
+    fn one_worker_makes_the_sizes_and_drops_what_a_new_cover_outdates() {
+        // forty sizes of one cover asked, then a new cover: none of the old
+        // ones arrives (each was a thread and a 4 MB copy, uncancelled)
+        let ctx = egui::Context::default();
+        let mut sizer = Sizer::default();
+        sizer.set(Some(art(10)));
+        for k in 1..=40 {
+            let _ = sizer.get(k as f32 * 8.0);
+        }
+        #[cfg(target_os = "linux")]
+        {
+            // (one thread for them all, whoever else runs tests beside)
+            let workers = std::fs::read_dir("/proc/self/task")
+                .map(|d| {
+                    d.flatten()
+                        .filter(|t| {
+                            std::fs::read_to_string(t.path().join("comm"))
+                                .is_ok_and(|c| c.trim() == "amp-cover")
+                        })
+                        .count()
+                })
+                .unwrap_or(0);
+            assert!(workers <= 4, "{workers} threads making covers");
+        }
+        sizer.set(Some(art(200)));
+        let _ = sizer.get(64.0);
+        let end = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while sizer.waiting() && std::time::Instant::now() < end {
+            sizer.poll(&ctx);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let sides: Vec<u32> = sizer.made.iter().map(|(s, _)| *s).collect();
+        assert_eq!(sides, vec![64], "only the new cover's size: {sides:?}");
+    }
 
     /// How much neighbouring pixels differ (the high frequencies' energy).
     fn roughness(image: &egui::ColorImage) -> f32 {

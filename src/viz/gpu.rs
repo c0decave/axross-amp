@@ -77,6 +77,9 @@ static NEXT_PAIR: AtomicUsize = AtomicUsize::new(0);
 /// The feedback face's own pictures: this share of its size.
 const FEEDBACK_SCALE: f32 = 0.6;
 
+/// A shader face painted: where, its uniforms, its picture.
+pub type Drawn = (Rect, Uniforms, Option<Arc<Mutex<Picture>>>);
+
 /// What the shader is told: faces.wgsl's `U`.
 #[derive(Clone, Copy, Debug)]
 pub struct Uniforms {
@@ -238,6 +241,9 @@ pub struct State {
     /// The most pixels a shader face is drawn in (a software renderer: the
     /// window's size does not make it dearer); 0: no bound.
     pub max_pixels: f32,
+    /// The shader faces painted this frame (their rect, uniforms, picture):
+    /// the flash guard estimates what they show from them.
+    pub drawn: Vec<Drawn>,
 }
 
 impl Default for State {
@@ -253,6 +259,7 @@ impl Default for State {
             interval: 1.0 / 30.0,
             ms_per_pixel: 0.0,
             max_pixels: 0.0,
+            drawn: Vec::with_capacity(4),
         }
     }
 }
@@ -755,6 +762,13 @@ pub fn paint(
     u.v[0] = [rect.left(), rect.top(), rect.width(), rect.height()];
     u.v[1] = [clip.left(), clip.top(), clip.width(), clip.height()];
     u.v[3][3] = 8.0;
+    if state.drawn.len() < 8 {
+        state.drawn.push((
+            rect,
+            u,
+            picture.then(|| state.pictures[usize::from(second)].clone()),
+        ));
+    }
     if state.on {
         painter.add(egui_wgpu::Callback::new_paint_callback(
             clip,
@@ -1194,8 +1208,8 @@ pub fn shade(
                     + 0.05 * fbm([x * 0.7, t + fk]);
                 let level = u.band(0.15 + 0.3 * fk + 0.2 * uv[0]);
                 let d = foot - uv[1];
-                let ray = fbm([x * 9.0, t * 0.6 + fk * 3.0]);
-                let rays = ray * ray * 1.6 + 0.2;
+                let ray = fbm([x * 3.5, t * 0.4 + fk * 3.0]);
+                let rays = 0.35 + 0.9 * ray;
                 let up = if d >= 0.0 {
                     (-d * (3.0 - 1.5 * level)).exp()
                 } else {
@@ -1329,26 +1343,26 @@ fn tunnel(u: &Uniforms, p: [f32; 2]) -> V3 {
     let t = u.time();
     let r = len2(p[0], p[1]).max(1e-3);
     let a = p[1].atan2(p[0]);
-    let depth = 0.45 / r + t * (0.7 + 1.6 * u.bass());
+    let depth = 0.45 / r + t * (0.35 + 0.6 * u.bass());
     let turn = a / TAU + 0.1 * (depth * 0.35 + u.phase()).sin();
     let fold = (2.0 * fract(turn) - 1.0).abs();
     let level = u.band(fold);
-    let rr = fract(depth * 3.0);
-    let ring_d = rr.min(1.0 - rr) / 3.0 * r * r / 0.45;
-    let ss = fract(turn * 16.0);
-    let rib_d = ss.min(1.0 - ss) / 16.0 * TAU * r;
+    let rr = fract(depth * 1.5);
+    let ring_d = rr.min(1.0 - rr) / 1.5 * r * r / 0.45;
+    let ss = fract(turn * 10.0);
+    let rib_d = ss.min(1.0 - ss) / 10.0 * TAU * r;
     let ring = (-ring_d / 0.010).exp();
     let rib = (-rib_d / 0.008).exp();
-    let checker = fract(((depth * 3.0).floor() + (turn * 16.0).floor()) * 0.5) * 2.0;
+    let checker = fract(((depth * 1.5).floor() + (turn * 10.0).floor()) * 0.5) * 2.0;
     let wall = scale(
         mix3(
             u.colour(0),
-            cycle(u, (depth * 3.0).floor() * 0.04 + fold * 0.4),
+            cycle(u, (depth * 1.5).floor() * 0.04 + fold * 0.4),
             0.10 + 0.22 * level,
         ),
         0.75 + 0.25 * checker,
     );
-    let line_colour = cycle(u, (depth * 3.0).floor() * 0.04 + fold * 0.4 + 0.15);
+    let line_colour = cycle(u, (depth * 1.5).floor() * 0.04 + fold * 0.4 + 0.15);
     let glow = ring * (0.35 + 1.1 * level + 0.5 * u.pulse()) + rib * (0.2 + 0.8 * level);
     let c = add(wall, scale(line_colour, glow));
     let fog = smoothstep(0.03, 0.6, r);
@@ -1404,15 +1418,15 @@ fn moire(u: &Uniforms, p: [f32; 2], pixel: f32) -> V3 {
     let t = u.time() * 0.4;
     let a = [0.35 * t.sin(), 0.25 * (t * 0.8).cos()];
     let b = [0.35 * (t * 0.7 + 2.0).sin(), 0.25 * (t * 1.1 + 1.0).cos()];
-    let f1 = 34.0 + 20.0 * u.bass();
-    let f2 = 36.0 + 20.0 * u.middle();
-    let f3 = 24.0 + 16.0 * u.treble();
+    let f1 = 9.0 + 4.0 * u.bass();
+    let f2 = 10.0 + 4.0 * u.middle();
+    let f3 = 7.0 + 3.0 * u.treble();
     let r1 = wave(
-        len2(p[0] - a[0], p[1] - a[1]) * f1 - u.time() * 2.0,
+        len2(p[0] - a[0], p[1] - a[1]) * f1 - u.time() * 0.5,
         f1 * pixel,
     );
     let r2 = wave(
-        len2(p[0] - b[0], p[1] - b[1]) * f2 + u.time() * 1.5,
+        len2(p[0] - b[0], p[1] - b[1]) * f2 + u.time() * 0.4,
         f2 * pixel,
     );
     let lines = wave(
@@ -1420,13 +1434,10 @@ fn moire(u: &Uniforms, p: [f32; 2], pixel: f32) -> V3 {
         f3 * pixel,
     );
     let v = r1 * r2 + 0.35 * lines * r1;
-    add(
-        mix3(
-            u.colour(0),
-            cycle(u, v * 0.4 + t * 0.1),
-            smoothstep(0.15, 0.9, v),
-        ),
-        scale(u.colour(4), u.pulse() * 0.2 * v),
+    mix3(
+        u.colour(0),
+        cycle(u, v * 0.4 + t * 0.1),
+        smoothstep(0.15, 0.9, v) * 0.45,
     )
 }
 
@@ -1626,7 +1637,14 @@ fn wave_layer(u: &Uniforms, kind: i32, p: [f32; 2], aspect: f32, t: f32) -> V3 {
     }
 }
 
-fn feedback_pixel(u: &Uniforms, uv: [f32; 2], aspect: f32, last: &[V3], w: usize, h: usize) -> V3 {
+pub fn feedback_pixel(
+    u: &Uniforms,
+    uv: [f32; 2],
+    aspect: f32,
+    last: &[V3],
+    w: usize,
+    h: usize,
+) -> V3 {
     let t = u.time();
     let p = [(uv[0] - 0.5) * aspect, uv[1] - 0.5];
     let motion = u.extra(0);

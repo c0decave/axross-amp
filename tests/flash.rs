@@ -1,338 +1,286 @@
-//! Photosensitivity: no face flashes more than three times in any second,
-//! nor flashes red - WCAG 2.3.1 / 2.3.2, measured as ITU-R BT.1702 and
-//! the Harding test do. Every face (and its options) is rendered at 60
-//! frames a second through the worst music for it - a kick at 180 BPM,
-//! bursts of white noise four times a second, silence and full scale in
-//! turn - and each frame's relative luminance (sRGB made linear, then
-//! Y) is followed in every quarter of the picture and in the whole:
+//! Photosensitivity: every face, with its options, in either motion and in
+//! several colour schemes, through the worst music for it, measured by
+//! `support/flashmeter.rs` (WCAG 2.3.1 / 2.3.2 and ITU-R BT.1702: any field
+//! of a third of the picture each way - the picture taken as the whole
+//! screen - transiting over a quarter of it; luminance and saturated red;
+//! regular stripes). More than six transitions (three flashes) in any
+//! second fails, and so does a pattern hazard.
 //!
-//! - a *transition* is a change of at least 0.1 of the luminance between
-//!   a highest and a lowest (or a lowest and a highest) where the darker
-//!   is below 0.8; a *general flash* is two opposing transitions; over a
-//!   quarter of the picture (25 %, stricter than a quarter of a 10° field
-//!   of view on any real screen);
-//! - a *red flash* likewise in (R - G - B) x 320 of saturated red pixels
-//!   (R / (R + G + B) at least 0.8), a change of at least 20;
-//! - high-contrast stripes (a known trigger when they move) are counted
-//!   and reported.
-//!
-//! The test fails on more than 3 general or 3 red flashes in any second.
-//! A report of every face is printed (`--nocapture`).
+//! The suite runs the faces in Calm with the classic colours at 384 x 216;
+//! `--ignored` runs every scheme and both motions at 320 x 180 (the report).
 
 #[path = "support/faces.rs"]
 mod faces;
+#[path = "support/flashmeter.rs"]
+mod flashmeter;
 
+use axross_amp::analyzer::guard::Motion;
 use axross_amp::viz::{FACES, Group};
 use egui::vec2;
-
-const RATE: u32 = faces::RATE;
-const FPS: f32 = 60.0;
-
-/// The worst music for a picture: 3 s of a kick at 180 BPM over a pad, 3 s
-/// of white noise in bursts four times a second, 3 s of silence and full
-/// scale a second each.
-fn worst_music() -> Vec<f32> {
-    let mut seed = 11u32;
-    let mut noise = move || {
-        seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
-        (seed >> 9) as f32 / (1u32 << 23) as f32 - 0.5
-    };
-    let n = 9 * RATE as usize;
-    let mut out = Vec::with_capacity(n * 2);
-    for i in 0..n {
-        let t = i as f32 / RATE as f32;
-        let tau = std::f32::consts::TAU;
-        let v = if t < 3.0 {
-            let beat = (t * 3.0).fract();
-            let kick = (-beat * 18.0).exp() * (t * 55.0 * tau).sin() * 0.9;
-            let pad = (t * 220.0 * tau).sin() * 0.1 + (t * 330.0 * tau).sin() * 0.08;
-            kick + pad + noise() * 0.1 * (-beat * 40.0).exp()
-        } else if t < 6.0 {
-            if (t * 4.0).fract() < 0.5 {
-                noise() * 1.6
-            } else {
-                0.0
-            }
-        } else if ((t - 6.0) as u32).is_multiple_of(2) {
-            0.0
-        } else {
-            ((t * 110.0 * tau).sin() * 0.4 + (t * 440.0 * tau).sin() * 0.3 + noise() * 0.5)
-                .clamp(-1.0, 1.0)
-        };
-        out.push(v.clamp(-1.0, 1.0));
-        out.push((v * 0.95).clamp(-1.0, 1.0));
-    }
-    out
-}
-
-/// sRGB (0..255) to linear light.
-fn linear(v: u8) -> f32 {
-    let v = v as f32 / 255.0;
-    if v <= 0.04045 {
-        v / 12.92
-    } else {
-        ((v + 0.055) / 1.055).powf(2.4)
-    }
-}
-
-/// A frame's measures: the relative luminance and the saturated red of
-/// each quarter-of-the-picture region (3 x 3 overlapping, the whole last),
-/// and its share of high-contrast stripe edges.
-fn measure(img: &image::RgbaImage) -> (Vec<f32>, Vec<f32>, f32) {
-    let (w, h) = (img.width() as usize, img.height() as usize);
-    // 4 x 4 cells, each region 2 x 2 of them
-    let mut cell_y = [[0.0f64; 4]; 4];
-    let mut cell_r = [[0.0f64; 4]; 4];
-    let mut counts = [[0usize; 4]; 4];
-    let mut edges = 0usize;
-    for y in 0..h {
-        let mut last = None::<f32>;
-        let mut sign = 0i8;
-        for x in 0..w {
-            let p = img.get_pixel(x as u32, y as u32);
-            let (r, g, b) = (linear(p[0]), linear(p[1]), linear(p[2]));
-            let lum = 0.2126 * r + 0.7152 * g + 0.0722 * b;
-            let (sr, sg, sb) = (
-                p[0] as f32 / 255.0,
-                p[1] as f32 / 255.0,
-                p[2] as f32 / 255.0,
-            );
-            let sum = sr + sg + sb;
-            let red = if sum > 0.0 && sr / sum >= 0.8 {
-                ((sr - sg - sb) * 320.0).max(0.0)
-            } else {
-                0.0
-            };
-            let (cx, cy) = ((x * 4 / w).min(3), (y * 4 / h).min(3));
-            cell_y[cy][cx] += lum as f64;
-            cell_r[cy][cx] += red as f64;
-            counts[cy][cx] += 1;
-            // stripes: a light-dark-light run of strong steps
-            if let Some(l) = last {
-                let d = lum - l;
-                if d.abs() >= 0.25 {
-                    let s = if d > 0.0 { 1 } else { -1 };
-                    if s != sign && sign != 0 {
-                        edges += 1;
-                    }
-                    sign = s;
-                }
-            }
-            last = Some(lum);
-        }
-    }
-    let mut ys = Vec::with_capacity(10);
-    let mut rs = Vec::with_capacity(10);
-    for gy in 0..3 {
-        for gx in 0..3 {
-            let (mut sy, mut sr, mut n) = (0.0, 0.0, 0usize);
-            for cy in gy..gy + 2 {
-                for cx in gx..gx + 2 {
-                    sy += cell_y[cy][cx];
-                    sr += cell_r[cy][cx];
-                    n += counts[cy][cx];
-                }
-            }
-            ys.push((sy / n.max(1) as f64) as f32);
-            rs.push((sr / n.max(1) as f64) as f32);
-        }
-    }
-    let total: usize = counts.iter().flatten().sum();
-    ys.push((cell_y.iter().flatten().sum::<f64>() / total.max(1) as f64) as f32);
-    rs.push((cell_r.iter().flatten().sum::<f64>() / total.max(1) as f64) as f32);
-    (ys, rs, edges as f32 / (w * h) as f32)
-}
-
-/// The frames where a series makes a transition: a change of at least
-/// `step` from its last highest to a lowest or back, the darker of the
-/// two below `darker` (None: no such condition).
-fn transitions(series: &[f32], step: f32, darker: Option<f32>) -> Vec<usize> {
-    let mut out = Vec::new();
-    let Some(&first) = series.first() else {
-        return out;
-    };
-    let (mut extreme, mut dir) = (first, 0i8);
-    let dark = |v: f32| darker.is_none_or(|d| v < d);
-    for (i, &v) in series.iter().enumerate() {
-        match dir {
-            1 if v > extreme => extreme = v,
-            -1 if v < extreme => extreme = v,
-            1 | 0 if extreme - v >= step => {
-                if dark(v) {
-                    out.push(i);
-                }
-                dir = -1;
-                extreme = v;
-            }
-            -1 | 0 if v - extreme >= step => {
-                if dark(extreme) {
-                    out.push(i);
-                }
-                dir = 1;
-                extreme = v;
-            }
-            0 => {}
-            _ => {}
-        }
-    }
-    out
-}
-
-/// The most flashes (pairs of opposing transitions) in any one second.
-fn most_a_second(at: &[usize]) -> usize {
-    let span = FPS as usize;
-    let mut most = 0;
-    for (k, &start) in at.iter().enumerate() {
-        let n = at[k..].iter().take_while(|&&f| f < start + span).count();
-        most = most.max(n / 2);
-    }
-    most
-}
+use flashmeter::{FPS, Meter, worst_music};
 
 struct Report {
-    flashes: usize,
+    transitions: usize,
     red: usize,
+    pattern_frames: usize,
     stripes: f32,
 }
 
-/// A face (key, and how its options are set) through the worst music.
+/// A face (and how its options are set) through the worst music.
 fn run(
     key: &'static str,
-    motion: axross_amp::analyzer::guard::Motion,
+    motion: Motion,
+    scheme: &str,
+    size: (f32, f32),
+    part: f32,
     setup: impl Fn(&mut axross_amp::viz::VizState),
 ) -> Report {
-    let mut h = faces::harness(key, vec2(160.0, 90.0), true, 9.5);
+    let music = worst_music(part);
+    let secs = music.len() as f32 / 2.0 / 48_000.0;
+    let mut h = faces::harness(key, vec2(size.0, size.1), true, 1.0);
     h.state_mut().fps = FPS;
-    h.state_mut().sound = worst_music();
+    h.state_mut().sound = music;
     h.state_mut().analyzer.motion = motion;
+    h.state_mut().scheme = scheme.to_owned();
+    // (AMP_FLASH_NO_GUARD: the faces as they draw, without the guard - the
+    // "before" of the report)
+    h.state_mut().state.flash_off = std::env::var_os("AMP_FLASH_NO_GUARD").is_some();
     setup(&mut h.state_mut().state);
-    let frames = (9.0 * FPS) as usize;
-    let mut ys: Vec<Vec<f32>> = (0..10).map(|_| Vec::with_capacity(frames)).collect();
-    let mut rs: Vec<Vec<f32>> = (0..10).map(|_| Vec::with_capacity(frames)).collect();
-    let mut stripes = 0.0f32;
+    let frames = ((secs - 0.3) * FPS) as usize;
+    let mut meter = Meter::new(size.0 as usize, size.1 as usize);
     for _ in 0..frames {
         faces::frame(&mut h);
         let img = h.render().unwrap();
-        let (y, r, s) = measure(&img);
-        for k in 0..10 {
-            ys[k].push(y[k]);
-            rs[k].push(r[k]);
-        }
-        stripes = stripes.max(s);
+        meter.push(&img);
     }
-    let flashes = ys
-        .iter()
-        .map(|s| most_a_second(&transitions(s, 0.1, Some(0.8))))
-        .max()
-        .unwrap_or(0);
-    if std::env::var_os("AMP_FLASH_DEBUG").is_some() {
-        for (k, s) in ys.iter().enumerate() {
-            let t = transitions(s, 0.1, Some(0.8));
-            if most_a_second(&t) > 3 {
-                let at: Vec<String> = t
-                    .iter()
-                    .map(|f| format!("{:.2}", *f as f32 / FPS))
-                    .collect();
-                println!("{key} region {k}: transitions at {at:?}");
-            }
-        }
+    let (transitions, red) = meter.most();
+    if std::env::var_os("AMP_FLASH_WHERE").is_some() {
+        let (at, field) = meter.worst_field();
+        println!("{key}: field {field:?} transits at frames {at:?}");
     }
-    let red = rs
-        .iter()
-        .map(|s| most_a_second(&transitions(s, 20.0, None)))
-        .max()
-        .unwrap_or(0);
     Report {
-        flashes,
+        transitions,
         red,
-        stripes,
+        pattern_frames: meter.pattern_frames,
+        stripes: meter.stripes,
     }
 }
 
-#[test]
-fn the_analyzer_counts_flashes_as_the_guidelines_do() {
-    // a full-picture strobe at 5 Hz: 5 flashes a second; at 2 Hz: 2; a
-    // slow swell (1 s up, 1 s down): none faster than one
-    let strobe = |hz: f32| -> Vec<f32> {
-        (0..120)
-            .map(|i| {
-                if (((i as f32 / FPS) * hz * 2.0) as u32).is_multiple_of(2) {
-                    0.05
-                } else {
-                    0.6
-                }
-            })
-            .collect()
-    };
-    assert_eq!(most_a_second(&transitions(&strobe(5.0), 0.1, Some(0.8))), 5);
-    assert_eq!(most_a_second(&transitions(&strobe(2.0), 0.1, Some(0.8))), 2);
-    let swell: Vec<f32> = (0..240)
-        .map(|i| 0.3 + 0.3 * (i as f32 / FPS * std::f32::consts::PI).sin())
+/// Faces with their options: (key, option).
+fn cases(group: Option<Group>) -> Vec<(&'static str, &'static str)> {
+    let only = std::env::var("AMP_FLASH_ONLY").ok();
+    let wanted = |k: &str| only.as_deref().is_none_or(|o| o.split(',').any(|w| w == k));
+    let mut out: Vec<(&'static str, &'static str)> = FACES
+        .iter()
+        .filter(|f| f.group != Group::Off && group.is_none_or(|g| f.group == g) && wanted(f.key))
+        .map(|f| (f.key, ""))
         .collect();
-    assert!(most_a_second(&transitions(&swell, 0.1, Some(0.8))) <= 1);
-    // bright flicker above 0.8 (both states light) is no flash
-    let light: Vec<f32> = (0..120)
-        .map(|i| if i % 4 < 2 { 0.85 } else { 1.0 })
-        .collect();
-    assert_eq!(most_a_second(&transitions(&light, 0.1, Some(0.8))), 0);
+    if group.is_none_or(|g| g == Group::Classic) {
+        for (k, o) in [
+            ("waterfall", "bars"),
+            ("starfield", "trails"),
+            ("lissajous", "trails"),
+        ] {
+            if wanted(k) {
+                out.push((k, o));
+            }
+        }
+    }
+    out
 }
 
-/// The faces of `group` (and the options named) through the worst music,
-/// in either motion: none flashes more than three times a second.
-fn sweep(group: Group, options: &[(&'static str, &str)]) {
-    use axross_amp::analyzer::guard::Motion;
-    let mut lines = Vec::new();
+fn sweep(
+    group: Option<Group>,
+    motions: &[Motion],
+    schemes: &[&str],
+    size: (f32, f32),
+    part: f32,
+) -> Vec<String> {
     let mut failures = Vec::new();
-    for motion in [Motion::Calm, Motion::Intense] {
-        let mut runs: Vec<(String, Report)> = Vec::new();
-        // (AMP_FLASH_ONLY="a,b": those faces alone, to look again)
-        let only = std::env::var("AMP_FLASH_ONLY").ok();
-        let wanted = |k: &str| only.as_deref().is_none_or(|o| o.split(',').any(|w| w == k));
-        for face in FACES.iter().filter(|f| f.group == group && wanted(f.key)) {
-            runs.push((face.key.to_owned(), run(face.key, motion, |_| {})));
-        }
-        for (key, option) in options.iter().filter(|(k, _)| wanted(k)) {
-            runs.push((
-                format!("{key} ({option})"),
-                run(key, motion, |s| match *option {
-                    "smooth" => s.waterfall_hd = true,
-                    _ => s.classic_plus = true,
-                }),
-            ));
-        }
-        for (name, r) in &runs {
-            let line = format!(
-                "{motion:?} {name:<22} flashes/s {:>2}  red/s {:>2}  stripes {:.3}",
-                r.flashes, r.red, r.stripes
-            );
-            if r.flashes > 3 || r.red > 3 {
-                failures.push(line.clone());
+    let mut lines = Vec::new();
+    for &motion in motions {
+        for scheme in schemes {
+            for (key, option) in cases(group) {
+                let r = run(key, motion, scheme, size, part, |s| match option {
+                    "bars" => s.waterfall_hd = false,
+                    "trails" => s.classic_plus = true,
+                    _ => s.waterfall_hd = true,
+                });
+                let name = if option.is_empty() {
+                    key.to_owned()
+                } else {
+                    format!("{key} ({option})")
+                };
+                let line = format!(
+                    "{motion:?} {scheme:<8} {name:<20} transitions/s {:>2}  red {:>2}  stripes {:.2} ({} frames)",
+                    r.transitions, r.red, r.stripes, r.pattern_frames
+                );
+                if r.transitions > 6 || r.red > 6 || r.pattern_frames > 0 {
+                    failures.push(line.clone());
+                }
+                lines.push(line);
             }
-            lines.push(line);
         }
     }
     println!("{}", lines.join("\n"));
-    assert!(failures.is_empty(), "{failures:#?}");
+    failures
 }
 
 #[test]
-fn no_classic_face_flashes_more_than_three_times_a_second() {
-    sweep(
-        Group::Classic,
-        &[
-            ("waterfall", "smooth"),
-            ("starfield", "trails"),
-            ("lissajous", "trails"),
-        ],
+fn the_meter_counts_flashes_areas_and_patterns_as_the_guidelines_do() {
+    let (w, h) = (96usize, 54usize);
+    let frame = |f: &dyn Fn(usize, usize) -> u8| {
+        image::RgbaImage::from_fn(w as u32, h as u32, |x, y| {
+            let v = f(x as usize, y as usize);
+            image::Rgba([v, v, v, 255])
+        })
+    };
+    let strobe = |hz: f32, area: &dyn Fn(usize, usize) -> bool| {
+        let mut m = Meter::new(w, h);
+        for i in 0..120 {
+            let on = (((i as f32 / FPS) * hz * 2.0) as u32).is_multiple_of(2);
+            m.push(&frame(&|x, y| if on && area(x, y) { 200 } else { 20 }));
+        }
+        m.most().0
+    };
+    let all = |_: usize, _: usize| true;
+    // the whole picture at 5 Hz: 10 transitions a second; at 2 Hz: 4
+    assert_eq!(strobe(5.0, &all), 10);
+    assert_eq!(strobe(2.0, &all), 4);
+    // a field's quarter is enough (a ninth of the picture: over a quarter
+    // of a third-by-third field) ...
+    assert!(strobe(5.0, &|x, y| x < w / 3 && y < h / 3) >= 9);
+    // ... a sliver is not (2 % of a field)
+    assert_eq!(strobe(5.0, &|x, y| x < 2 && y < h / 3), 0);
+    // stripes: 12 pairs across the picture are a pattern; a smooth ramp not
+    let lum =
+        |f: &dyn Fn(usize, usize) -> f32| (0..w * h).map(|i| f(i % w, i / w)).collect::<Vec<f32>>();
+    assert!(
+        flashmeter::stripes(
+            &lum(&|x, _| if (x / 4) % 2 == 0 { 0.05 } else { 0.6 }),
+            w,
+            h
+        ) > 0.8
     );
+    assert!(flashmeter::stripes(&lum(&|x, _| x as f32 / w as f32 * 0.7), w, h) < 0.01);
 }
 
 #[test]
-fn no_analysis_face_flashes_more_than_three_times_a_second() {
-    sweep(Group::Analysis, &[]);
+fn no_classic_face_flashes() {
+    let f = sweep(
+        Some(Group::Classic),
+        &[Motion::Calm],
+        &["classic"],
+        (384.0, 216.0),
+        1.2,
+    );
+    assert!(f.is_empty(), "{f:#?}");
 }
 
 #[test]
-fn no_generative_face_flashes_more_than_three_times_a_second() {
-    sweep(Group::Generative, &[]);
+fn no_analysis_face_flashes() {
+    let f = sweep(
+        Some(Group::Analysis),
+        &[Motion::Calm],
+        &["classic"],
+        (384.0, 216.0),
+        1.2,
+    );
+    assert!(f.is_empty(), "{f:#?}");
+}
+
+#[test]
+fn no_generative_face_flashes() {
+    let f = sweep(
+        Some(Group::Generative),
+        &[Motion::Calm],
+        &["classic"],
+        (384.0, 216.0),
+        1.2,
+    );
+    assert!(f.is_empty(), "{f:#?}");
+}
+
+/// Every face, both motions, several schemes (the bright and the dark),
+/// at 320 x 180: `--ignored --nocapture` (the report).
+#[test]
+#[ignore]
+fn no_face_flashes_in_any_scheme_or_motion() {
+    // (AMP_FLASH_SCHEMES=neon,fire and AMP_FLASH_MOTIONS=intense: a part
+    // of it, to run the parts side by side)
+    let schemes = std::env::var("AMP_FLASH_SCHEMES").unwrap_or("classic,neon,mono,fire".into());
+    let schemes: Vec<&str> = schemes.split(',').collect();
+    let motions: Vec<Motion> = std::env::var("AMP_FLASH_MOTIONS")
+        .unwrap_or("calm,intense".into())
+        .split(',')
+        .map(|m| match m {
+            "intense" => Motion::Intense,
+            "reduced" => Motion::Reduced,
+            _ => Motion::Calm,
+        })
+        .collect();
+    let f = sweep(None, &motions, &schemes, (320.0, 180.0), 1.2);
+    assert!(f.is_empty(), "{f:#?}");
+}
+
+/// How near the guard's estimate is to the picture (`--ignored`, a probe).
+#[test]
+#[ignore]
+fn the_guards_estimate_follows_the_picture() {
+    let key: &'static str = Box::leak(
+        std::env::var("AMP_FLASH_PROBE")
+            .unwrap_or("ridges".into())
+            .into_boxed_str(),
+    );
+    let mut h = faces::harness(key, vec2(384.0, 216.0), true, 1.0);
+    h.state_mut().fps = FPS;
+    h.state_mut().sound = worst_music(1.2);
+    let mut strength = Vec::new();
+    for i in 0..360 {
+        faces::frame(&mut h);
+        if i % 10 == 0 {
+            let (raw, shown) = h.state().state.flash.pressure();
+            strength.push(format!(
+                "{:.2}/{raw}/{shown}",
+                h.state().state.flash.strength
+            ));
+        }
+    }
+    println!("veil: {}", strength.join(" "));
+    let img = h.render().unwrap();
+    let (est, cols, rows) = h.state().state.flash.estimated();
+    let (w, h_) = (img.width() as f32 - 8.0, img.height() as f32 - 8.0);
+    let lin = |v: u8| {
+        let v = v as f32 / 255.0;
+        if v <= 0.04045 {
+            v / 12.92
+        } else {
+            ((v + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    let mut lines = Vec::new();
+    for cy in (0..rows).step_by(3) {
+        let mut line = String::new();
+        for cx in (0..cols).step_by(3) {
+            let (x0, y0) = (
+                4.0 + cx as f32 * w / cols as f32,
+                4.0 + cy as f32 * h_ / rows as f32,
+            );
+            let (mut s, mut n) = (0.0, 0);
+            for y in y0 as u32..(y0 + h_ / rows as f32) as u32 {
+                for x in x0 as u32..(x0 + w / cols as f32) as u32 {
+                    let p = img.get_pixel(x, y);
+                    s += 0.2126 * lin(p[0]) + 0.7152 * lin(p[1]) + 0.0722 * lin(p[2]);
+                    n += 1;
+                }
+            }
+            line.push_str(&format!(
+                "{:.2}/{:.2} ",
+                s / n.max(1) as f32,
+                est[cy * cols + cx]
+            ));
+        }
+        lines.push(line);
+    }
+    println!("{key} (shown/estimated)\n{}", lines.join("\n"));
 }

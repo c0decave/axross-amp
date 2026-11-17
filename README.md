@@ -121,6 +121,14 @@ picture is made by `AMP_DEMO_TRACK=… cargo test --test ui -- --ignored`.</sub>
   playlist" - the list under the picture - and "Normal size"; Escape too), F11 full
   screen, a
   right click its menu with every face at a glance; "Off" draws nothing.
+  Escape closes only the innermost thing, one at a time: a track's details,
+  the URL field, the warning or a field being typed in before the large view
+  or full screen.
+- **The window**: wider than 1240 points the player is a centred column
+  1180 wide. Text on the cover's colour (the chosen row, the buttons) is light
+  or dark, whichever reads at 4.5 : 1 or more (WCAG 1.4.3) - tested over 144
+  cover hues; the cover's colour is lifted until it does against the ground
+  and the cards.
 - **Playlist**: shuffle (Previous goes back the way it came), repeat (all / one), a
   filter (Ctrl+F), sorting (title, artist, album with its discs and track numbers,
   file name, folder, length, reversed; names in natural order), several rows at once
@@ -175,19 +183,59 @@ picture is made by `AMP_DEMO_TRACK=… cargo test --test ui -- --ignored`.</sub>
 
 **Warning.** The pictures move with the music, and moving, flashing pictures
 and stripes can bring on seizures in people with photosensitive epilepsy -
-some of whom do not know it. axross-amp does **not** yet guarantee that its
-pictures stay within the WCAG 2.3.1 limit (three flashes in any second) for
-every kind of music: an independent review found the oscilloscope and other
-faces flashing faster than that with some sounds (a bass alternating with
-noise, fast sweeps), and the moiré face is a moving high-contrast pattern.
-Work to measure this soundly and to limit it for every face is under way.
+some of whom do not know it. If you or anyone watching is sensitive to
+flashing light or patterns, do not watch the pictures: turn them off ("Off"
+in the faces' menu) or choose the cover.
 
-What there is now: the *Calm* motion (the default) slows what drives the
-pictures' brightness and the generative pictures' pace; *Intense* is chosen
-only after a photosensitivity warning, and not where the desktop asks for
-reduced motion. If you or anyone watching is sensitive to flashing light or
-patterns, do not watch the pictures - turn them off ("Off" in the faces'
-menu) or choose the cover.
+What axross-amp does about it:
+
+- **A flash guard at the output.** After a face has drawn a frame, the guard
+  estimates the picture on a grid of cells (128 across): the frame's shapes,
+  tessellated and laid onto the cells, a shader face by its own function
+  evaluated on the CPU (48 across). It follows each cell's relative luminance and
+  saturated red, and each *field* - a third of the picture each way, a 10°
+  view when the face fills the screen - in which a quarter of the cells
+  change the same way at once. Where a field has changed so three times in
+  the last second, it lays a veil over it: the cells blended towards a slow
+  average of themselves (more persistence), up to 85 - 95 %, easing off a
+  second after the danger is gone. It works the same whatever a face draws,
+  on the GPU and on the CPU's fallback. It costs about 0.5 - 3 ms of the CPU a
+  frame (`--release`; the spirograph's thousands of segments 7.6 ms), the faces
+  themselves 0.1 - 0.6 ms; the frame rate's cap on a software renderer counts
+  it in.
+- **Calmer faces.** What drives the pictures' brightness (the bars, the
+  beat's pulse, the VU meter, the oscilloscope's height) turns no faster
+  than every quarter of a second in *Calm*; the fire is orange and slow;
+  the moiré has few, broad, soft, slow rings; the tunnel fewer rings, slower;
+  the mel spectrogram's rows are eased in time; dense stripes (a noise-dense
+  oscilloscope trace, particle columns) are drawn with less contrast.
+- **Calm by default.** *Intense* (Options) is livelier and only chosen after
+  a photosensitivity warning; where the desktop asks for reduced motion
+  (GNOME, KDE, GTK's settings, macOS, Windows) it cannot be chosen and the
+  pictures are calmer still.
+- **Measured.** `tests/flash.rs` renders every face and its options at 60
+  frames a second (384 x 216; every scheme and both motions at 320 x 180
+  with `--ignored`) through music made to provoke them - kicks at 120 and
+  240 BPM, gated noise, bass and treble in turn at steady loudness, fast
+  sweeps, left and right in turn, noise bursts, silence and full scale - and
+  measures each frame as WCAG 2.3.1 / 2.3.2 and ITU-R BT.1702 describe:
+  per pixel, any field a third of the picture each way (the picture taken as
+  the whole screen: the strictest case) with a quarter of it changing the
+  same way at once; more than six transitions in any second fails, and so
+  do saturated-red flashes and regular stripes covering a quarter of the
+  picture while they move (or 40 % standing). Measured so (Calm, Classic,
+  384 x 216, 52 faces and options), 0.10.0's faces failed in 9 cases: the
+  mel spectrogram (37 transitions a second, and its stripes), the
+  waterfall's bars and the spirograph (18), the oscilloscope (16, and its
+  stripes), the kaleidoscope (15), the tunnel (10), the moiré (7), the
+  particles and the polygon morph (their stripes). Today's calmer faces
+  without the guard fail in 4 (the waterfall's bars and the spirograph 18,
+  the kaleidoscope 15, the oscilloscope 11); with the guard, in none - at
+  most 4 transitions a second, and no stripes.
+
+What is not claimed: the guard estimates the picture (text and covers
+roughly); the test's music and sizes are ours, not every song or screen. It
+is a strong precaution, not a medical guarantee.
 
 ## Use
 

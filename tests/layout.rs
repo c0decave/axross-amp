@@ -99,6 +99,14 @@ fn the_playlist_stays_in_sight_at_every_size() {
                 Some(r) => failures.push(format!("{name}: the playing row at {r:?}")),
                 None => failures.push(format!("{name}: the playing row is not shown")),
             }
+            // a wide window: a column of a readable width in the middle (not
+            // a card stretched across it)
+            if w > 1240.0 {
+                let picture = win.get_by_label_contains("Visualization: ").rect();
+                if picture.width() > 1190.0 || (picture.center().x - w / 2.0).abs() > 4.0 {
+                    failures.push(format!("{name}: the picture {picture:?} not in a column"));
+                }
+            }
             win.render()
                 .unwrap()
                 .save(shots().join(format!("{name}.png")))

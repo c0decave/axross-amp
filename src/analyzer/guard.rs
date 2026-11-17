@@ -14,6 +14,8 @@ pub enum Motion {
     #[default]
     Calm,
     Intense,
+    /// The desktop asks for reduced motion: calmer still.
+    Reduced,
 }
 
 impl Motion {
@@ -22,6 +24,7 @@ impl Motion {
         match self {
             Motion::Calm => 0.25,
             Motion::Intense => 0.17,
+            Motion::Reduced => 0.4,
         }
     }
 
@@ -30,6 +33,7 @@ impl Motion {
         match self {
             Motion::Calm => (0.06, 0.14),
             Motion::Intense => (0.03, 0.09),
+            Motion::Reduced => (0.12, 0.25),
         }
     }
 
@@ -38,6 +42,7 @@ impl Motion {
         match self {
             Motion::Calm => 0.7,
             Motion::Intense => 1.0,
+            Motion::Reduced => 0.45,
         }
     }
 }

@@ -437,6 +437,18 @@ fn particles(f: &Frame<'_>, g: Area, cv: &mut Canvas, st: &mut State) {
             let x = i as f32 * step + step / 2.0;
             let on = ((a.bars[i] * rows as f32 + 0.5) as usize).min(rows);
             let high = ((a.peaks[i] * rows as f32 + 0.5) as usize).min(rows);
+            // (behind a lit column, a soft band of its colours: the dots on
+            // it, not a grid of bright dots on black - a regular pattern of
+            // high contrast is what a photosensitive eye cannot bear)
+            if on > 0 {
+                let top = h - 2.0 - on as f32 * pitch;
+                let wide = (step * 0.9).max(size);
+                pen.vertical(
+                    g.r(x - wide / 2.0, top, wide, on as f32 * pitch),
+                    mix(s.background, s.at(on as f32 / rows as f32), 0.75),
+                    mix(s.background, s.at(0.0), 0.75),
+                );
+            }
             for r in 0..rows {
                 let level = s.at((r as f32 + 0.5) / rows as f32);
                 let colour = if high > 0 && r == high - 1 {
@@ -1086,8 +1098,20 @@ fn scope(f: &Frame<'_>, g: Area, cv: &mut Canvas, st: &mut State) {
             return;
         }
         // (here: from a rising zero crossing - the wave stands still -
-        // half the samples, a point a pixel at most)
+        // half the samples, a point a pixel at most; a wave as dense as
+        // noise, whose trace lies in stripes, drawn dimmer: moving stripes
+        // of high contrast are what a photosensitive eye cannot bear)
         let points = points.min(wave.len());
+        let crossings = wave
+            .windows(2)
+            .filter(|w| (w[0] <= 0.0) != (w[1] <= 0.0))
+            .count() as f32
+            / points.max(1) as f32;
+        let trace = mix(
+            s.background,
+            s.trace(),
+            (1.3 - crossings * 2.0).clamp(0.35, 1.0),
+        );
         pen.points.clear();
         for p in 0..points {
             let k = p * (wave.len() - 1) / (points - 1);
@@ -1097,7 +1121,7 @@ fn scope(f: &Frame<'_>, g: Area, cv: &mut Canvas, st: &mut State) {
                 mid - v * (mid - 2.0),
             ));
         }
-        pen.line(TRACE, s.trace());
+        pen.line(TRACE, trace);
     });
 }
 

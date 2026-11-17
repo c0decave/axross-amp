@@ -857,11 +857,15 @@ fn skyline(f: &Frame<'_>, pen: &mut Pen<'_>, st: &mut State) {
         let dir = vec2(angle.sin(), -angle.cos());
         let side = vec2(-dir.y, dir.x) * reach * 0.09;
         let tip = foot + dir * reach;
-        let beam = glow(s.high, 0.05 + 0.18 * a.energy.min(1.0) + 0.1 * a.beat.pulse);
-        pen.quad(
-            [foot, foot, tip + side, tip - side],
-            [beam, beam, Color32::TRANSPARENT, Color32::TRANSPARENT],
-        );
+        // (soft: a bright core in a wider haze, fading out as it goes)
+        let strength = 0.04 + 0.12 * a.energy.min(1.0) + 0.06 * a.beat.pulse;
+        for (wide, k) in [(1.0f32, 0.35), (0.55, 0.45), (0.22, 0.7)] {
+            let beam = glow(mix(s.high, s.peak, 0.3), strength * k);
+            pen.quad(
+                [foot, foot, tip + side * wide, tip - side * wide],
+                [beam, beam, Color32::TRANSPARENT, Color32::TRANSPARENT],
+            );
+        }
     }
     let step = (a.time * 6.0) as u32;
     let treble = third(a, 2);
@@ -1264,11 +1268,13 @@ fn morph(f: &Frame<'_>, pen: &mut Pen<'_>, st: &mut State, dt: f32) {
     let t = ease(st.morph.2);
     let c = r.center();
     let size = r.height() / 2.0 - 4.0;
-    const COPIES: usize = 24;
+    // (fewer copies, the outer ones fainter: closely packed outlines that
+    // move are a pattern a photosensitive eye cannot bear)
+    const COPIES: usize = 15;
     const POINTS: usize = 120;
     // copies from the middle out past the picture's sides (k < 0: outside)
     for copy in (0..COPIES).rev() {
-        let k = copy as f32 / 16.0 - 0.5;
+        let k = copy as f32 / 10.0 - 0.5;
         let scale = size * (1.0 - k * 0.92) * (1.0 + 0.06 * a.beat.pulse * (1.0 - k.abs()));
         let turn = st.morph_turn - k * (0.6 + 1.2 * a.energy);
         pen.points.clear();
@@ -1455,9 +1461,12 @@ fn typography(f: &Frame<'_>, pen: &mut Pen<'_>, st: &mut State, dt: f32) {
         .painter
         .layout_no_wrap(format!("{}  ·  ", f.title), small, Color32::WHITE);
     let lw = line.size().x.max(40.0);
-    let rows = ((r.height() / (line.size().y * 1.25)).ceil() as i32).max(1);
+    // (whole rows only: none cut by the picture's edge)
+    let pitch = line.size().y * 1.3;
+    let rows = ((r.height() / pitch).floor() as i32).max(1);
+    let top = r.center().y - (rows as f32 - 1.0) * pitch / 2.0;
     for row in 0..rows {
-        let y = r.top() + (row as f32 + 0.5) * r.height() / rows as f32;
+        let y = top + row as f32 * pitch;
         let way = if row % 2 == 0 { 1.0 } else { -1.0 };
         let shift =
             (st.marquee * way * (0.6 + 0.25 * row as f32) + row as f32 * 97.0).rem_euclid(lw);

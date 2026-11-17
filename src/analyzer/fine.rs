@@ -374,7 +374,15 @@ impl Fine {
             self.clock -= 1.0 / STEP_HZ;
             self.steps += 1;
             self.head = (self.head + 1) % STEPS;
-            self.mel_history[self.head] = self.mel;
+            // (the spectrogram's rows eased in time: scrolled past a pixel,
+            // a step's sharp change made it flicker - each row now keeps
+            // most of the one before)
+            let before = self.mel_history[(self.head + STEPS - 1) % STEPS];
+            let mut row = self.mel;
+            for (v, b) in row.iter_mut().zip(before) {
+                *v = b + (*v - b) * 0.25;
+            }
+            self.mel_history[self.head] = row;
             self.chroma_history[self.head] = self.chroma;
             self.key_history[self.head] = self.keys;
             self.hd_history[self.head] = self.hd;

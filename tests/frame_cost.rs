@@ -38,6 +38,8 @@ fn every_face_draws_a_frame_in_a_few_milliseconds_at_any_size() {
         let mut line = format!("{:<13}", face.key);
         for (w, h, limit) in sizes {
             let mut harness = faces::harness_cpu(face.key, egui::vec2(w, h), 3.0);
+            // (AMP_NO_GUARD: what the face costs without the flash guard)
+            harness.state_mut().state.flash_off = std::env::var_os("AMP_NO_GUARD").is_some();
             {
                 let app = harness.state_mut();
                 app.sound = noise(3.0);

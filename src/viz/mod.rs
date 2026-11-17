@@ -11,6 +11,7 @@
 
 pub mod analysis;
 pub mod classic;
+pub mod flashguard;
 pub mod generative;
 pub mod gpu;
 
@@ -338,6 +339,33 @@ pub fn cover_scheme(rgba: &[u8]) -> Option<Scheme> {
         Some(other) => ramp_between(hue, other),
         None => ramp(hue),
     })
+}
+
+/// A scheme with every colour's hue turned by `degrees` (lightness and
+/// chroma kept: OKLCH) - each generative face its own neighbour of the
+/// cover's colours, not all the same ramp.
+pub fn turned(s: &Scheme, degrees: f32) -> Scheme {
+    let turn = |c: Color32| {
+        let [l, ch, h] = oklch(c);
+        from_oklch(l, ch, h + degrees)
+    };
+    Scheme {
+        background: turn(s.background),
+        low: turn(s.low),
+        mid: turn(s.mid),
+        high: turn(s.high),
+        peak: turn(s.peak),
+    }
+}
+
+/// A generative face's turn of the cover's colours (degrees), the same each
+/// time for a face.
+pub fn face_turn(key: &str) -> f32 {
+    const TURNS: [f32; 7] = [-50.0, -30.0, -15.0, 0.0, 15.0, 30.0, 50.0];
+    let h = key
+        .bytes()
+        .fold(7u32, |h, b| h.wrapping_mul(31).wrapping_add(b as u32));
+    TURNS[(h % TURNS.len() as u32) as usize]
 }
 
 /// As [`ramp`], the quiet end in a second hue: low in `other`, middle in
@@ -905,6 +933,10 @@ pub struct VizState {
     /// The starfield and the stereo scope with trails and a glow, not as
     /// axross draws them.
     pub classic_plus: bool,
+    /// The flash guard over the picture (off only to measure what it costs).
+    pub flash: flashguard::FlashGuard,
+    #[doc(hidden)]
+    pub flash_off: bool,
 }
 
 /// Seconds a face takes to fade into the next.
@@ -966,11 +998,19 @@ pub struct Frame<'a> {
 pub fn draw(f: &Frame<'_>, key: &str, state: &mut VizState) {
     let ppp = f.painter.pixels_per_point();
     state.canvas.begin(ppp);
+    // (the shapes drawn from here on - the ground too - and the shader
+    // faces painted: what the flash guard looks at)
+    let layer = f.painter.layer_id();
+    let first = f
+        .painter
+        .ctx()
+        .graphics(|g| g.get(layer).map_or(0, |l| l.next_idx().0));
     f.painter.rect_filled(f.rect, 8.0, f.s.background);
     if f.rect.width() < 8.0 || f.rect.height() < 8.0 {
         return;
     }
     let face = find(key).unwrap_or(&FACES[0]);
+    state.gpu.drawn.clear();
     if state.shown != face.key {
         if !state.shown.is_empty() && state.shown != "off" && face.key != "off" {
             state.fading = Some((state.shown, 0.0));
@@ -993,6 +1033,14 @@ pub fn draw(f: &Frame<'_>, key: &str, state: &mut VizState) {
             .request_repaint_after(std::time::Duration::from_secs_f32(state.gpu.interval));
     } else {
         one(f, face.key, state, 1.0, false);
+    }
+    // the flash guard: a veil over whatever would flash too fast
+    if face.key != "off" && !state.flash_off {
+        let drawn = std::mem::take(&mut state.gpu.drawn);
+        state
+            .flash
+            .guard(f.painter, first, f.rect.shrink(4.0), &drawn, f.dt);
+        state.gpu.drawn = drawn;
     }
 }
 
@@ -1173,6 +1221,16 @@ mod tests {
             s.mid.b() > s.mid.r() && s.mid.b() > s.mid.g(),
             "blue in the middle: {s:?}"
         );
+        // turned for a face: the same lightness, another hue
+        let t = turned(&s, 40.0);
+        for (a, b) in [(s.low, t.low), (s.mid, t.mid), (s.high, t.high)] {
+            let ([la, _, ha], [lb, _, hb]) = (oklch(a), oklch(b));
+            assert!((la - lb).abs() < 0.03, "lightness kept");
+            assert!(
+                ((hb - ha).rem_euclid(360.0) - 40.0).abs() < 8.0,
+                "hue turned: {ha} {hb}"
+            );
+        }
         // two hues: the quiet end in the cover's orange, not the blue's
         assert!(
             s.low.r() > s.low.b(),

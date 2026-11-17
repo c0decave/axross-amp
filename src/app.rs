@@ -1730,7 +1730,13 @@ impl App {
         if pressed(Key::F11) {
             self.set_fullscreen(ui.ctx(), !self.fullscreen);
         }
-        if pressed(Key::Escape) {
+        // (Escape closes the innermost thing only: a dialog open or a field
+        // being typed in takes it, not the large picture behind them)
+        let inner = self.details.is_some()
+            || self.url_open
+            || self.intense_asked
+            || ui.ctx().memory(|m| m.focused().is_some());
+        if pressed(Key::Escape) && !inner {
             if self.fullscreen {
                 self.set_fullscreen(ui.ctx(), false);
             } else if self.big_visual {
@@ -2149,7 +2155,7 @@ impl App {
 
     fn now_playing(&mut self, ui: &mut Ui) {
         // a card tinted with the cover's colour
-        let tint = viz::mix(PANEL, self.accent, 0.14);
+        let tint = card_tint(self.accent);
         egui::Frame::new()
             .fill(tint)
             .corner_radius(CornerRadius::same(12))
@@ -2553,7 +2559,14 @@ impl App {
     /// The pictures' colours: the cover's when wanted and it has some.
     fn scheme(&self) -> viz::Scheme {
         match &self.cover_scheme {
-            Some(s) if self.amp.cover_colours && self.scheme_key != "custom" => *s,
+            Some(s) if self.amp.cover_colours && self.scheme_key != "custom" => {
+                // (the generative faces each a neighbour of the cover's hues)
+                if viz::find(self.mode).is_some_and(|f| f.group == viz::Group::Generative) {
+                    viz::turned(s, viz::face_turn(self.mode))
+                } else {
+                    *s
+                }
+            }
             _ => viz::scheme(&self.scheme_key, &self.custom_colours),
         }
     }
@@ -2691,7 +2704,9 @@ impl App {
         // (off: no analysis, no frames for it; paused: the picture stands
         // as it was, not emptied)
         let frozen = self.frozen();
-        self.analyzer.motion = if self.amp.motion == "intense" && !self.desktop_reduces_motion() {
+        self.analyzer.motion = if self.desktop_reduces_motion() {
+            crate::analyzer::guard::Motion::Reduced
+        } else if self.amp.motion == "intense" {
             crate::analyzer::guard::Motion::Intense
         } else {
             crate::analyzer::guard::Motion::Calm
@@ -3014,7 +3029,7 @@ impl App {
         let total: u64 = self.playlist.tracks.iter().map(|t| t.duration_ms).sum();
         ui.horizontal(|ui| {
             let n = self.playlist.tracks.len();
-            let list = format!("Playlist  {} · {}", n, clock(total as f64 / 1000.0));
+            let list = format!("Playlist  {} · {}", n, length(total as f64 / 1000.0));
             if ui
                 .selectable_label(self.playlist_open && !self.eq_page, list)
                 .on_hover_text("The playlist")
@@ -3407,28 +3422,34 @@ impl App {
                         );
                     }
                     let duration = if track.duration_ms > 0 {
-                        clock(track.duration_ms as f64 / 1000.0)
+                        length(track.duration_ms as f64 / 1000.0)
                     } else if playlist::is_stream(&track.path) {
                         "📻".into()
                     } else {
                         String::new()
                     };
+                    // the title, and under it who and from which album (one
+                    // line: in the middle of the row, as its number)
+                    let (line, by) = row_text(track, &title);
+                    let first_y = if by.is_empty() {
+                        rect.center().y - rect.top()
+                    } else {
+                        13.0
+                    };
                     painter.text(
-                        rect.right_top() + vec2(-8.0, 13.0),
+                        egui::pos2(rect.right() - 8.0, rect.top() + first_y),
                         egui::Align2::RIGHT_CENTER,
                         duration,
                         egui::FontId::monospace(12.0),
                         MUTED,
                     );
-                    // the title, and under it who and from which album
                     let clip = egui::Rect::from_min_max(
                         rect.left_top() + vec2(46.0, 0.0),
                         rect.right_bottom() - vec2(64.0, 0.0),
                     );
                     let clipped = painter.with_clip_rect(clip);
-                    let (line, by) = row_text(track, &title);
                     clipped.text(
-                        clip.left_top() + vec2(0.0, 13.0),
+                        clip.left_top() + vec2(0.0, first_y),
                         egui::Align2::LEFT_CENTER,
                         line,
                         egui::FontId::proportional(14.0),
@@ -3533,6 +3554,104 @@ impl App {
             {
                 self.play_index(i, 0, true);
             }
+        }
+    }
+
+    /// The Player tab's page: what plays, the picture, the controls, the
+    /// playlist or the equalizer.
+    fn player_page(&mut self, ui: &mut Ui) {
+        self.no_sound_banner(ui);
+        if self.big_visual {
+            // the picture large, what plays above it - and in sight,
+            // the way back and the playlist (under the picture when
+            // asked for)
+            ui.horizontal(|ui| {
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if ui
+                        .button("Normal size")
+                        .on_hover_text("Esc, or a double-click on the picture")
+                        .clicked()
+                    {
+                        if self.fullscreen {
+                            self.set_fullscreen(ui.ctx(), false);
+                        } else {
+                            self.big_visual = false;
+                        }
+                    }
+                    let list = if self.big_list {
+                        "Hide the playlist"
+                    } else {
+                        "Show the playlist"
+                    };
+                    if ui.button(list).clicked() {
+                        self.big_list = !self.big_list;
+                    }
+                    ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                        self.title_line(ui)
+                    });
+                });
+            });
+            let all = ui.available_height();
+            let list = if self.big_list {
+                (all * 0.38).max(LEAST_LIST)
+            } else {
+                0.0
+            };
+            self.visual(ui, (all - 92.0 - list).max(120.0));
+            ui.add_space(6.0);
+            self.position(ui);
+            self.transport(ui);
+            if self.big_list {
+                ui.add_space(4.0);
+                self.playlist_view(ui);
+            }
+            return;
+        }
+        if self.playlist.tracks.is_empty() && self.adding.is_empty() {
+            self.empty_state(ui);
+            return;
+        }
+        // (a low window, or the cover as the picture: what plays
+        // in one line)
+        if ui.available_height() < 560.0 || self.mode == "cover" {
+            self.title_line(ui);
+        } else {
+            self.now_playing(ui);
+            ui.add_space(8.0);
+        }
+        // the picture large: what the controls and the playlist's
+        // rows leave (a short list leaves more), at least 45 % of it
+        // (what lies between the picture and the list, as tall as
+        // it was last laid out - not a guess)
+        let lower = self.playlist_open || self.eq_page;
+        let room = ui.available_height() - self.controls_height;
+        let picture = if lower {
+            let list = if self.eq_page {
+                240.0
+            } else {
+                (self.visible_rows().len() as f32 * 44.0 + 76.0).max(130.0)
+            };
+            // the picture gives way first: the list keeps at least
+            // three rows whatever the window
+            (room - list)
+                .max(room * 0.45)
+                .min(room - LEAST_LIST)
+                .clamp(80.0, 900.0)
+        } else {
+            (room - 36.0).max(80.0)
+        };
+        self.visual(ui, picture);
+        let top = ui.cursor().top();
+        ui.add_space(6.0);
+        self.position(ui);
+        self.transport(ui);
+        ui.add_space(6.0);
+        self.lower_switch(ui);
+        self.controls_height = ui.cursor().top() - top;
+        if self.eq_page {
+            self.equalizer_page(ui);
+        } else if self.playlist_open {
+            self.playlist_view(ui);
         }
     }
 
@@ -3798,98 +3917,17 @@ impl eframe::App for App {
                     }
                     Tab::Player => {}
                 }
-                self.no_sound_banner(ui);
-                if self.big_visual {
-                    // the picture large, what plays above it - and in sight,
-                    // the way back and the playlist (under the picture when
-                    // asked for)
-                    ui.horizontal(|ui| {
-                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            if ui
-                                .button("Normal size")
-                                .on_hover_text("Esc, or a double-click on the picture")
-                                .clicked()
-                            {
-                                if self.fullscreen {
-                                    self.set_fullscreen(ui.ctx(), false);
-                                } else {
-                                    self.big_visual = false;
-                                }
-                            }
-                            let list = if self.big_list {
-                                "Hide the playlist"
-                            } else {
-                                "Show the playlist"
-                            };
-                            if ui.button(list).clicked() {
-                                self.big_list = !self.big_list;
-                            }
-                            ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
-                                self.title_line(ui)
-                            });
-                        });
+                // (a wide window: a column of the width it reads best at,
+                // in the middle - not a card stretched across 1,900 px)
+                let room = ui.available_rect_before_wrap();
+                if room.width() > 1240.0 && !self.big_visual {
+                    let column =
+                        egui::Rect::from_center_size(room.center(), vec2(1180.0, room.height()));
+                    ui.scope_builder(egui::UiBuilder::new().max_rect(column), |ui| {
+                        self.player_page(ui)
                     });
-                    let all = ui.available_height();
-                    let list = if self.big_list {
-                        (all * 0.38).max(LEAST_LIST)
-                    } else {
-                        0.0
-                    };
-                    self.visual(ui, (all - 92.0 - list).max(120.0));
-                    ui.add_space(6.0);
-                    self.position(ui);
-                    self.transport(ui);
-                    if self.big_list {
-                        ui.add_space(4.0);
-                        self.playlist_view(ui);
-                    }
-                    return;
-                }
-                if self.playlist.tracks.is_empty() && self.adding.is_empty() {
-                    self.empty_state(ui);
-                    return;
-                }
-                // (a low window, or the cover as the picture: what plays
-                // in one line)
-                if ui.available_height() < 560.0 || self.mode == "cover" {
-                    self.title_line(ui);
                 } else {
-                    self.now_playing(ui);
-                    ui.add_space(8.0);
-                }
-                // the picture large: what the controls and the playlist's
-                // rows leave (a short list leaves more), at least 45 % of it
-                // (what lies between the picture and the list, as tall as
-                // it was last laid out - not a guess)
-                let lower = self.playlist_open || self.eq_page;
-                let room = ui.available_height() - self.controls_height;
-                let picture = if lower {
-                    let list = if self.eq_page {
-                        240.0
-                    } else {
-                        (self.visible_rows().len() as f32 * 44.0 + 76.0).max(130.0)
-                    };
-                    // the picture gives way first: the list keeps at least
-                    // three rows whatever the window
-                    (room - list)
-                        .max(room * 0.45)
-                        .min(room - LEAST_LIST)
-                        .clamp(80.0, 900.0)
-                } else {
-                    (room - 36.0).max(80.0)
-                };
-                self.visual(ui, picture);
-                let top = ui.cursor().top();
-                ui.add_space(6.0);
-                self.position(ui);
-                self.transport(ui);
-                ui.add_space(6.0);
-                self.lower_switch(ui);
-                self.controls_height = ui.cursor().top() - top;
-                if self.eq_page {
-                    self.equalizer_page(ui);
-                } else if self.playlist_open {
-                    self.playlist_view(ui);
+                    self.player_page(ui);
                 }
             });
         self.url_window(&ctx);
@@ -4021,6 +4059,13 @@ fn host_of(url: &str) -> String {
     authority.rsplit('@').next().unwrap_or(authority).to_owned()
 }
 
+/// A length (a track's, the playlist's): to the nearest second, the same
+/// rule everywhere (a half-second track is 0:01, not 0:00 while the list's
+/// total says 0:15).
+pub fn length(secs: f64) -> String {
+    clock((secs + 0.5).floor())
+}
+
 pub fn clock(secs: f64) -> String {
     let s = secs.max(0.0) as u64;
     if s >= 3600 {
@@ -4043,8 +4088,9 @@ fn style(ctx: &egui::Context) {
     visuals.panel_fill = Color32::from_rgb(0x0d, 0x11, 0x17);
     visuals.window_fill = PANEL;
     visuals.extreme_bg_color = Color32::from_rgb(0x0a, 0x0d, 0x12);
-    visuals.selection.bg_fill = ACCENT.gamma_multiply(0.6);
-    visuals.selection.stroke = Stroke::new(1.0, ACCENT);
+    let (fill, ink) = selection_colours(ACCENT);
+    visuals.selection.bg_fill = fill;
+    visuals.selection.stroke = Stroke::new(1.0, ink);
     visuals.hyperlink_color = ACCENT;
     // (no lines down the side of what folds open)
     visuals.indent_has_left_vline = false;
@@ -4117,10 +4163,39 @@ fn bold(size: f32) -> egui::FontId {
 /// The window's colours of selection and links in `accent`.
 fn accent_style(ctx: &egui::Context, accent: Color32) {
     let mut visuals = ctx.global_style().visuals.clone();
-    visuals.selection.bg_fill = accent.gamma_multiply(0.6);
-    visuals.selection.stroke = Stroke::new(1.0, accent);
+    let (fill, ink) = selection_colours(accent);
+    visuals.selection.bg_fill = fill;
+    visuals.selection.stroke = Stroke::new(1.0, ink);
     visuals.hyperlink_color = accent;
     ctx.set_visuals(visuals);
+}
+
+/// The now-playing card's fill: the window's panel tinted with the accent,
+/// a light accent less (its quiet words and the accent must read on it).
+pub fn card_tint(accent: Color32) -> Color32 {
+    let mut k = 0.14;
+    loop {
+        let card = viz::mix(PANEL, accent, k);
+        if k <= 0.02 || (viz::contrast(MUTED, card) >= 4.5 && viz::contrast(accent, card) >= 4.5) {
+            return card;
+        }
+        k -= 0.02;
+    }
+}
+
+/// What is chosen (the tab shown, the playlist's chip, a selected row):
+/// filled with the accent, its words light or dark on it - whichever
+/// reads (WCAG 1.4.3: 4.5:1), the fill made darker where neither does.
+pub fn selection_colours(accent: Color32) -> (Color32, Color32) {
+    let mut fill = viz::mix(PANEL, accent, 0.7);
+    for _ in 0..12 {
+        let ink = ink_on(fill);
+        if viz::contrast(ink, fill) >= 4.5 {
+            return (fill, ink);
+        }
+        fill = viz::mix(fill, PANEL, 0.15);
+    }
+    (fill, ink_on(fill))
 }
 
 /// The toolbar's icons, drawn (one set, one stroke: not emoji glyphs of
@@ -4136,7 +4211,7 @@ enum Icon {
 fn icon_button(ui: &mut Ui, icon: Icon, text: &str, min: egui::Vec2) -> egui::Response {
     // (room for the icon: the text set off by spaces, the icon drawn there)
     let response = ui
-        .add(egui::Button::new(format!("     {text}")).min_size(min))
+        .add(egui::Button::new(format!("       {text}")).min_size(min))
         .accessible_name(text);
     let colour = ui.style().interact(&response).text_color();
     let stroke = Stroke::new(1.4, colour);
@@ -4144,7 +4219,7 @@ fn icon_button(ui: &mut Ui, icon: Icon, text: &str, min: egui::Vec2) -> egui::Re
     let left = if min.x > 0.0 {
         // (a wide button: its text centred, the icon before it)
         let galley = painter.layout_no_wrap(
-            format!("     {text}"),
+            format!("       {text}"),
             egui::TextStyle::Button.resolve(ui.style()),
             colour,
         );
@@ -4234,30 +4309,87 @@ fn slow_note(slow: bool) -> String {
     }
 }
 
-/// Whether the desktop asks for reduced motion, found out on a thread
-/// (GNOME: animations off); None until known, or where there is no way to
-/// ask.
+/// Whether the desktop asks for reduced motion, found out on a thread;
+/// None until known, or where there is no way to ask.
 fn desktop_reduced_motion() -> Arc<Mutex<Option<bool>>> {
     let out = Arc::new(Mutex::new(None));
-    #[cfg(target_os = "linux")]
-    {
-        let found = out.clone();
-        let _ = std::thread::Builder::new()
-            .name("amp-motion".into())
-            .spawn(move || {
-                let answer = std::process::Command::new("gsettings")
-                    .args(["get", "org.gnome.desktop.interface", "enable-animations"])
-                    .stderr(std::process::Stdio::null())
-                    .output()
-                    .ok()
-                    .filter(|o| o.status.success())
-                    .map(|o| String::from_utf8_lossy(&o.stdout).trim() == "false");
-                if let Ok(mut f) = found.lock() {
-                    *f = answer;
-                }
-            });
-    }
+    let found = out.clone();
+    let _ = std::thread::Builder::new()
+        .name("amp-motion".into())
+        .spawn(move || {
+            let answer = reduced_motion_asked();
+            if let Ok(mut f) = found.lock() {
+                *f = answer;
+            }
+        });
     out
+}
+
+/// The desktop's own word on motion: GNOME (animations off), KDE (an
+/// animation speed of 0), GTK's settings (animations off), macOS (Reduce
+/// motion), Windows (animate windows off). None where none says.
+fn reduced_motion_asked() -> Option<bool> {
+    let run = |program: &str, args: &[&str]| -> Option<String> {
+        std::process::Command::new(program)
+            .args(args)
+            .stderr(std::process::Stdio::null())
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned())
+    };
+    if cfg!(target_os = "macos") {
+        return run(
+            "defaults",
+            &["read", "com.apple.universalaccess", "reduceMotion"],
+        )
+        .map(|v| v == "1");
+    }
+    if cfg!(windows) {
+        return run(
+            "reg",
+            &[
+                "query",
+                r"HKCU\Control Panel\Desktop\WindowMetrics",
+                "/v",
+                "MinAnimate",
+            ],
+        )
+        .map(|v| v.split_whitespace().last() == Some("0"));
+    }
+    let mut asked = None;
+    if let Some(v) = run(
+        "gsettings",
+        &["get", "org.gnome.desktop.interface", "enable-animations"],
+    ) {
+        asked = Some(v == "false");
+    }
+    let config = std::env::var_os("XDG_CONFIG_HOME")
+        .map(std::path::PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| std::path::Path::new(&h).join(".config")));
+    if let Some(config) = config {
+        if let Ok(text) = std::fs::read_to_string(config.join("kdeglobals"))
+            && let Some(factor) = setting(&text, "AnimationDurationFactor")
+        {
+            asked = Some(asked.unwrap_or(false) || factor.parse::<f32>().is_ok_and(|f| f <= 0.0));
+        }
+        for gtk in ["gtk-3.0/settings.ini", "gtk-4.0/settings.ini"] {
+            if let Ok(text) = std::fs::read_to_string(config.join(gtk))
+                && let Some(v) = setting(&text, "gtk-enable-animations")
+            {
+                asked = Some(asked.unwrap_or(false) || v == "false" || v == "0");
+            }
+        }
+    }
+    asked
+}
+
+/// A `key=value` setting's value in an ini-like text.
+fn setting(text: &str, key: &str) -> Option<String> {
+    text.lines().find_map(|line| {
+        let (k, v) = line.split_once('=')?;
+        (k.trim() == key).then(|| v.trim().to_owned())
+    })
 }
 
 /// The cover's accent: the strongest of its colourful hues (weighed by how
@@ -4265,9 +4397,11 @@ fn desktop_reduced_motion() -> Arc<Mutex<Option<bool>>> {
 /// 4.5:1); none for a grey cover.
 pub fn accent_of(art: &crate::engine::Art) -> Option<Color32> {
     let mut c = viz::hues(&art.rgba)?[0].1.0;
+    // readable on the window and on the card it tints (4.5:1)
     let ground = Color32::from_rgb(0x0d, 0x11, 0x17);
-    for _ in 0..20 {
-        if viz::contrast(c, ground) >= 4.5 {
+    for _ in 0..24 {
+        let card = card_tint(c);
+        if viz::contrast(c, ground) >= 4.5 && viz::contrast(c, card) >= 4.5 {
             break;
         }
         c = viz::mix(c, Color32::WHITE, 0.12);
@@ -4344,6 +4478,68 @@ mod tests {
         );
         assert!(!note.contains("20 frames"));
         assert!(slow_note(false).is_empty());
+    }
+
+    #[test]
+    fn the_desktops_wish_for_less_motion_is_read() {
+        let kde = "[General]\nfoo=1\n[KDE]\nAnimationDurationFactor=0\n";
+        assert_eq!(
+            setting(kde, "AnimationDurationFactor").as_deref(),
+            Some("0")
+        );
+        let gtk = "[Settings]\ngtk-enable-animations = false\n";
+        assert_eq!(
+            setting(gtk, "gtk-enable-animations").as_deref(),
+            Some("false")
+        );
+        assert_eq!(setting(gtk, "gtk-theme-name"), None);
+    }
+
+    #[test]
+    fn chosen_things_read_whatever_the_cover() {
+        // covers of every hue, light and dark: the accent made of them, the
+        // chosen tab's words on its fill, the accent's words on the window
+        let ground = Color32::from_rgb(0x0d, 0x11, 0x17);
+        for k in 0..36 {
+            for (l, c) in [(0.45, 0.15), (0.7, 0.18), (0.85, 0.1), (0.3, 0.12)] {
+                let colour = viz::from_oklch(l, c, k as f32 * 10.0);
+                let rgba: Vec<u8> = (0..64 * 64)
+                    .flat_map(|_| [colour.r(), colour.g(), colour.b(), 255])
+                    .collect();
+                let art = crate::engine::Art {
+                    width: 64,
+                    height: 64,
+                    rgba,
+                    png: Vec::new(),
+                    large: None,
+                };
+                let accent = accent_of(&art).unwrap_or(ACCENT);
+                let (fill, ink) = selection_colours(accent);
+                assert!(
+                    viz::contrast(ink, fill) >= 4.5,
+                    "{colour:?}: chosen words {:.2}:1",
+                    viz::contrast(ink, fill)
+                );
+                assert!(
+                    viz::contrast(accent, ground) >= 4.5,
+                    "{colour:?}: accent on the window"
+                );
+                // the card tinted with it: the artist (in the accent) and
+                // the quiet words on it
+                let card = card_tint(accent);
+                assert!(
+                    viz::contrast(accent, card) >= 4.5,
+                    "{colour:?}: accent on the card {:.2}:1",
+                    viz::contrast(accent, card)
+                );
+                assert!(
+                    viz::contrast(MUTED, card) >= 4.5,
+                    "{colour:?}: quiet words on the card"
+                );
+            }
+        }
+        let (fill, ink) = selection_colours(ACCENT);
+        assert!(viz::contrast(ink, fill) >= 4.5);
     }
 
     #[test]
@@ -4444,6 +4640,9 @@ mod tests {
         assert_eq!(clock(0.0), "0:00");
         assert_eq!(clock(61.9), "1:01");
         assert_eq!(clock(3725.0), "1:02:05");
+        assert_eq!(length(0.5), "0:01");
+        assert_eq!(length(0.4), "0:00");
+        assert_eq!(length(61.6), "1:02");
         assert_eq!(band_name(16000.0), "16k");
         assert_eq!(band_name(62.0), "62");
     }

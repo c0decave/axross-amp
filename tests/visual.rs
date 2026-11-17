@@ -194,3 +194,50 @@ fn intense_motion_only_after_the_photosensitivity_warning() {
     assert_eq!(h.state().motion(), "calm");
     assert!(h.query_by_label("Photosensitivity warning").is_none());
 }
+
+#[test]
+fn escape_closes_only_the_innermost_thing() {
+    // the picture large, a track's details over it: Escape closes the
+    // details and leaves the picture large; again, the picture too
+    let dir = folder("visual-escape");
+    let files = tracks(&dir, &["a.wav"], 3.0);
+    let mut h = harness(&dir, files);
+    assert!(until(&mut h, 5.0, |a| a.is_loaded()));
+    settle(&mut h, 2);
+    h.key_press(Key::F11);
+    settle(&mut h, 2);
+    assert!(h.state().big_visual());
+    h.get_by_label("Show the playlist").click();
+    settle(&mut h, 2);
+    let row = h
+        .query_all_by_label("a")
+        .last()
+        .map(|n| n.rect())
+        .expect("the row");
+    h.hover_at(row.center());
+    for pressed in [true, false] {
+        h.event(Event::PointerButton {
+            pos: row.center(),
+            button: PointerButton::Secondary,
+            pressed,
+            modifiers: Default::default(),
+        });
+    }
+    settle(&mut h, 2);
+    h.get_by_label("ℹ Details…").click();
+    settle(&mut h, 3);
+    assert!(h.query_by_label("Track details").is_some());
+    h.key_press(Key::Escape);
+    settle(&mut h, 2);
+    assert!(
+        h.query_by_label("Track details").is_none(),
+        "the details stay"
+    );
+    assert!(
+        h.state().big_visual(),
+        "one Escape left the large picture too"
+    );
+    h.key_press(Key::Escape);
+    settle(&mut h, 2);
+    assert!(!h.state().big_visual());
+}

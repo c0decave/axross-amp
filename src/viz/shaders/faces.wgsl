@@ -200,8 +200,9 @@ fn aurora(uv: vec2<f32>, aspect: f32) -> vec3<f32> {
             + 0.05 * fbm(vec2<f32>(x * 0.7, t + fk));
         let level = band(0.15 + 0.3 * fk + 0.2 * uv.x);
         let d = foot - uv.y;
-        let ray = fbm(vec2<f32>(x * 9.0, t * 0.6 + fk * 3.0));
-        let rays = ray * ray * 1.6 + 0.2;
+        // (soft rays, broad: folds of a curtain, not a barcode)
+        let ray = fbm(vec2<f32>(x * 3.5, t * 0.4 + fk * 3.0));
+        let rays = 0.35 + 0.9 * ray;
         let up = exp(-max(d, 0.0) * (3.0 - 1.5 * level)) * step(0.0, d);
         let edge = exp(-abs(d) * 60.0);
         let light = (up * rays + edge * 0.8) * (0.3 + 0.9 * level + 0.2 * u.t.y);
@@ -217,23 +218,23 @@ fn tunnel(p: vec2<f32>) -> vec3<f32> {
     let t = u.t.x;
     let r = max(length(p), 1e-3);
     let a = atan2(p.y, p.x);
-    let depth = 0.45 / r + t * (0.7 + 1.6 * u.t.w);
+    let depth = 0.45 / r + t * (0.35 + 0.6 * u.t.w);
     let turn = a / TAU + 0.1 * sin(depth * 0.35 + u.m.x);
     // (folded round the circle: no seam where the angle wraps)
     let fold = abs(2.0 * fract(turn) - 1.0);
     let level = band(fold);
     // each line's distance in the picture's units: as thin far off as near
-    let rr = fract(depth * 3.0);
-    let ring_d = min(rr, 1.0 - rr) / 3.0 * r * r / 0.45;
-    let ss = fract(turn * 16.0);
-    let rib_d = min(ss, 1.0 - ss) / 16.0 * TAU * r;
+    let rr = fract(depth * 1.5);
+    let ring_d = min(rr, 1.0 - rr) / 1.5 * r * r / 0.45;
+    let ss = fract(turn * 10.0);
+    let rib_d = min(ss, 1.0 - ss) / 10.0 * TAU * r;
     let ring = exp(-ring_d / 0.010);
     let rib = exp(-rib_d / 0.008);
     // the walls between: dark, a checker of the scheme's tint
-    let checker = fract((floor(depth * 3.0) + floor(turn * 16.0)) * 0.5) * 2.0;
-    let wall = mix(colour(0), cycle(floor(depth * 3.0) * 0.04 + fold * 0.4), 0.10 + 0.22 * level)
+    let checker = fract((floor(depth * 1.5) + floor(turn * 10.0)) * 0.5) * 2.0;
+    let wall = mix(colour(0), cycle(floor(depth * 1.5) * 0.04 + fold * 0.4), 0.10 + 0.22 * level)
         * (0.75 + 0.25 * checker);
-    let line_colour = cycle(floor(depth * 3.0) * 0.04 + fold * 0.4 + 0.15);
+    let line_colour = cycle(floor(depth * 1.5) * 0.04 + fold * 0.4 + 0.15);
     let glow = ring * (0.35 + 1.1 * level + 0.5 * u.t.y) + rib * (0.2 + 0.8 * level);
     let c = wall + line_colour * glow;
     // into the dark far off, a light at the end
@@ -292,14 +293,16 @@ fn moire(p: vec2<f32>, pixel: f32) -> vec3<f32> {
     let t = u.t.x * 0.4;
     let a = vec2<f32>(0.35 * sin(t), 0.25 * cos(t * 0.8));
     let b = vec2<f32>(0.35 * sin(t * 0.7 + 2.0), 0.25 * cos(t * 1.1 + 1.0));
-    let f1 = 34.0 + 20.0 * u.t.w;
-    let f2 = 36.0 + 20.0 * u.m.y;
-    let f3 = 24.0 + 16.0 * u.m.z;
-    let r1 = wave(length(p - a) * f1 - u.t.x * 2.0, f1 * pixel);
-    let r2 = wave(length(p - b) * f2 + u.t.x * 1.5, f2 * pixel);
+    // (few, broad, slow and soft rings: fine high-contrast stripes that
+    // move are a known trigger of seizures - this is the gentle kind)
+    let f1 = 9.0 + 4.0 * u.t.w;
+    let f2 = 10.0 + 4.0 * u.m.y;
+    let f3 = 7.0 + 3.0 * u.m.z;
+    let r1 = wave(length(p - a) * f1 - u.t.x * 0.5, f1 * pixel);
+    let r2 = wave(length(p - b) * f2 + u.t.x * 0.4, f2 * pixel);
     let lines = wave((p.x * cos(t * 0.3) + p.y * sin(t * 0.3)) * f3, f3 * pixel);
     let v = r1 * r2 + 0.35 * lines * r1;
-    return mix(colour(0), cycle(v * 0.4 + t * 0.1), smoothstep(0.15, 0.9, v)) + colour(4) * u.t.y * 0.2 * v;
+    return mix(colour(0), cycle(v * 0.4 + t * 0.1), smoothstep(0.15, 0.9, v) * 0.45);
 }
 
 fn smoke(uv: vec2<f32>, aspect: f32) -> vec3<f32> {
