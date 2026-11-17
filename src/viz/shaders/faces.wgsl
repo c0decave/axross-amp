@@ -405,13 +405,13 @@ fn flyover(uv: vec2<f32>, aspect: f32, steps: i32) -> vec3<f32> {
     let light = clamp(dot(n, normalize(vec3<f32>(0.3, 0.8, 0.6))), 0.0, 1.0);
     let height = clamp(pos.y / 3.0, 0.0, 1.0);
     // dark land, lit from the side, the quiet colour on its heights
-    let land = mix(colour(0), colour(1), 0.15 + 0.45 * height) * (0.25 + 0.75 * light);
+    let land = mix(colour(0), colour(1), 0.22 + 0.45 * height) * (0.3 + 0.8 * light);
     // a grid over it (lines as wide as a pixel far off), lit by the bands
     let g = fract(vec2<f32>(pos.x, pos.z) * 0.5);
     let gd = min(min(g.x, 1.0 - g.x), min(g.y, 1.0 - g.y)) * 2.0;
     let grid = (1.0 - smoothstep(0.0, 0.008 + 0.005 * d, gd)) * exp(-d * 0.05);
     let level = band(clamp(abs(pos.x) * 0.08, 0.0, 1.0));
-    let lines = mix(colour(2), colour(3), level) * grid * (0.3 + 0.9 * level + 0.4 * u.t.y);
+    let lines = mix(colour(2), colour(3), level) * grid * (0.55 + 0.9 * level + 0.4 * u.t.y);
     // ridges catch the sun
     let rim = colour(3) * pow(clamp(1.0 - n.y, 0.0, 1.0), 2.0) * 0.5 * (0.5 + level);
     let fog = 1.0 - exp(-d * 0.09);

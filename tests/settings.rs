@@ -80,7 +80,8 @@ fn a_tracks_details_and_the_window_size_kept() {
     let mut shown = false;
     for _ in 0..100 {
         settle(&mut h, 1);
-        if h.query_by_label_contains("22050 Hz, 1 channel, 16 bit")
+        // (the bits once: the codec's name says them)
+        if h.query_by_label_contains("PCM 16-bit, 22050 Hz, 1 channel")
             .is_some()
         {
             shown = true;
@@ -88,6 +89,7 @@ fn a_tracks_details_and_the_window_size_kept() {
         }
     }
     assert!(shown, "no format shown");
+    assert!(h.query_by_label_contains("16 bit").is_none());
     assert!(h.query_by_label_contains("b.wav").is_some());
     drop(h);
     let kept = axross_amp::state::read_amp(&dir.join("config/axross-amp.json"));

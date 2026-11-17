@@ -1505,8 +1505,8 @@ fn flyover(u: &Uniforms, uv: [f32; 2], aspect: f32, steps: usize) -> V3 {
     let light = ((n[0] * 0.3 + n[1] * 0.8 + n[2] * 0.6) / ll).clamp(0.0, 1.0);
     let height = (pos[1] / 3.0).clamp(0.0, 1.0);
     let land = scale(
-        mix3(u.colour(0), u.colour(1), 0.15 + 0.45 * height),
-        0.25 + 0.75 * light,
+        mix3(u.colour(0), u.colour(1), 0.22 + 0.45 * height),
+        0.3 + 0.8 * light,
     );
     let g = [fract(pos[0] * 0.5), fract(pos[2] * 0.5)];
     let gd = g[0].min(1.0 - g[0]).min(g[1].min(1.0 - g[1])) * 2.0;
@@ -1514,7 +1514,7 @@ fn flyover(u: &Uniforms, uv: [f32; 2], aspect: f32, steps: usize) -> V3 {
     let level = u.band((pos[0].abs() * 0.08).clamp(0.0, 1.0));
     let lines = scale(
         mix3(u.colour(2), u.colour(3), level),
-        grid * (0.3 + 0.9 * level + 0.4 * u.pulse()),
+        grid * (0.55 + 0.9 * level + 0.4 * u.pulse()),
     );
     let rim = scale(
         u.colour(3),

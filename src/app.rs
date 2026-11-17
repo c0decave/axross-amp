@@ -2184,16 +2184,28 @@ impl App {
                 ("F11", "the picture full screen"),
                 ("Ctrl+F", "find in the playlist"),
             ];
-            egui::Grid::new("keys")
-                .num_columns(2)
-                .spacing(vec2(14.0, 4.0))
-                .show(ui, |ui| {
-                    for (key, what) in keys {
-                        ui.label(RichText::new(key).monospace().color(self.accent));
-                        ui.label(RichText::new(what).size(13.0).color(MUTED));
-                        ui.end_row();
-                    }
-                });
+            // (centred: as wide as it was last drawn)
+            let id = egui::Id::unique("keys-width");
+            let wide: f32 = ui.ctx().data(|d| d.get_temp(id)).unwrap_or(240.0);
+            let drawn = ui
+                .horizontal(|ui| {
+                    ui.add_space(((ui.available_width() - wide) / 2.0).max(0.0));
+                    egui::Grid::new("keys")
+                        .num_columns(2)
+                        .spacing(vec2(14.0, 4.0))
+                        .show(ui, |ui| {
+                            for (key, what) in keys {
+                                ui.label(RichText::new(key).monospace().color(self.accent));
+                                ui.label(RichText::new(what).size(13.0).color(MUTED));
+                                ui.end_row();
+                            }
+                        })
+                        .response
+                        .rect
+                        .width()
+                })
+                .inner;
+            ui.ctx().data_mut(|d| d.insert_temp(id, drawn));
         });
     }
 
