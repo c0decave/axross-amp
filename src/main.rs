@@ -39,9 +39,16 @@ fn main() -> eframe::Result {
     let files: Vec<String> = args.into_iter().filter(|a| !a.starts_with("--")).collect();
     // one player: a second start (a file opened from the file manager) hands
     // its files to the one running and ends
+    // (the name on the session bus is taken here, before the window is made:
+    // two starts at once never both get one)
     #[cfg(target_os = "linux")]
-    if !new_instance && axross_amp::mpris::forward(None, &files) {
-        return Ok(());
+    {
+        use axross_amp::mpris::{Claim, Mpris};
+        match Mpris::claim(None, (!new_instance).then_some(&files[..])) {
+            Claim::Handed => return Ok(()),
+            Claim::Mine(mpris) => Mpris::prepare(mpris),
+            Claim::NoBus(_) => {}
+        }
     }
     #[cfg(not(target_os = "linux"))]
     let _ = new_instance;

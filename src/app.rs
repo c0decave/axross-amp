@@ -425,11 +425,17 @@ impl App {
         #[cfg(target_os = "linux")]
         if setup.desktop {
             let ctx = cc.egui_ctx.clone();
-            app.mpris = Some(crate::mpris::Mpris::start(
-                setup.desktop_bus.clone(),
-                app.engine.shared.clone(),
-                move || ctx.request_repaint(),
-            ));
+            let shared = app.engine.shared.clone();
+            app.mpris = Some(match crate::mpris::Mpris::take_prepared() {
+                // (claimed by main before the window)
+                Some(mpris) => {
+                    mpris.attach(shared, move || ctx.request_repaint());
+                    mpris
+                }
+                None => crate::mpris::Mpris::start(setup.desktop_bus.clone(), shared, move || {
+                    ctx.request_repaint()
+                }),
+            });
         }
         app.scanner.scan(&app.playlist.tracks);
         if !args.is_empty() {

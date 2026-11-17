@@ -50,9 +50,19 @@ pub enum Request {
 /// player already running (one player, not two playing over each other).
 pub const INSTANCE: &str = "org.axross.amp.Instance";
 
+/// The window's waker, set when the window is there (the connection is
+/// made before it, to claim the name).
+type Waker = Arc<OnceLock<Arc<dyn Fn() + Send + Sync>>>;
+
+fn wake(w: &Waker) {
+    if let Some(f) = w.get() {
+        f();
+    }
+}
+
 struct Instance {
     tx: Sender<Request>,
-    wake: Arc<dyn Fn() + Send + Sync>,
+    wake: Waker,
 }
 
 #[zbus::interface(name = "org.axross.amp.Instance")]
@@ -68,45 +78,8 @@ impl Instance {
             let _ = self.tx.send(Request::Open(items));
         }
         let _ = self.tx.send(Request::Raise);
-        (self.wake)();
+        wake(&self.wake);
     }
-}
-
-/// Hand `items` to the player already running on the session bus (or the
-/// bus at `address`): true when there is one and it took them. Relative
-/// paths are made absolute here (the other player has another directory).
-pub fn forward(address: Option<&str>, items: &[String]) -> bool {
-    let built = match address {
-        Some(a) => zbus::blocking::connection::Builder::address(a),
-        None => zbus::blocking::connection::Builder::session(),
-    }
-    .and_then(|b| b.method_timeout(std::time::Duration::from_secs(3)).build());
-    let Ok(conn) = built else {
-        return false;
-    };
-    let Ok(dbus) = zbus::blocking::fdo::DBusProxy::new(&conn) else {
-        return false;
-    };
-    let Ok(name) = zbus::names::BusName::try_from(NAME) else {
-        return false;
-    };
-    if !dbus.name_has_owner(name).unwrap_or(false) {
-        return false;
-    }
-    let items: Vec<String> = items
-        .iter()
-        .map(|i| {
-            if crate::playlist::is_stream(i) || i.starts_with("file://") {
-                i.clone()
-            } else {
-                std::path::absolute(i)
-                    .map(|p| p.to_string_lossy().into_owned())
-                    .unwrap_or_else(|_| i.clone())
-            }
-        })
-        .collect();
-    conn.call_method(Some(NAME), PATH, Some(INSTANCE), "Open", &(items,))
-        .is_ok()
 }
 
 /// What plays, as the desktop is told.
@@ -180,13 +153,13 @@ fn metadata(track: &Option<Track>) -> HashMap<String, OwnedValue> {
 
 struct Root {
     tx: Sender<Request>,
-    wake: Arc<dyn Fn() + Send + Sync>,
+    wake: Waker,
 }
 
 impl Root {
     fn ask(&self, request: Request) {
         let _ = self.tx.send(request);
-        (self.wake)();
+        wake(&self.wake);
     }
 }
 
@@ -250,15 +223,15 @@ impl Root {
 
 struct Player {
     tx: Sender<Request>,
-    wake: Arc<dyn Fn() + Send + Sync>,
+    wake: Waker,
     state: Arc<Mutex<Snapshot>>,
-    engine: Arc<Shared>,
+    engine: Arc<OnceLock<Arc<Shared>>>,
 }
 
 impl Player {
     fn ask(&self, request: Request) {
         let _ = self.tx.send(request);
-        (self.wake)();
+        wake(&self.wake);
     }
 
     fn snapshot(&self) -> Snapshot {
@@ -368,7 +341,10 @@ impl Player {
 
     #[zbus(property(emits_changed_signal = "false"))]
     fn position(&self) -> i64 {
-        (self.engine.position() * 1e6) as i64
+        self.engine
+            .get()
+            .map(|e| (e.position() * 1e6) as i64)
+            .unwrap_or(0)
     }
 
     #[zbus(property)]
@@ -421,60 +397,136 @@ pub struct Mpris {
     requests: Receiver<Request>,
     /// Why there is no connection (none yet: "").
     pub error: Arc<Mutex<String>>,
+    waker: Waker,
+    engine: Arc<OnceLock<Arc<Shared>>>,
 }
 
+/// What [`Mpris::claim`] found on the bus.
+pub enum Claim {
+    /// The name is this program's: the player on the bus.
+    Mine(Mpris),
+    /// Another player holds it and took the files handed over.
+    Handed,
+    /// No bus (why).
+    NoBus(String),
+}
+
+static PREPARED: Mutex<Option<Mpris>> = Mutex::new(None);
+
 impl Mpris {
-    /// Offer the player on the session bus (or the bus at `address`).
-    pub fn start(
-        address: Option<String>,
-        engine: Arc<Shared>,
-        wake: impl Fn() + Send + Sync + 'static,
-    ) -> Mpris {
+    /// Connect to the session bus (or the bus at `address`), offer the
+    /// player's objects and take its name - at once, before a window is
+    /// made, and without queueing for it (DoNotQueue): two starts never
+    /// both get a window. When the name is held already and `hand_over`
+    /// is given, the files go to the player holding it ([`Claim::Handed`]);
+    /// without it (`--new-instance`) a name of its own is taken.
+    pub fn claim(address: Option<String>, hand_over: Option<&[String]>) -> Claim {
         let (tx, requests) = crossbeam_channel::unbounded();
         let state = Arc::new(Mutex::new(Snapshot {
             status: "Stopped",
             loop_status: "None",
             ..Default::default()
         }));
-        let conn = Arc::new(OnceLock::new());
-        let error = Arc::new(Mutex::new(String::new()));
-        let wake: Arc<dyn Fn() + Send + Sync> = Arc::new(wake);
-        let (c, s, e) = (conn.clone(), state.clone(), error.clone());
-        let _ = std::thread::Builder::new()
-            .name("amp-mpris".into())
-            .spawn(move || {
-                let root = Root {
-                    tx: tx.clone(),
-                    wake: wake.clone(),
-                };
-                let instance = Instance {
-                    tx: tx.clone(),
-                    wake: wake.clone(),
-                };
-                let player = Player {
-                    tx,
-                    wake,
-                    state: s,
-                    engine,
-                };
-                match connect(address, root, player, instance) {
-                    Ok(connection) => {
-                        let _ = c.set(connection);
-                    }
-                    Err(why) => {
-                        if let Ok(mut slot) = e.lock() {
-                            *slot = why;
-                        }
-                    }
-                }
-            });
-        Mpris {
-            conn,
+        let waker: Waker = Arc::default();
+        let engine: Arc<OnceLock<Arc<Shared>>> = Arc::default();
+        let root = Root {
+            tx: tx.clone(),
+            wake: waker.clone(),
+        };
+        let instance = Instance {
+            tx: tx.clone(),
+            wake: waker.clone(),
+        };
+        let player = Player {
+            tx,
+            wake: waker.clone(),
+            state: state.clone(),
+            engine: engine.clone(),
+        };
+        let conn = match objects(address, root, player, instance) {
+            Ok(c) => c,
+            Err(why) => return Claim::NoBus(why),
+        };
+        let flags = zbus::fdo::RequestNameFlags::DoNotQueue.into();
+        let own = match conn.request_name_with_flags(NAME, flags) {
+            Ok(
+                zbus::fdo::RequestNameReply::PrimaryOwner
+                | zbus::fdo::RequestNameReply::AlreadyOwner,
+            ) => true,
+            // (held by another: zbus says NameTaken, the bus Exists)
+            Ok(_) | Err(zbus::Error::NameTaken) => false,
+            Err(e) => return Claim::NoBus(e.to_string()),
+        };
+        if !own {
+            if let Some(items) = hand_over
+                && hand(&conn, items)
+            {
+                return Claim::Handed;
+            }
+            // (a second player on purpose, or one that does not answer)
+            let name = format!("{NAME}.instance{}", std::process::id());
+            if conn.request_name_with_flags(name.as_str(), flags).is_err() {
+                return Claim::NoBus("the name on the bus is taken".into());
+            }
+        }
+        let cell = OnceLock::new();
+        let _ = cell.set(conn);
+        Claim::Mine(Mpris {
+            conn: Arc::new(cell),
             state,
             told: Snapshot::default(),
             requests,
-            error,
+            error: Arc::default(),
+            waker,
+            engine,
+        })
+    }
+
+    /// Keep a player claimed before the window for the window to take.
+    pub fn prepare(mpris: Mpris) {
+        if let Ok(mut slot) = PREPARED.lock() {
+            *slot = Some(mpris);
         }
+    }
+
+    /// The player claimed before the window, if there is one.
+    pub fn take_prepared() -> Option<Mpris> {
+        PREPARED.lock().ok().and_then(|mut s| s.take())
+    }
+
+    /// The window is there: its engine (the position) and its waker.
+    pub fn attach(&self, engine: Arc<Shared>, wake: impl Fn() + Send + Sync + 'static) {
+        let _ = self.engine.set(engine);
+        let _ = self.waker.set(Arc::new(wake));
+        // (requests that came before it)
+        if !self.requests.is_empty()
+            && let Some(w) = self.waker.get()
+        {
+            w();
+        }
+    }
+
+    /// The player on the bus for a window that claimed nothing before
+    /// (tests; no bus: a player that tells nobody).
+    pub fn start(
+        address: Option<String>,
+        engine: Arc<Shared>,
+        wake: impl Fn() + Send + Sync + 'static,
+    ) -> Mpris {
+        let mpris = match Mpris::claim(address, None) {
+            Claim::Mine(m) => m,
+            Claim::Handed | Claim::NoBus(_) => Mpris {
+                conn: Arc::new(OnceLock::new()),
+                state: Arc::default(),
+                told: Snapshot::default(),
+                requests: crossbeam_channel::never(),
+                error: Arc::default(),
+                waker: Arc::default(),
+                engine: Arc::default(),
+            },
+        };
+        mpris.attach(engine, wake);
+        mpris
     }
 
     /// Whether the player is on the bus.
@@ -557,7 +609,8 @@ impl Mpris {
     }
 }
 
-fn connect(
+/// A connection with the player's objects on it (no name yet).
+fn objects(
     address: Option<String>,
     root: Root,
     player: Player,
@@ -568,23 +621,41 @@ fn connect(
         None => zbus::blocking::connection::Builder::session(),
     }
     .map_err(|e| e.to_string())?;
-    let conn = builder
+    builder
+        .method_timeout(std::time::Duration::from_secs(3))
         .serve_at(PATH, root)
         .and_then(|b| b.serve_at(PATH, player))
         .and_then(|b| b.serve_at(PATH, instance))
         .and_then(|b| b.build())
-        .map_err(|e| e.to_string())?;
-    // the name; a second player takes a name of its own (the specification's way)
-    let names = [
-        NAME.to_owned(),
-        format!("{NAME}.instance{}", std::process::id()),
-    ];
-    for name in names {
-        if conn.request_name(name.as_str()).is_ok() {
-            return Ok(conn);
+        .map_err(|e| e.to_string())
+}
+
+/// Hand `items` to the player holding the name (relative paths made
+/// absolute here: the other player has another directory); a moment's
+/// retries - it may be just starting.
+fn hand(conn: &Connection, items: &[String]) -> bool {
+    let items: Vec<String> = items
+        .iter()
+        .map(|i| {
+            if crate::playlist::is_stream(i) || i.starts_with("file://") {
+                i.clone()
+            } else {
+                std::path::absolute(i)
+                    .map(|p| p.to_string_lossy().into_owned())
+                    .unwrap_or_else(|_| i.clone())
+            }
+        })
+        .collect();
+    for _ in 0..10 {
+        if conn
+            .call_method(Some(NAME), PATH, Some(INSTANCE), "Open", &(items.clone(),))
+            .is_ok()
+        {
+            return true;
         }
+        std::thread::sleep(std::time::Duration::from_millis(300));
     }
-    Err("the name on the bus is taken".into())
+    false
 }
 
 /// The covers shown to the desktop (`mpris:artUrl`): each in a file of its

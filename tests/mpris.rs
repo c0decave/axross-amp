@@ -183,42 +183,69 @@ fn the_desktop_sees_and_drives_the_player() {
 
 #[test]
 fn a_second_start_hands_its_files_to_the_player_running() {
+    use axross_amp::mpris::{Claim, Mpris};
     let dir = folder("mpris-instance");
     let Some(bus) = daemon(&dir) else {
         eprintln!("no dbus-daemon: skipped");
         return;
     };
-    // no player yet: nothing takes them (the second start plays itself)
-    assert!(!axross_amp::mpris::forward(Some(&bus.1), &["x.wav".into()]));
     let files = tracks(&dir, &["first.wav"], 3.0);
     let mut h = app_on(&dir, &bus.1, files);
     assert!(until(&mut h, 5.0, |a| a.is_loaded()));
-    let client = zbus::blocking::connection::Builder::address(bus.1.as_str())
-        .unwrap()
-        .build()
-        .unwrap();
-    let dbus = zbus::blocking::fdo::DBusProxy::new(&client).unwrap();
-    assert!(until(&mut h, 5.0, |_| dbus
-        .name_has_owner("org.mpris.MediaPlayer2.axross_amp".try_into().unwrap())
-        .unwrap_or(false)));
-    // "open with" from a file manager: a file:// URI with a space, and a folder
+    // "open with" from a file manager: a file:// URI with a space
     let more = dir.join("more dir");
     std::fs::create_dir_all(&more).unwrap();
     write_wav(&more.join("other one.wav"), 2.0);
     let uri = format!("file://{}", more.join("other one.wav").display()).replace(' ', "%20");
-    let forwarding = {
-        let address = bus.1.clone();
-        std::thread::spawn(move || axross_amp::mpris::forward(Some(&address), &[uri]))
-    };
+    let address = bus.1.clone();
+    let second = std::thread::spawn(move || {
+        matches!(Mpris::claim(Some(address), Some(&[uri])), Claim::Handed)
+    });
     assert!(until(&mut h, 5.0, |a| a.snapshot().tracks.len() == 2));
-    assert!(
-        forwarding.join().unwrap(),
-        "the player running did not take it"
-    );
+    assert!(second.join().unwrap(), "the player running did not take it");
     assert!(until(&mut h, 5.0, |a| a.snapshot().current == 1 && a.is_loaded()));
     assert!(
         h.state().snapshot().tracks[1]
             .path
             .ends_with("more dir/other one.wav")
     );
+}
+
+#[test]
+fn starts_at_the_same_moment_make_one_player() {
+    // (the name was looked at by each start and taken later by its window:
+    // three starts at once made three windows)
+    use axross_amp::mpris::{Claim, Mpris, Request};
+    let dir = folder("mpris-race");
+    let Some(bus) = daemon(&dir) else {
+        eprintln!("no dbus-daemon: skipped");
+        return;
+    };
+    let barrier = std::sync::Arc::new(std::sync::Barrier::new(3));
+    let starts: Vec<_> = (0..3)
+        .map(|i| {
+            let (address, barrier) = (bus.1.clone(), barrier.clone());
+            std::thread::spawn(move || {
+                barrier.wait();
+                Mpris::claim(Some(address), Some(&[format!("/m/{i}.wav")]))
+            })
+        })
+        .collect();
+    let claims: Vec<Claim> = starts.into_iter().map(|t| t.join().unwrap()).collect();
+    let mut mine: Vec<Mpris> = Vec::new();
+    let mut handed = 0;
+    for claim in claims {
+        match claim {
+            Claim::Mine(m) => mine.push(m),
+            Claim::Handed => handed += 1,
+            Claim::NoBus(why) => panic!("{why}"),
+        }
+    }
+    assert_eq!((mine.len(), handed), (1, 2), "one player, two handing over");
+    let opened: Vec<Request> = mine[0]
+        .requests()
+        .into_iter()
+        .filter(|r| matches!(r, Request::Open(_)))
+        .collect();
+    assert_eq!(opened.len(), 2, "{opened:?}");
 }
