@@ -339,6 +339,7 @@ impl App {
         let amp_path = setup.config_dir.join(state::AMP_FILE);
         let amp = state::read_amp(&amp_path);
         engine.send(Command::Loudness(loudness(&amp)));
+        engine.send(Command::Crossfade(amp.crossfade));
         engine.shared.set_volume(volume_curve(saved.volume));
         let output = state::read_output(&audio_path);
         if !output.is_empty() {
@@ -1020,6 +1021,34 @@ impl App {
             {
                 self.set_sleep(Some(Sleep::EndOfTrack));
                 ui.close();
+            }
+        });
+        ui.menu_button("Crossfade", |ui| {
+            let mut secs = self.amp.crossfade;
+            ui.add(
+                egui::Slider::new(&mut secs, 0.0..=12.0)
+                    .step_by(0.5)
+                    .text("seconds")
+                    .custom_formatter(|v, _| {
+                        if v == 0.0 {
+                            "off".into()
+                        } else {
+                            format!("{v:.1}")
+                        }
+                    }),
+            )
+            .accessible_name("Crossfade seconds");
+            ui.label(
+                RichText::new(
+                    "A track fades into the next - never inside an album, which plays gapless.",
+                )
+                .small()
+                .color(MUTED),
+            );
+            if secs != self.amp.crossfade {
+                self.amp.crossfade = secs;
+                self.amp_dirty = true;
+                self.engine.send(Command::Crossfade(secs));
             }
         });
         ui.menu_button("Loudness target", |ui| {

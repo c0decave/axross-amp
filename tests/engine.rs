@@ -737,3 +737,95 @@ fn a_hot_master_played_at_another_rate_is_held_below_full_scale() {
         .count();
     assert!((sound as i64 - RATE as i64).abs() < 200, "{sound} frames");
 }
+
+/// The power of `hz` in `frames` (left channel, interleaved stereo) by
+/// Goertzel's filter.
+fn power_at(frames: &[f32], hz: f32) -> f32 {
+    let k = 2.0 * (std::f32::consts::TAU * hz / RATE as f32).cos();
+    let (mut s1, mut s2) = (0.0f32, 0.0f32);
+    let n = frames.len() / 2;
+    for f in frames.chunks(2) {
+        let s = f[0] + k * s1 - s2;
+        s2 = s1;
+        s1 = s;
+    }
+    (s1 * s1 + s2 * s2 - k * s1 * s2) / (n * n) as f32
+}
+
+fn tone(hz: f32, secs: f32) -> Vec<f32> {
+    (0..(RATE as f32 * secs) as usize)
+        .flat_map(|i| {
+            let v = (std::f32::consts::TAU * hz * i as f32 / RATE as f32).sin() * 0.3;
+            [v, v]
+        })
+        .collect()
+}
+
+#[test]
+fn a_crossfade_fades_one_track_into_the_next() {
+    let dir = folder("crossfade");
+    std::fs::write(dir.join("a.wav"), wav_of(RATE, &tone(440.0, 3.0))).unwrap();
+    std::fs::write(dir.join("b.wav"), wav_of(RATE, &tone(660.0, 3.0))).unwrap();
+    let path = |n: &str| dir.join(n).to_string_lossy().into_owned();
+    let engine = Engine::start_headless(|| {});
+    engine.shared.set_volume(1.0);
+    engine.send(Command::Crossfade(1.0));
+    load(&engine, &path("a.wav"), 1);
+    engine.send(Command::Queue(Some(Queued {
+        path: path("b.wav"),
+        generation: 2,
+    })));
+    let mut output = Output::new();
+    let mut events = Vec::new();
+    output.play(&engine, 6.0, |_, e| events.push(describe(e)));
+    assert!(events.contains(&"advanced 2".to_owned()), "{events:?}");
+    assert!(events.contains(&"ended 2".to_owned()), "{events:?}");
+    let heard = heard_from_start(&output.heard);
+    // 3 s and 3 s overlapping by 1 s: 5 s of sound, no gap
+    let sound = heard.chunks(2).rposition(|f| f[0] != 0.0).unwrap_or(0);
+    assert!(
+        (sound as f32 / RATE as f32 - 5.0).abs() < 0.1,
+        "{} s of sound",
+        sound as f32 / RATE as f32
+    );
+    assert!(output.gaps().is_empty(), "{:?}", output.gaps());
+    let at = |secs: f32| {
+        &heard[(secs * RATE as f32) as usize * 2..((secs + 0.1) * RATE as f32) as usize * 2]
+    };
+    let (a, b) = (power_at(at(1.0), 440.0), power_at(at(1.0), 660.0));
+    assert!(a > 100.0 * b, "before the fade only the first: {a} {b}");
+    let (a, b) = (power_at(at(2.45), 440.0), power_at(at(2.45), 660.0));
+    assert!(a > 0.2 * b && b > 0.2 * a, "in the fade both: {a} {b}");
+    let (a, b) = (power_at(at(4.0), 440.0), power_at(at(4.0), 660.0));
+    assert!(b > 100.0 * a, "after it only the second: {a} {b}");
+    // equal power: the level holds through the fade (no dip, no bump)
+    let rms = |w: &[f32]| (w.iter().map(|v| v * v).sum::<f32>() / w.len() as f32).sqrt();
+    let steady = rms(at(1.0));
+    for k in 0..20 {
+        let r = rms(at(2.0 + k as f32 * 0.05));
+        assert!(
+            (r / steady - 1.0).abs() < 0.2,
+            "at {} s: {r} against {steady}",
+            2.0 + k as f32 * 0.05
+        );
+    }
+}
+
+#[test]
+fn an_album_plays_gapless_even_with_a_crossfade_set() {
+    use axross_amp::engine::{TrackInfo, crossfades};
+    let track = |album: &str| TrackInfo {
+        album: album.into(),
+        ..Default::default()
+    };
+    assert!(
+        !crossfades(4.0, &track("Blue"), &track("Blue")),
+        "inside an album"
+    );
+    assert!(crossfades(4.0, &track("Blue"), &track("Red")));
+    assert!(
+        crossfades(4.0, &track(""), &track("")),
+        "untagged tracks fade"
+    );
+    assert!(!crossfades(0.0, &track("Blue"), &track("Red")), "off");
+}

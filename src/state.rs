@@ -158,6 +158,8 @@ pub struct AmpSettings {
     /// The loudness meter's target (LUFS): -23 EBU R128, -16 podcasts,
     /// -14 streaming.
     pub loudness_target: f32,
+    /// Seconds a track fades into the next (0: none, gapless).
+    pub crossfade: f32,
 }
 
 /// The loudness targets offered: LUFS and what aims at it.
@@ -175,6 +177,7 @@ impl Default for AmpSettings {
             preamp_db: 0.0,
             untagged_db: crate::engine::DEFAULT_UNTAGGED_DB,
             loudness_target: -23.0,
+            crossfade: 0.0,
         }
     }
 }
@@ -215,6 +218,13 @@ pub fn read_amp(path: &Path) -> AmpSettings {
     {
         settings.loudness_target = *target;
     }
+    if let Some(secs) = map
+        .get("crossfade")
+        .and_then(Value::as_f64)
+        .filter(|s| s.is_finite())
+    {
+        settings.crossfade = (secs.clamp(0.0, 12.0) * 2.0).round() as f32 / 2.0;
+    }
     settings
 }
 
@@ -234,6 +244,7 @@ pub fn write_amp(path: &Path, settings: &AmpSettings) -> std::io::Result<()> {
         json!((settings.untagged_db as f64 * 10.0).round() / 10.0),
     );
     map.insert("loudness_target".into(), json!(settings.loudness_target));
+    map.insert("crossfade".into(), json!(settings.crossfade));
     write_object(path, &map)
 }
 
@@ -754,11 +765,13 @@ mod tests {
             preamp_db: 99.0,
             untagged_db: -8.0,
             loudness_target: -14.0,
+            crossfade: 4.5,
         };
         write_amp(&path, &settings).unwrap();
         let back = read_amp(&path);
         assert_eq!(back.window, Some([700.0, 900.0]));
         assert_eq!(back.loudness_target, -14.0);
+        assert_eq!(back.crossfade, 4.5);
         assert_eq!(back.replay_gain, "album");
         assert_eq!(back.preamp_db, 15.0);
         let raw: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();

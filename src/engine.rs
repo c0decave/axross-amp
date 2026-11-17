@@ -100,7 +100,30 @@ pub enum Command {
     /// Play on this output device (an id of [`output_devices`]; None: the
     /// default) - also while playing.
     Output(Option<String>),
+    /// Fade a track into the next over this many seconds (0: none - gapless);
+    /// never between two tracks of one album.
+    Crossfade(f32),
     Quit,
+}
+
+/// Whether the track `next` fades in over `current` (a crossfade of
+/// `secs`): not between two tracks of one album (an album plays gapless).
+pub fn crossfades(secs: f32, current: &TrackInfo, next: &TrackInfo) -> bool {
+    let same_album = !current.album.is_empty()
+        && current.album == next.album
+        && current.album_artist == next.album_artist;
+    secs > 0.0 && !same_album
+}
+
+/// The track fading out under the next one: its source, its resampler,
+/// what of it is resampled and waiting, how far the fade is.
+struct Fading {
+    src: FileSource,
+    resampler: Resampler,
+    buf: Vec<f32>,
+    total: usize,
+    done: usize,
+    ended: bool,
 }
 
 /// A track named to follow the current one.
@@ -1945,6 +1968,10 @@ struct FileSource {
     /// was taken (the resampler's tail given out).
     end: bool,
     finished: bool,
+    /// Where its sound taken so far began (ms) and the frames since (how
+    /// much of it is left: a crossfade's start).
+    from_ms: u64,
+    decoded: u64,
 }
 
 impl Drop for FileSource {
@@ -1982,6 +2009,8 @@ impl FileSource {
             rate: 0,
             end: false,
             finished: false,
+            from_ms: start_ms,
+            decoded: 0,
         }
     }
 
@@ -2131,7 +2160,12 @@ struct Player {
     losses: Vec<Instant>,
     /// The track still heard while the queued one is decoded after it, and
     /// the queued one with its info (told when it is heard).
-    ending: Option<(FileSource, Queued, TrackInfo)>,
+    /// The track decoded behind which the next one begins (its source:
+    /// None in a crossfade, where it is fading), the next, its info.
+    ending: Option<(Option<FileSource>, Queued, TrackInfo)>,
+    /// A crossfade's length (s; 0: gapless) and the track fading out.
+    crossfade: f32,
+    fading: Option<Fading>,
     /// The queued track, opened and read ahead on its own thread.
     prepared: Option<(Queued, FileSource)>,
     /// A file's sound to the output's rate - one resampler on across a
@@ -2262,8 +2296,18 @@ impl Player {
     /// seek or a new output in the track still heard).
     fn cancel_advance(&mut self) {
         if let Some((old, queued, _)) = self.ending.take() {
-            self.resampler = Resampler::new(old.rate.max(1), self.out_rate);
-            self.current = Some(Source::File(old));
+            match (old, self.fading.take()) {
+                (Some(old), _) => {
+                    self.resampler = Resampler::new(old.rate.max(1), self.out_rate);
+                    self.current = Some(Source::File(old));
+                }
+                // (in a crossfade: the one fading out is the one heard)
+                (None, Some(fading)) => {
+                    self.resampler = fading.resampler;
+                    self.current = Some(Source::File(fading.src));
+                }
+                (None, None) => {}
+            }
             self.prepared = None;
             self.prepare(Some(queued));
         }
@@ -2277,6 +2321,13 @@ impl Player {
         if self.ending.is_none() {
             return true;
         }
+        if self
+            .ending
+            .as_ref()
+            .is_some_and(|(old, _, _)| old.is_none())
+        {
+            return false; // (a crossfade is under way: too late)
+        }
         let boundary = self.shared.boundary.load(Ordering::Relaxed);
         if boundary != u64::MAX {
             // its start is in the ring already: taken out of it
@@ -2288,7 +2339,7 @@ impl Player {
         }
         self.shared.boundary.store(u64::MAX, Ordering::Relaxed);
         self.pending_boundary = false;
-        if let Some((mut old, _, _)) = self.ending.take() {
+        if let Some((Some(mut old), _, _)) = self.ending.take() {
             // (it was at its end, all of it given out)
             old.end = true;
             old.finished = true;
@@ -2300,6 +2351,7 @@ impl Player {
     /// What is decoded and not heard goes (faded out); the position starts at `ms`.
     fn flush_at(&mut self, ms: u64) {
         self.out_limiter.reset();
+        self.fading = None;
         self.shared.restart_at(ms);
         self.shared.ending.store(false, Ordering::Relaxed);
         self.pending_boundary = false;
@@ -2441,6 +2493,7 @@ impl Player {
                     let _ = f.ctl.send(Control::Gain(loudness.factor(info)));
                 }
             }
+            Command::Crossfade(secs) => self.crossfade = secs.clamp(0.0, 12.0),
             Command::Output(device) => {
                 self.losses.clear();
                 self.reopen(device);
@@ -2504,9 +2557,127 @@ impl Player {
         }
         self.pending_boundary = true;
         if let Some(Source::File(old)) = self.current.replace(Source::File(next)) {
-            self.ending = Some((old, queued, info));
+            self.ending = Some((Some(old), queued, info));
         }
         Some(true)
+    }
+
+    /// Near the end of the current track (as near as the crossfade is long),
+    /// with the next one open and of another album: the next becomes the
+    /// current one, the current one fades out under it.
+    fn start_crossfade(&mut self) {
+        if self.crossfade <= 0.0 || self.fading.is_some() || self.ending.is_some() {
+            return;
+        }
+        let Some(Source::File(f)) = self.current.as_ref() else {
+            return;
+        };
+        let (Some(info), true) = (f.info.as_deref(), f.rate > 0) else {
+            return;
+        };
+        let Some(duration) = info.duration else {
+            return;
+        };
+        let at = f.from_ms as f64 / 1000.0 + f.decoded as f64 / f.rate as f64;
+        let left = duration - at;
+        if left > self.crossfade as f64 || left < 0.3 {
+            return;
+        }
+        let Some((_, next)) = self.prepared.as_mut() else {
+            return;
+        };
+        if !matches!(next.opened(), Ok(true)) {
+            return;
+        }
+        let next_info = next.info.as_deref().cloned().unwrap_or_default();
+        if !crossfades(self.crossfade, info, &next_info) {
+            return;
+        }
+        let Some((queued, next)) = self.prepared.take() else {
+            return;
+        };
+        self.queued = None;
+        let resampler = std::mem::replace(
+            &mut self.resampler,
+            Resampler::new(next.rate.max(1), self.out_rate),
+        );
+        let Some(Source::File(old)) = self.current.replace(Source::File(next)) else {
+            return;
+        };
+        self.fading = Some(Fading {
+            src: old,
+            resampler,
+            buf: Vec::new(),
+            total: ((left * self.out_rate as f64) as usize).max(1),
+            done: 0,
+            ended: false,
+        });
+        self.ending = Some((None, queued, next_info));
+        // (the next track is heard from the fade's start)
+        self.pending_boundary = true;
+    }
+
+    /// The track fading out read ahead of the one fading in (enough for
+    /// its next chunk); false while it is not (wait for it).
+    fn pump_fading(&mut self) -> bool {
+        let Some(fading) = self.fading.as_mut() else {
+            return true;
+        };
+        let need = 16_384 * 2;
+        while !fading.ended && fading.buf.len() < need {
+            match fading.src.rx.try_recv() {
+                Ok(Feed::Pcm { epoch, samples }) => {
+                    fading
+                        .src
+                        .queued
+                        .fetch_sub(samples.len() / 2, Ordering::Relaxed);
+                    if epoch == fading.src.epoch {
+                        fading.resampler.process(&samples, &mut fading.buf);
+                    }
+                }
+                Ok(Feed::End { .. }) | Ok(Feed::Failed(_)) | Err(TryRecvError::Disconnected) => {
+                    fading.resampler.flush(&mut fading.buf);
+                    fading.ended = true;
+                }
+                Ok(_) => {}
+                Err(TryRecvError::Empty) => return false,
+            }
+        }
+        true
+    }
+
+    /// The chunk of the track fading in, over what is left of the one fading
+    /// out: equal power (cosine out, sine in) over the fade.
+    fn mix_fading(&mut self) {
+        let Some(fading) = self.fading.as_mut() else {
+            return;
+        };
+        let frames = self.chunk.len() / 2;
+        let old = fading.buf.len() / 2;
+        for i in 0..frames {
+            let x = (fading.done + i) as f32 / fading.total as f32;
+            let (fade_in, fade_out) = if x >= 1.0 {
+                (1.0, 0.0)
+            } else {
+                let a = x * std::f32::consts::FRAC_PI_2;
+                (a.sin(), a.cos())
+            };
+            let (l, r) = if i < old {
+                (fading.buf[2 * i], fading.buf[2 * i + 1])
+            } else {
+                (0.0, 0.0)
+            };
+            self.chunk[2 * i] = self.chunk[2 * i] * fade_in + l * fade_out;
+            self.chunk[2 * i + 1] = self.chunk[2 * i + 1] * fade_in + r * fade_out;
+        }
+        let used = frames.min(old);
+        fading.buf.drain(..used * 2);
+        fading.done += frames;
+        // (to its end, the one fading out silent once it has nothing more:
+        // the one fading in rises evenly all the way)
+        if fading.done >= fading.total {
+            self.fading = None;
+        }
     }
 
     /// The chunk just resampled through the output's limiter, where the
@@ -2623,6 +2794,13 @@ impl Player {
             if self.shared.buffered_frames() >= self.ahead {
                 return moved;
             }
+            self.start_crossfade();
+            if !self.pump_fading() {
+                return moved; // (the track fading out is still being read)
+            }
+            let Some(Source::File(f)) = self.current.as_mut() else {
+                return moved;
+            };
             let feed = match f.rx.try_recv() {
                 Ok(feed) => feed,
                 Err(TryRecvError::Empty) => return moved,
@@ -2637,6 +2815,8 @@ impl Player {
                 } => {
                     f.rate = rate;
                     f.info = Some(info.clone());
+                    f.from_ms = landed_ms;
+                    f.decoded = 0;
                     self.resampler = Resampler::new(rate.max(1), self.out_rate);
                     if f.epoch == 0 {
                         self.shared.base_ms.store(landed_ms, Ordering::Relaxed);
@@ -2649,6 +2829,8 @@ impl Player {
                 Feed::Seeked { epoch, landed_ms } => {
                     if epoch == f.epoch {
                         self.shared.base_ms.store(landed_ms, Ordering::Relaxed);
+                        f.from_ms = landed_ms;
+                        f.decoded = 0;
                     }
                 }
                 Feed::Pcm { epoch, samples } => {
@@ -2656,6 +2838,7 @@ impl Player {
                     if epoch != f.epoch {
                         continue; // (read before a seek)
                     }
+                    f.decoded += (samples.len() / 2) as u64;
                     if std::mem::take(&mut self.pending_boundary) {
                         // the queued track's first sound: heard from here
                         self.shared
@@ -2664,6 +2847,7 @@ impl Player {
                     }
                     self.chunk.clear();
                     self.resampler.process(&samples, &mut self.chunk);
+                    self.mix_fading();
                     self.eq.process(&mut self.chunk);
                     self.limit_resampled();
                     let n = self.shared.push(&self.chunk);
@@ -2678,6 +2862,7 @@ impl Player {
                 Feed::Failed(message) => {
                     self.current = None;
                     self.ending = None;
+                    self.fading = None;
                     self.flush_at(0);
                     self.shared.playing.store(false, Ordering::Relaxed);
                     self.send(Event::Failed {
@@ -2814,6 +2999,8 @@ fn run(
         device: None,
         losses: Vec::new(),
         ending: None,
+        crossfade: 0.0,
+        fading: None,
         prepared: None,
         resampler: Resampler::new(48_000, 48_000),
         out_limiter: crate::limiter::Limiter::with_ceiling(48_000, crate::limiter::RESAMPLED_DB),
