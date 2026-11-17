@@ -5,6 +5,7 @@
 mod player;
 
 use axross_amp::engine::RenderState;
+use egui_kittest::kittest::Queryable;
 use player::*;
 use std::io::{Read, Write};
 
@@ -175,4 +176,25 @@ fn a_radio_shows_what_it_plays_and_stop_lets_it_go() {
     assert_eq!(connections.load(std::sync::atomic::Ordering::SeqCst), 2);
 }
 
-use egui_kittest::kittest::Queryable;
+#[test]
+fn previous_on_a_radio_goes_to_the_track_before() {
+    // (a stream cannot be sought back to its start: after 3 s, Previous did nothing)
+    let (url, _) = radio();
+    let dir = folder("player-radio-previous");
+    let mut files = tracks(&dir, &["before.wav"], 30.0);
+    files.push(url);
+    let mut h = harness(&dir, files);
+    assert!(until(&mut h, 5.0, |a| a.is_loaded()));
+    h.key_press(egui::Key::N);
+    let mut output = RenderState::default();
+    for _ in 0..60 {
+        listen(&mut h, &mut output, 0.1);
+        if h.state().is_loaded() && h.state().engine().shared.position() > 3.2 {
+            break;
+        }
+    }
+    assert_eq!(h.state().snapshot().current, 1);
+    assert!(h.state().engine().shared.position() > 3.0);
+    h.key_press(egui::Key::P);
+    assert!(until(&mut h, 3.0, |a| a.snapshot().current == 0));
+}

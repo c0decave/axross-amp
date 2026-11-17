@@ -1022,9 +1022,23 @@ impl Subscriber {
                     else {
                         return;
                     };
-                    let stdout = process.stdout.take().unwrap();
+                    let Some(stdout) = process.stdout.take() else {
+                        let _ = process.kill();
+                        let _ = process.wait();
+                        return;
+                    };
                     if let Ok(mut slot) = c.lock() {
                         *slot = Some(process);
+                    }
+                    // (stopped while it started: stop() found no process to end)
+                    if s.load(std::sync::atomic::Ordering::Relaxed) {
+                        if let Ok(mut slot) = c.lock()
+                            && let Some(mut p) = slot.take()
+                        {
+                            let _ = p.kill();
+                            let _ = p.wait();
+                        }
+                        return;
                     }
                     let mut last: Option<Instant> = None;
                     for line in BufReader::new(stdout).lines() {

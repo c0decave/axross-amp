@@ -1029,8 +1029,10 @@ impl App {
     }
 
     fn previous(&mut self) {
-        // within the first seconds: the track before; later: this one from its start
-        if self.engine.shared.position() > 3.0 {
+        // within the first seconds: the track before; later: this one from
+        // its start (a stream cannot go back: the track before)
+        let seekable = self.info.seekable && self.loaded == Some(self.generation);
+        if seekable && self.engine.shared.position() > 3.0 {
             self.seek(0.0);
         } else if let Some(i) = self.playlist.previous() {
             self.play_index(i, 0, true);
