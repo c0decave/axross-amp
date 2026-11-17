@@ -1,1 +1,3 @@
 /target
+# a local build tool link of the sandbox (never part of the project)
+/ninja
