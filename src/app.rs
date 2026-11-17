@@ -99,6 +99,9 @@ pub struct App {
     output_choice: String,
     audio_path: PathBuf,
     gate: KeyGate,
+    /// The mouse wheel's movement not yet a notch; a row to scroll to.
+    wheel: f32,
+    scroll_to: Option<usize>,
 }
 
 /// Where the app keeps its state and what it connects to (tests use a
@@ -227,6 +230,8 @@ impl App {
             output_choice: output,
             audio_path,
             gate: KeyGate::default(),
+            wheel: 0.0,
+            scroll_to: None,
         };
         #[cfg(target_os = "linux")]
         if setup.desktop {
@@ -724,52 +729,136 @@ impl App {
         }
     }
 
+    /// The player's keys (axross's, and a few of its own):
+    /// Space play / pause, ←/→ seek 5 s (Shift: 30 s), Ctrl+←/→ previous /
+    /// next, ↑/↓ and +/− volume, Home the track's start, M mute, N / P next
+    /// / previous, V the next face; in the playlist Ctrl+↑/↓ choose a
+    /// track, Alt+↑/↓ move it, Enter plays it, Delete removes it.
     fn keys(&mut self, ui: &Ui) {
         if !self.gate.any {
             return;
         }
-        let (space, left, right, up, down, m, n, p, v) = ui.input(|i| {
-            (
-                i.key_pressed(Key::Space) && self.gate.activation,
-                i.key_pressed(Key::ArrowLeft),
-                i.key_pressed(Key::ArrowRight),
-                i.key_pressed(Key::ArrowUp),
-                i.key_pressed(Key::ArrowDown),
-                i.key_pressed(Key::M),
-                i.key_pressed(Key::N),
-                i.key_pressed(Key::P),
-                i.key_pressed(Key::V),
-            )
-        });
+        let pressed = |k: Key| ui.input(|i| i.key_pressed(k));
+        let modifiers = ui.input(|i| i.modifiers);
         let pos = self.engine.shared.position();
-        if space {
+        if pressed(Key::Space) && self.gate.activation {
             self.toggle_play();
         }
-        if left {
-            self.seek(pos - 5.0);
+        for (key, sign) in [(Key::ArrowLeft, -1.0), (Key::ArrowRight, 1.0)] {
+            if !pressed(key) {
+                continue;
+            }
+            if modifiers.command {
+                if sign > 0.0 {
+                    self.next(false);
+                } else {
+                    self.previous();
+                }
+            } else {
+                let step = if modifiers.shift { 30.0 } else { 5.0 };
+                self.seek(pos + sign * step);
+            }
         }
-        if right {
-            self.seek(pos + 5.0);
+        for (key, up) in [(Key::ArrowUp, true), (Key::ArrowDown, false)] {
+            if !pressed(key) {
+                continue;
+            }
+            if modifiers.alt {
+                self.move_selected(up);
+            } else if modifiers.command {
+                self.select_step(up);
+            } else {
+                self.volume_step(up);
+            }
         }
-        if up {
-            self.set_volume(self.volume + 5);
+        if pressed(Key::Plus) || pressed(Key::Equals) {
+            self.volume_step(true);
         }
-        if down {
-            self.set_volume(self.volume.saturating_sub(5));
+        if pressed(Key::Minus) {
+            self.volume_step(false);
         }
-        if m {
+        if pressed(Key::Home) {
+            self.seek(0.0);
+        }
+        if pressed(Key::M) {
             self.set_muted(!self.muted);
         }
-        if n {
+        if pressed(Key::N) {
             self.next(false);
         }
-        if p {
+        if pressed(Key::P) {
             self.previous();
         }
-        if v {
+        if pressed(Key::V) {
             self.mode = viz::next(self.mode);
             self.dirty = true;
         }
+    }
+
+    fn volume_step(&mut self, up: bool) {
+        self.set_volume(if up {
+            self.volume + 5
+        } else {
+            self.volume.saturating_sub(5)
+        });
+    }
+
+    /// The selection one row up or down (shown).
+    fn select_step(&mut self, up: bool) {
+        let count = self.playlist.tracks.len();
+        if count == 0 {
+            return;
+        }
+        let at = self.selected.or(self.playlist.current);
+        let next = match (at, up) {
+            (None, _) => 0,
+            (Some(i), true) => i.saturating_sub(1),
+            (Some(i), false) => (i + 1).min(count - 1),
+        };
+        self.selected = Some(next);
+        self.scroll_to = Some(next);
+    }
+
+    /// The selected track one place up or down in the list.
+    fn move_selected(&mut self, up: bool) {
+        let Some(i) = self.selected else {
+            return;
+        };
+        let to = if up {
+            i.checked_sub(1)
+        } else {
+            (i + 1 < self.playlist.tracks.len()).then_some(i + 1)
+        };
+        if let Some(to) = to {
+            self.playlist.move_track(i, to);
+            self.selected = Some(to);
+            self.scroll_to = Some(to);
+            self.dirty = true;
+        }
+    }
+
+    /// Notches of the mouse wheel over `response` (up: positive).
+    fn wheel_steps(&mut self, ui: &Ui, response: &egui::Response) -> i32 {
+        if !response.hovered() {
+            return 0;
+        }
+        self.wheel += ui.input(|i| {
+            i.raw
+                .events
+                .iter()
+                .map(|e| match e {
+                    egui::Event::MouseWheel { unit, delta, .. } => match unit {
+                        egui::MouseWheelUnit::Line => delta.y,
+                        egui::MouseWheelUnit::Point => delta.y / 40.0,
+                        egui::MouseWheelUnit::Page => delta.y * 3.0,
+                    },
+                    _ => 0.0,
+                })
+                .sum::<f32>()
+        });
+        let steps = self.wheel.trunc();
+        self.wheel -= steps;
+        steps as i32
     }
 
     fn top_bar(&mut self, ui: &mut Ui) {
@@ -1184,7 +1273,14 @@ impl App {
                 let slider = egui::Slider::new(&mut value, 0.0..=total.max(0.001))
                     .show_value(false)
                     .trailing_fill(true);
-                let response = ui.add_enabled(seekable, slider).accessible_name("Position");
+                let response = ui
+                    .add_enabled(seekable, slider)
+                    .accessible_name("Position")
+                    .on_hover_text("Seek: drag, click, the wheel, ←/→ (Shift: 30 s)");
+                let notches = self.wheel_steps(ui, &response);
+                if notches != 0 {
+                    self.seek(self.engine.shared.position() + 5.0 * notches as f64);
+                }
                 if response.dragged() || response.changed() {
                     self.seek_drag = Some(value);
                 }
@@ -1279,17 +1375,20 @@ impl App {
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 let mut volume = self.volume;
                 ui.spacing_mut().slider_width = 110.0;
-                if ui
+                let response = ui
                     .add(
                         egui::Slider::new(&mut volume, 0..=100)
                             .show_value(false)
                             .trailing_fill(true),
                     )
                     .accessible_name("Volume")
-                    .on_hover_text(format!("Volume {volume} % (Up / Down)"))
-                    .changed()
-                {
+                    .on_hover_text(format!("Volume {volume} % (↑/↓, +/−, the wheel)"));
+                if response.changed() {
                     self.set_volume(volume);
+                }
+                let notches = self.wheel_steps(ui, &response);
+                if notches != 0 {
+                    self.set_volume((self.volume as i32 + 5 * notches).clamp(0, 100) as u32);
                 }
                 let icon = if self.muted || self.volume == 0 {
                     "🔇"
@@ -1433,116 +1532,135 @@ impl App {
             let mut play: Option<usize> = None;
             let mut remove: Option<usize> = None;
             let mut moved: Option<(usize, usize)> = None;
-            egui::ScrollArea::vertical()
+            let height = ui.available_height().max(120.0);
+            let mut area = egui::ScrollArea::vertical()
+                .id_salt("playlist-rows")
                 .auto_shrink([false, false])
-                .max_height(ui.available_height().max(120.0))
-                .show_rows(ui, row, count, |ui, range| {
-                    for i in range {
-                        let track = &self.playlist.tracks[i];
-                        let current = self.playlist.current == Some(i);
-                        let title = if track.title.is_empty() {
-                            playlist::default_title(&track.path)
+                .max_height(height);
+            if let Some(target) = self.scroll_to.take() {
+                // (the row chosen by a key comes into view)
+                let id = ui.make_persistent_id("playlist-rows");
+                let offset = egui::scroll_area::State::load(ui.ctx(), id)
+                    .map(|s| s.clamped_offset().y)
+                    .unwrap_or(0.0);
+                let step = row + ui.spacing().item_spacing.y;
+                let top = target as f32 * step;
+                let wanted = if top < offset {
+                    top
+                } else if top + step > offset + height {
+                    top + step - height
+                } else {
+                    offset
+                };
+                area = area.vertical_scroll_offset(wanted.max(0.0));
+            }
+            area.show_rows(ui, row, count, |ui, range| {
+                for i in range {
+                    let track = &self.playlist.tracks[i];
+                    let current = self.playlist.current == Some(i);
+                    let title = if track.title.is_empty() {
+                        playlist::default_title(&track.path)
+                    } else {
+                        track.title.clone()
+                    };
+                    let (rect, response) = ui.allocate_exact_size(
+                        vec2(ui.available_width(), row),
+                        Sense::click_and_drag(),
+                    );
+                    let selected = self.selected == Some(i);
+                    // (a screen reader reads the row: its title, whether it is chosen)
+                    response.widget_info(|| {
+                        egui::WidgetInfo::selected(
+                            egui::accesskit::Role::ListItem,
+                            true,
+                            selected,
+                            &title,
+                        )
+                    });
+                    if current || selected || response.hovered() {
+                        let fill = if current {
+                            ACCENT.gamma_multiply(0.25)
+                        } else if selected {
+                            Color32::from_rgb(0x24, 0x2c, 0x38)
                         } else {
-                            track.title.clone()
+                            Color32::from_rgb(0x1c, 0x22, 0x2b)
                         };
-                        let (rect, response) = ui.allocate_exact_size(
-                            vec2(ui.available_width(), row),
-                            Sense::click_and_drag(),
-                        );
-                        let selected = self.selected == Some(i);
-                        // (a screen reader reads the row: its title, whether it is chosen)
-                        response.widget_info(|| {
-                            egui::WidgetInfo::selected(
-                                egui::accesskit::Role::ListItem,
-                                true,
-                                selected,
-                                &title,
-                            )
-                        });
-                        if current || selected || response.hovered() {
-                            let fill = if current {
-                                ACCENT.gamma_multiply(0.25)
-                            } else if selected {
-                                Color32::from_rgb(0x24, 0x2c, 0x38)
-                            } else {
-                                Color32::from_rgb(0x1c, 0x22, 0x2b)
-                            };
-                            ui.painter().rect_filled(rect, 4.0, fill);
-                        }
-                        let broken = self.broken.get(&track.path);
-                        let colour = if broken.is_some() {
-                            BROKEN
-                        } else if current {
-                            Color32::WHITE
-                        } else {
-                            Color32::from_rgb(0xc9, 0xd1, 0xd9)
-                        };
-                        let font = egui::FontId::proportional(14.0);
-                        ui.painter().text(
-                            rect.left_center() + vec2(8.0, 0.0),
-                            egui::Align2::LEFT_CENTER,
-                            format!("{:>3}", i + 1),
-                            egui::FontId::monospace(12.0),
-                            MUTED,
-                        );
-                        let duration = if track.duration_ms > 0 {
-                            clock(track.duration_ms as f64 / 1000.0)
-                        } else if playlist::is_stream(&track.path) {
-                            "📻".into()
-                        } else {
-                            String::new()
-                        };
-                        ui.painter().text(
-                            rect.right_center() - vec2(8.0, 0.0),
-                            egui::Align2::RIGHT_CENTER,
-                            duration,
-                            egui::FontId::monospace(12.0),
-                            MUTED,
-                        );
-                        let clip = egui::Rect::from_min_max(
-                            rect.left_top() + vec2(44.0, 0.0),
-                            rect.right_bottom() - vec2(64.0, 0.0),
-                        );
-                        ui.painter().with_clip_rect(clip).text(
-                            clip.left_center(),
-                            egui::Align2::LEFT_CENTER,
-                            title,
-                            font,
-                            colour,
-                        );
-                        // the path, and why it could not be played (axross's tooltip)
-                        let tip = match broken {
-                            Some(why) => format!("{}\nCannot play: {why}", track.path),
-                            None => track.path.clone(),
-                        };
-                        let response = response.on_hover_text(tip);
-                        if response.clicked() {
-                            self.selected = Some(i);
-                        }
-                        if response.double_clicked() {
-                            play = Some(i);
-                        }
-                        if response.drag_started() {
-                            self.dragging = Some(i);
-                        }
-                        if let (Some(from), true) = (self.dragging, response.hovered())
-                            && ui.input(|inp| inp.pointer.any_released())
-                            && from != i
-                        {
-                            moved = Some((from, i));
-                        }
-                        response.context_menu(|ui| {
-                            if ui.button("▶ Play").clicked() {
-                                play = Some(i);
-                                ui.close();
-                            }
-                            if ui.button("✖ Remove").clicked() {
-                                remove = Some(i);
-                                ui.close();
-                            }
-                        });
+                        ui.painter().rect_filled(rect, 4.0, fill);
                     }
-                });
+                    let broken = self.broken.get(&track.path);
+                    let colour = if broken.is_some() {
+                        BROKEN
+                    } else if current {
+                        Color32::WHITE
+                    } else {
+                        Color32::from_rgb(0xc9, 0xd1, 0xd9)
+                    };
+                    let font = egui::FontId::proportional(14.0);
+                    ui.painter().text(
+                        rect.left_center() + vec2(8.0, 0.0),
+                        egui::Align2::LEFT_CENTER,
+                        format!("{:>3}", i + 1),
+                        egui::FontId::monospace(12.0),
+                        MUTED,
+                    );
+                    let duration = if track.duration_ms > 0 {
+                        clock(track.duration_ms as f64 / 1000.0)
+                    } else if playlist::is_stream(&track.path) {
+                        "📻".into()
+                    } else {
+                        String::new()
+                    };
+                    ui.painter().text(
+                        rect.right_center() - vec2(8.0, 0.0),
+                        egui::Align2::RIGHT_CENTER,
+                        duration,
+                        egui::FontId::monospace(12.0),
+                        MUTED,
+                    );
+                    let clip = egui::Rect::from_min_max(
+                        rect.left_top() + vec2(44.0, 0.0),
+                        rect.right_bottom() - vec2(64.0, 0.0),
+                    );
+                    ui.painter().with_clip_rect(clip).text(
+                        clip.left_center(),
+                        egui::Align2::LEFT_CENTER,
+                        title,
+                        font,
+                        colour,
+                    );
+                    // the path, and why it could not be played (axross's tooltip)
+                    let tip = match broken {
+                        Some(why) => format!("{}\nCannot play: {why}", track.path),
+                        None => track.path.clone(),
+                    };
+                    let response = response.on_hover_text(tip);
+                    if response.clicked() {
+                        self.selected = Some(i);
+                    }
+                    if response.double_clicked() {
+                        play = Some(i);
+                    }
+                    if response.drag_started() {
+                        self.dragging = Some(i);
+                    }
+                    if let (Some(from), true) = (self.dragging, response.hovered())
+                        && ui.input(|inp| inp.pointer.any_released())
+                        && from != i
+                    {
+                        moved = Some((from, i));
+                    }
+                    response.context_menu(|ui| {
+                        if ui.button("▶ Play").clicked() {
+                            play = Some(i);
+                            ui.close();
+                        }
+                        if ui.button("✖ Remove").clicked() {
+                            remove = Some(i);
+                            ui.close();
+                        }
+                    });
+                }
+            });
             if ui.input(|inp| inp.pointer.any_released()) {
                 self.dragging = None;
             }

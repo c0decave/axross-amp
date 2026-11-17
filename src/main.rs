@@ -17,9 +17,11 @@ Play local audio (MP3, FLAC, Ogg Vorbis, Opus, AAC / M4A, ALAC, WAV, AIFF, CAF),
 folders and M3U / PLS playlists, and internet radio by its http(s) URL.
 The Mixer tab drives the sound server (pactl), the Bluetooth tab BlueZ.
 
-Keys: Space play / pause, Left / Right seek 5 s, Up / Down volume,
-M mute, N next, P previous, V next visualization, Enter play the selected
-track, Delete remove it.";
+Keys: Space play / pause, Left / Right seek 5 s (Shift: 30 s), Ctrl+Left /
+Right previous / next, Up / Down or + / - volume, Home the track's start,
+M mute, N next, P previous, V next visualization; in the playlist Ctrl+Up /
+Down choose a track, Alt+Up / Down move it, Enter play it, Delete remove it.
+The mouse wheel seeks over the position and sets the volume over its slider.";
 
 fn main() -> eframe::Result {
     let args: Vec<String> = std::env::args().skip(1).collect();

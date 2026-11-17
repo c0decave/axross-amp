@@ -100,15 +100,7 @@ pub fn until(harness: &mut Harness<'_, App>, secs: f32, done: impl Fn(&App) -> b
 
 /// A key pressed with modifiers.
 pub fn key_with(harness: &mut Harness<'_, App>, key: egui::Key, modifiers: egui::Modifiers) {
-    for pressed in [true, false] {
-        harness.event(egui::Event::Key {
-            key,
-            physical_key: None,
-            pressed,
-            repeat: false,
-            modifiers,
-        });
-    }
+    harness.key_press_modifiers(modifiers, key);
     harness.run_steps(1);
 }
 

@@ -98,3 +98,107 @@ fn the_player_keys_belong_to_the_player_tab() {
     );
     assert!(h.state().playing());
 }
+
+fn position(h: &egui_kittest::Harness<'_, axross_amp::app::App>) -> f64 {
+    h.state().engine().shared.position()
+}
+
+#[test]
+fn axross_keys_seek_skip_and_set_the_volume() {
+    let dir = folder("keys-axross");
+    let files = tracks(&dir, &["a.wav", "b.wav", "c.wav"], 60.0);
+    let mut h = harness(&dir, files);
+    assert!(until(&mut h, 5.0, |a| a.is_loaded()));
+    // Shift+→ 30 s, → 5 s, Shift+← 30 s back, Home: the start
+    key_with(&mut h, Key::ArrowRight, egui::Modifiers::SHIFT);
+    assert!(until(&mut h, 2.0, |a| (a.engine().shared.position()
+        - 30.0)
+        .abs()
+        < 0.1));
+    h.key_press(Key::ArrowRight);
+    assert!(until(&mut h, 2.0, |a| (a.engine().shared.position()
+        - 35.0)
+        .abs()
+        < 0.1));
+    key_with(&mut h, Key::ArrowLeft, egui::Modifiers::SHIFT);
+    assert!(until(&mut h, 2.0, |a| (a.engine().shared.position() - 5.0)
+        .abs()
+        < 0.1));
+    h.key_press(Key::Home);
+    assert!(until(&mut h, 2.0, |a| a.engine().shared.position() < 0.05));
+    // + / − the volume
+    let volume = h.state().snapshot().volume;
+    h.key_press(Key::Minus);
+    settle(&mut h, 1);
+    assert_eq!(h.state().snapshot().volume, volume - 5);
+    h.key_press(Key::Plus);
+    settle(&mut h, 1);
+    assert_eq!(h.state().snapshot().volume, volume);
+    // Ctrl+→ the next track, Ctrl+← the one before
+    key_with(&mut h, Key::ArrowRight, egui::Modifiers::COMMAND);
+    assert!(until(&mut h, 2.0, |a| a.snapshot().current == 1));
+    key_with(&mut h, Key::ArrowLeft, egui::Modifiers::COMMAND);
+    assert!(until(&mut h, 2.0, |a| a.snapshot().current == 0));
+    let _ = position(&h);
+}
+
+#[test]
+fn the_mouse_wheel_seeks_and_sets_the_volume() {
+    let dir = folder("keys-wheel");
+    let files = tracks(&dir, &["a.wav"], 60.0);
+    let mut h = harness(&dir, files);
+    assert!(until(&mut h, 5.0, |a| a.is_loaded()));
+    settle(&mut h, 2);
+    let wheel =
+        |h: &mut egui_kittest::Harness<'_, axross_amp::app::App>, label: &str, notches: f32| {
+            h.get_by_label(label).hover();
+            h.run_steps(1);
+            h.event(egui::Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Line,
+                delta: egui::vec2(0.0, notches),
+                phase: egui::TouchPhase::Move,
+                source: egui::MouseWheelSource::Wheel,
+                modifiers: Default::default(),
+            });
+            h.run_steps(1);
+        };
+    wheel(&mut h, "Position", 2.0);
+    assert!(
+        until(&mut h, 2.0, |a| (a.engine().shared.position() - 10.0).abs()
+            < 0.1),
+        "{}",
+        position(&h)
+    );
+    let volume = h.state().snapshot().volume;
+    wheel(&mut h, "Volume", -1.0);
+    settle(&mut h, 1);
+    assert_eq!(h.state().snapshot().volume, volume - 5);
+}
+
+#[test]
+fn the_playlist_is_ordered_by_keys() {
+    let dir = folder("keys-order");
+    let files = tracks(&dir, &["a.wav", "b.wav", "c.wav"], 1.0);
+    let mut h = harness(&dir, files);
+    assert!(until(&mut h, 5.0, |a| a.is_loaded()));
+    let names = |h: &egui_kittest::Harness<'_, axross_amp::app::App>| {
+        h.state()
+            .snapshot()
+            .tracks
+            .iter()
+            .map(|t| t.path.rsplit('/').next().unwrap().to_owned())
+            .collect::<Vec<_>>()
+    };
+    // Ctrl+↓ chooses b, Alt+↓ moves it below c, Alt+↑ back up
+    key_with(&mut h, Key::ArrowDown, egui::Modifiers::COMMAND);
+    settle(&mut h, 1);
+    key_with(&mut h, Key::ArrowDown, egui::Modifiers::ALT);
+    settle(&mut h, 1);
+    assert_eq!(names(&h), ["a.wav", "c.wav", "b.wav"]);
+    key_with(&mut h, Key::ArrowUp, egui::Modifiers::ALT);
+    key_with(&mut h, Key::ArrowUp, egui::Modifiers::ALT);
+    settle(&mut h, 1);
+    assert_eq!(names(&h), ["b.wav", "a.wav", "c.wav"]);
+    // the playing track stays the playing one
+    assert_eq!(h.state().snapshot().current, 1);
+}
