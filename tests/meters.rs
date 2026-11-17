@@ -266,3 +266,56 @@ fn a_melody_gives_its_notes_not_their_harmonics() {
         assert_eq!(lit, &vec![*m as i32], "at {at} s: {lit:?}, want {m}");
     }
 }
+
+#[test]
+fn a_new_track_is_counted_from_its_first_sound() {
+    // two tracks played gapless: the second's loudness from its first
+    // frame on - a short loud burst at its start belongs to it, not to the
+    // track before (counted there and thrown away with it)
+    let dir = folder("meters-boundary");
+    let sine = |dbfs: f32, secs: f32, hz: f32| -> Vec<f32> {
+        let amp = 10f32.powf(dbfs / 20.0);
+        (0..(secs * RATE as f32) as usize)
+            .flat_map(|i| {
+                let v = (i as f32 * hz * std::f32::consts::TAU / RATE as f32).sin() * amp;
+                [v, v]
+            })
+            .collect()
+    };
+    let first = sine(-20.0, 2.0, 500.0);
+    let mut second = sine(-6.0, 0.25, 1000.0);
+    second.extend(sine(-30.0, 2.5, 1000.0));
+    let (a, b) = (dir.join("a.wav"), dir.join("b.wav"));
+    write_wav(&a, &first);
+    write_wav(&b, &second);
+    let want = expected(&second);
+    let mut h = harness(
+        &dir,
+        vec![
+            a.to_string_lossy().into_owned(),
+            b.to_string_lossy().into_owned(),
+        ],
+    );
+    // the window at two frames a second (busy, or hidden): the track's
+    // change reaches it late - the meters must not wait for it
+    let mut out = RenderState::default();
+    let shared = h.state().engine().shared.clone();
+    let mut buf = vec![0.0f32; 480 * 2];
+    let end = Instant::now() + Duration::from_secs(6);
+    let mut k = 0;
+    while Instant::now() < end {
+        shared.render(&mut buf, 2, &mut out);
+        if k % 50 == 0 {
+            h.run_steps(1);
+        }
+        k += 1;
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    std::thread::sleep(Duration::from_millis(300));
+    let r = h.state().meter_readings();
+    assert!(
+        (r.integrated - want).abs() < 0.1,
+        "the second track reads {:.2} LUFS, all of it {want:.2}",
+        r.integrated
+    );
+}

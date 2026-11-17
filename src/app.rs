@@ -897,7 +897,6 @@ impl App {
     fn take_info(&mut self, ctx: &egui::Context, info: TrackInfo) {
         self.loaded = Some(self.generation);
         self.analyzer.new_track();
-        self.meters.new_track();
         self.opening = false;
         self.failures = 0;
         self.duration = info.duration.or(self.duration);

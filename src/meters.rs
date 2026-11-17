@@ -172,6 +172,7 @@ fn run(shared: &Shared, readings: &Mutex<Readings>, track: &AtomicU64, stop: &At
     let mut fresh: Vec<f32> = Vec::with_capacity(16_384 * 2);
     let mut read_to = 0u64;
     let mut track_seen = track.load(Ordering::Relaxed);
+    let mut tracks_seen = shared.track_start().1;
     let mut since_notes = 0u64;
     let mut frames = 0u64;
     let mut lost = 0u64;
@@ -183,8 +184,22 @@ fn run(shared: &Shared, readings: &Mutex<Readings>, track: &AtomicU64, stop: &At
             meter = Meter::new(rate);
             beat = Beat::new();
         }
+        // a new track: counted from its first sound on (what of the track
+        // before is still unread counted to it first)
+        let (start, tracks) = shared.track_start();
         let now = track.load(Ordering::Relaxed);
-        if now != track_seen {
+        if tracks != tracks_seen || now != track_seen {
+            if tracks != tracks_seen && start > read_to {
+                let (_, to) = shared.tap_from_to(read_to, start, &mut fresh);
+                if !fresh.is_empty() {
+                    meter.push(&fresh);
+                }
+                read_to = to;
+            }
+            if tracks != tracks_seen {
+                read_to = start;
+            }
+            tracks_seen = tracks;
             track_seen = now;
             meter.reset();
             notes.new_track();

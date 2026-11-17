@@ -157,6 +157,11 @@ impl Ring {
 
     /// The frame at the reading's place, which moves on (None: nothing there
     /// before the end or the flush point).
+    /// Where (in the ring's frames) the next frame read comes from.
+    pub fn place(&self, r: &Reading) -> u64 {
+        r.tail
+    }
+
     pub fn next(&self, r: &mut Reading) -> Option<(f32, f32)> {
         if let Some((from, to)) = r.cut
             && r.tail >= from
@@ -231,6 +236,11 @@ impl Tap {
             frames,
             written: AtomicU64::new(0),
         }
+    }
+
+    /// Frames played so far (the next one put is this one).
+    pub fn written(&self) -> u64 {
+        self.written.load(Ordering::Acquire)
     }
 
     /// One frame played (the output callback).

@@ -330,6 +330,12 @@ pub struct Shared {
     /// Frames read from the ring that are not heard yet: the output's
     /// latency (what the device says) and the buffer it was handed.
     latency: AtomicU64,
+    /// Where (in the ring's frames) the next track's sound begins, and -
+    /// once the output plays it - where that is in the tap and how many
+    /// tracks began so far (the meters start counting anew there).
+    track_mark: AtomicU64,
+    track_tap: AtomicU64,
+    tracks: AtomicU64,
 }
 
 /// What goes to the device: the sample as it is within full scale (bit for
@@ -384,6 +390,9 @@ impl Shared {
             lost: AtomicBool::new(false),
             ending: AtomicBool::new(false),
             latency: AtomicU64::new(0),
+            track_mark: AtomicU64::new(u64::MAX),
+            track_tap: AtomicU64::new(0),
+            tracks: AtomicU64::new(0),
         }
     }
 
@@ -422,6 +431,14 @@ impl Shared {
         self.tap.read_from(from, delay, 16_384, out)
     }
 
+    /// As [`Shared::tap_from`], up to (not including) the tap's frame `end`.
+    pub fn tap_from_to(&self, from: u64, end: u64, out: &mut Vec<f32>) -> (u64, u64) {
+        let written = self.tap.written();
+        let max = end.saturating_sub(from).min(16_384);
+        self.tap
+            .read_from(from, written.saturating_sub(end), max, out)
+    }
+
     /// As when the output reports that its device is gone (tests).
     #[doc(hidden)]
     pub fn simulate_output_loss(&self) {
@@ -448,11 +465,24 @@ impl Shared {
 
     /// Drop what is decoded and not yet heard (the output fades it out);
     /// the position starts at `ms`.
-    fn restart_at(&self, ms: u64) {
+    fn restart_at(&self, ms: u64) -> u64 {
         let at = self.ring.flush();
         self.origin.store(at, Ordering::Relaxed);
         self.base_ms.store(ms, Ordering::Relaxed);
         self.boundary.store(u64::MAX, Ordering::Relaxed);
+        at
+    }
+
+    /// A new track's sound begins at `at` (in the ring's frames).
+    fn mark_track(&self, at: u64) {
+        self.track_mark.store(at, Ordering::Release);
+    }
+
+    /// Where in the tap the latest track began (the tap's count of frames)
+    /// and how many have begun: the meters start anew at it.
+    pub fn track_start(&self) -> (u64, u64) {
+        let tracks = self.tracks.load(Ordering::Acquire);
+        (self.track_tap.load(Ordering::Acquire), tracks)
     }
 
     fn buffered_frames(&self) -> usize {
@@ -504,6 +534,7 @@ impl Shared {
         let fade_step =
             1.0 / (self.device_rate.load(Ordering::Relaxed).max(1) as f32 * FADE_SECS).max(1.0);
         let ending = self.ending.load(Ordering::Relaxed);
+        let mark = self.track_mark.load(Ordering::Acquire);
         let mut reading = self.ring.begin(state.flushes);
         for slot in out.chunks_exact_mut(channels) {
             state.gain += step;
@@ -524,11 +555,17 @@ impl Shared {
             }
             // (faded out and held: nothing is taken - paused, or waiting for
             // the sound to come)
+            let place = self.ring.place(&reading);
             let frame = if state.fade > 0.0 || (playing && !hold) {
                 self.ring.next(&mut reading)
             } else {
                 None
             };
+            if frame.is_some() && place == mark {
+                // a track's first sound: where it lies in the tap
+                self.track_tap.store(self.tap.written(), Ordering::Release);
+                self.tracks.fetch_add(1, Ordering::AcqRel);
+            }
             let (l, r) = match frame {
                 Some((l, r)) => {
                     state.silent = 0;
@@ -2349,13 +2386,14 @@ impl Player {
     }
 
     /// What is decoded and not heard goes (faded out); the position starts at `ms`.
-    fn flush_at(&mut self, ms: u64) {
+    fn flush_at(&mut self, ms: u64) -> u64 {
         self.out_limiter.reset();
         self.fading = None;
-        self.shared.restart_at(ms);
+        let at = self.shared.restart_at(ms);
         self.shared.ending.store(false, Ordering::Relaxed);
         self.pending_boundary = false;
         self.carry.clear();
+        at
     }
 
     /// Name the track to follow: opened from now on, on a thread of its own.
@@ -2406,6 +2444,8 @@ impl Player {
                 generation,
             } => {
                 self.reset();
+                // (the new track's sound begins where the ring goes on)
+                self.shared.mark_track(self.shared.end_of_buffer());
                 if crate::playlist::is_stream(&path) {
                     self.current = Some(Source::Stream(start_stream(
                         path,
@@ -2841,9 +2881,9 @@ impl Player {
                     f.decoded += (samples.len() / 2) as u64;
                     if std::mem::take(&mut self.pending_boundary) {
                         // the queued track's first sound: heard from here
-                        self.shared
-                            .boundary
-                            .store(self.shared.end_of_buffer(), Ordering::Relaxed);
+                        let at = self.shared.end_of_buffer();
+                        self.shared.boundary.store(at, Ordering::Relaxed);
+                        self.shared.mark_track(at);
                     }
                     self.chunk.clear();
                     self.resampler.process(&samples, &mut self.chunk);
