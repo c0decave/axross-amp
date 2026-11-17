@@ -135,16 +135,16 @@ fn every_face_draws_moves_and_is_kept_as_a_picture() {
     assert!(failures.is_empty(), "{failures:#?}");
 }
 
-/// Luma of an image, averaged over 2x2 blocks.
-fn luma(image: &image::RgbaImage) -> (Vec<f32>, usize, usize) {
+/// One colour channel of an image (0 red, 1 green, 2 blue), averaged over
+/// 2x2 blocks.
+fn channel(image: &image::RgbaImage, c: usize) -> (Vec<f32>, usize, usize) {
     let (w, h) = (image.width() as usize / 2, image.height() as usize / 2);
     let mut out = vec![0.0f32; w * h];
     for y in 0..h {
         for x in 0..w {
             let mut sum = 0.0;
             for (dx, dy) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
-                let p = image.get_pixel((2 * x + dx) as u32, (2 * y + dy) as u32);
-                sum += 0.2126 * p[0] as f32 + 0.7152 * p[1] as f32 + 0.0722 * p[2] as f32;
+                sum += image.get_pixel((2 * x + dx) as u32, (2 * y + dy) as u32)[c] as f32;
             }
             out[y * w + x] = sum / 4.0;
         }
@@ -152,9 +152,73 @@ fn luma(image: &image::RgbaImage) -> (Vec<f32>, usize, usize) {
     (out, w, h)
 }
 
-/// The structural similarity (SSIM, 8 x 8 windows) of two images' luma.
+/// CIE L*a*b* of an sRGB pixel.
+fn lab(p: &image::Rgba<u8>) -> [f32; 3] {
+    let lin = |v: u8| {
+        let v = v as f32 / 255.0;
+        if v <= 0.04045 {
+            v / 12.92
+        } else {
+            ((v + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    let (r, g, b) = (lin(p[0]), lin(p[1]), lin(p[2]));
+    let x = (0.4124 * r + 0.3576 * g + 0.1805 * b) / 0.95047;
+    let y = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    let z = (0.0193 * r + 0.1192 * g + 0.9505 * b) / 1.08883;
+    let f = |t: f32| {
+        if t > 0.008856 {
+            t.cbrt()
+        } else {
+            7.787 * t + 16.0 / 116.0
+        }
+    };
+    let (fx, fy, fz) = (f(x), f(y), f(z));
+    [116.0 * fy - 16.0, 500.0 * (fx - fy), 200.0 * (fy - fz)]
+}
+
+/// The mean colour difference (CIE76 ΔE) of two images, each blurred over
+/// 4x4 blocks first (a half-resolution picture's edges are not its colour).
+fn delta_e(a: &image::RgbaImage, b: &image::RgbaImage) -> f32 {
+    let (w, h) = (a.width() / 4, a.height() / 4);
+    let mean = |img: &image::RgbaImage, x: u32, y: u32| {
+        let mut sum = [0u32; 3];
+        for j in 0..4 {
+            for i in 0..4 {
+                let p = img.get_pixel(4 * x + i, 4 * y + j);
+                for c in 0..3 {
+                    sum[c] += p[c] as u32;
+                }
+            }
+        }
+        image::Rgba([
+            (sum[0] / 16) as u8,
+            (sum[1] / 16) as u8,
+            (sum[2] / 16) as u8,
+            255,
+        ])
+    };
+    let mut total = 0.0;
+    for y in 0..h {
+        for x in 0..w {
+            let (p, q) = (lab(&mean(a, x, y)), lab(&mean(b, x, y)));
+            total += ((p[0] - q[0]).powi(2) + (p[1] - q[1]).powi(2) + (p[2] - q[2]).powi(2)).sqrt();
+        }
+    }
+    total / (w * h).max(1) as f32
+}
+
+/// The structural similarity (SSIM) of two images: each colour channel's,
+/// the least of the three.
 fn ssim(a: &image::RgbaImage, b: &image::RgbaImage) -> f32 {
-    let ((la, w, h), (lb, _, _)) = (luma(a), luma(b));
+    (0..3)
+        .map(|c| ssim_of(&channel(a, c), &channel(b, c)))
+        .fold(1.0, f32::min)
+}
+
+/// The structural similarity (SSIM, 8 x 8 windows) of two planes.
+fn ssim_of((la, w, h): &(Vec<f32>, usize, usize), (lb, _, _): &(Vec<f32>, usize, usize)) -> f32 {
+    let (w, h) = (*w, *h);
     let (c1, c2) = ((0.01f32 * 255.0).powi(2), (0.03f32 * 255.0).powi(2));
     let mut total = 0.0;
     let mut windows = 0;
@@ -192,8 +256,9 @@ fn ssim(a: &image::RgbaImage, b: &image::RgbaImage) -> f32 {
 #[test]
 fn the_shader_faces_drawn_by_the_cpu_look_like_the_gpus() {
     // where shaders do not run on a GPU the CPU draws the faces per pixel
-    // (at half the resolution here): the same picture by structure (SSIM),
-    // not only by its mean colour, and moving
+    // (at half the resolution here): the same picture at the same moment -
+    // by structure in each colour channel (SSIM) and by colour (ΔE) - and
+    // moving
     let background = {
         let s = viz::scheme("classic", &Default::default()).background;
         image::Rgba([s.r(), s.g(), s.b(), 255])
@@ -203,6 +268,7 @@ fn the_shader_faces_drawn_by_the_cpu_look_like_the_gpus() {
     for face in FACES.iter().filter(|f| f.shader) {
         let mut seen = Vec::new();
         let mut pictures = Vec::new();
+        let mut times = Vec::new();
         for gpu in [true, false] {
             let mut h = faces::harness(face.key, vec2(320.0, 180.0), gpu, 3.0);
             // (every frame rendered: the GPU's feedback moves on when it is)
@@ -216,6 +282,7 @@ fn the_shader_faces_drawn_by_the_cpu_look_like_the_gpus() {
                 h.render().unwrap();
             }
             let second = h.render().unwrap();
+            times.push(h.state().analyzer.time);
             if !gpu {
                 second
                     .save(shots().join(format!("{}-cpu.png", face.key)))
@@ -224,15 +291,17 @@ fn the_shader_faces_drawn_by_the_cpu_look_like_the_gpus() {
             seen.push(stats(&second, &first, background));
             pictures.push(second);
         }
+        assert_eq!(times[0], times[1], "{}: not the same moment", face.key);
         let similar = ssim(&pictures[0], &pictures[1]);
+        let colour = delta_e(&pictures[0], &pictures[1]);
         let c = &seen[1];
         report.push(format!(
-            "{:<10} SSIM {similar:.3}; motion {:.1} % / {:.1} %",
+            "{:<10} SSIM {similar:.3} (least of R, G, B); ΔE {colour:.1}; motion {:.1} % / {:.1} %",
             face.key,
             seen[0].motion * 100.0,
             c.motion * 100.0
         ));
-        if similar < 0.8 || c.motion < 0.0005 || c.coverage < 0.05 {
+        if similar < 0.8 || colour > 8.0 || c.motion < 0.0005 || c.coverage < 0.05 {
             failed.push(report.last().unwrap().clone());
         }
     }
