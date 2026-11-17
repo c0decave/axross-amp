@@ -32,12 +32,12 @@ fn every_face_paints_a_full_hd_frame_in_a_few_milliseconds() {
         for frame in 0..40 {
             {
                 let shared = &harness.state().engine().shared;
-                let mut tap = shared.tap.lock().unwrap();
-                tap.clear();
+                let mut tap = Vec::with_capacity(8192 * 2);
                 for _ in 0..8192 * 2 {
                     seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
-                    tap.push_back((seed >> 8) as f32 / (1u32 << 24) as f32 * 1.6 - 0.8);
+                    tap.push((seed >> 8) as f32 / (1u32 << 24) as f32 * 1.6 - 0.8);
                 }
+                shared.tap.write(&tap);
                 shared.playing.store(true, Ordering::Relaxed);
             }
             let started = Instant::now();

@@ -50,11 +50,16 @@ fn the_sleep_timer_stops_at_the_end_of_the_track() {
     h.get_by_label("At the end of the track").click();
     settle(&mut h, 2);
     let mut output = RenderState::default();
+    let mut heard = Vec::new();
     for _ in 0..15 {
-        listen(&mut h, &mut output, 0.1);
+        heard.extend(listen(&mut h, &mut output, 0.1));
     }
     assert!(!h.state().playing());
-    assert_eq!(h.state().snapshot().current, 0, "the next track played");
+    // the first track whole, then nothing of the next (it was already
+    // decoded behind it: a few ms of it may fade out)
+    let sound = heard.iter().filter(|s| **s != 0.0).count();
+    assert!((23_500..=25_500).contains(&sound), "{sound} frames heard");
+    assert!(h.state().engine().shared.position() < 0.01);
     assert_eq!(
         h.state().status(),
         "The sleep timer stopped the music at the end of the track."

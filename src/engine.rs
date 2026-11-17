@@ -19,6 +19,7 @@
 //! once is a buffer of silence).
 
 use crate::eq::Equalizer;
+use crate::ring::{Ring, Tap};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, TryRecvError};
 use std::collections::VecDeque;
@@ -37,8 +38,21 @@ use symphonia::core::io::{MediaSourceStream, ReadOnlySource};
 use symphonia::core::meta::{MetadataOptions, StandardTag, StandardVisualKey};
 use symphonia::core::units::{Time, TimeBase, Timestamp};
 
-/// Seconds of sound decoded ahead of the output.
+/// Seconds of sound equalized ahead of the output (an equalizer change is
+/// heard this much later), and seconds decoded ahead of that - the margin a
+/// slow disk, a network share or a big cover art has before it is heard
+/// (the next track is opened ahead on a thread of its own besides).
 const AHEAD_SECS: f32 = 0.35;
+const STAGE_SECS: f32 = 3.0;
+
+/// Tests: every file takes this long to open (a sleeping disk, NFS).
+#[doc(hidden)]
+pub static OPEN_DELAY_MS: AtomicU64 = AtomicU64::new(0);
+/// Tests: no output device can be opened (as on a system without sound).
+#[doc(hidden)]
+pub static NO_OUTPUT: AtomicBool = AtomicBool::new(false);
+/// How often the output is tried again while there is none.
+const OUTPUT_RETRY: Duration = Duration::from_secs(5);
 /// Stereo frames of the most recent output the visualizations may read.
 pub const TAP_FRAMES: usize = 8192;
 /// A radio that breaks off is connected again this often (waiting 1, 2, 4 s).
@@ -204,46 +218,56 @@ pub enum Event {
     Output(String),
 }
 
-/// What the UI reads while the engine runs.
+/// What the UI reads while the engine runs. Nothing in it is locked: the
+/// output callback must never wait or allocate (it reads the [`Ring`]).
 pub struct Shared {
-    buffer: Mutex<VecDeque<f32>>,
-    /// Frames heard since the engine started (never set back), the count at
-    /// which the current track's position began, and that position (ms).
-    heard: AtomicU64,
+    ring: Ring,
+    /// Where (in the ring's frames read) the current track's position began,
+    /// and that position (ms).
     origin: AtomicU64,
     base_ms: AtomicU64,
-    /// Where (in `heard`) the queued track begins (u64::MAX: none decoded).
+    /// Where (in the ring's frames) the queued track begins (u64::MAX: none decoded).
     boundary: AtomicU64,
     pub playing: AtomicBool,
     volume_bits: AtomicU32,
     pub muted: AtomicBool,
     pub device_rate: AtomicU32,
-    pub tap: Mutex<VecDeque<f32>>,
+    /// The latest frames played, for the visualizations.
+    pub tap: Tap,
     /// The output reported that it is gone (the decoder thread opens it anew).
     lost: AtomicBool,
 }
+
+/// The fades that keep pause, seek, stop and a new track from clicking.
+pub const FADE_SECS: f32 = 0.008;
 
 /// What the output callback keeps between its calls.
 pub struct RenderState {
     /// The volume reached (ramped towards the one set: no click).
     gain: f32,
-    frame: Vec<f32>,
+    /// 0..1: faded out (paused, before a flush) or in.
+    fade: f32,
+    /// The ring's flushes honoured.
+    flushes: u64,
 }
 
 impl Default for RenderState {
     fn default() -> Self {
         RenderState {
             gain: 0.0,
-            frame: Vec::with_capacity(4096),
+            fade: 0.0,
+            flushes: 0,
         }
     }
 }
 
+/// The ring's size: about 21 s at 48 kHz (decoded ahead: [`AHEAD_SECS`]).
+const RING_FRAMES: usize = 1 << 20;
+
 impl Shared {
     fn new() -> Self {
         Shared {
-            buffer: Mutex::new(VecDeque::with_capacity(48_000)),
-            heard: AtomicU64::new(0),
+            ring: Ring::new(RING_FRAMES),
             origin: AtomicU64::new(0),
             base_ms: AtomicU64::new(0),
             boundary: AtomicU64::new(u64::MAX),
@@ -251,7 +275,7 @@ impl Shared {
             volume_bits: AtomicU32::new(0.8f32.to_bits()),
             muted: AtomicBool::new(false),
             device_rate: AtomicU32::new(48_000),
-            tap: Mutex::new(VecDeque::with_capacity(TAP_FRAMES * 2)),
+            tap: Tap::new(TAP_FRAMES),
             lost: AtomicBool::new(false),
         }
     }
@@ -266,8 +290,8 @@ impl Shared {
     pub fn position(&self) -> f64 {
         let rate = self.device_rate.load(Ordering::Relaxed).max(1) as f64;
         let frames = self
-            .heard
-            .load(Ordering::Relaxed)
+            .ring
+            .read()
             .saturating_sub(self.origin.load(Ordering::Relaxed));
         self.base_ms.load(Ordering::Relaxed) as f64 / 1000.0 + frames as f64 / rate
     }
@@ -281,68 +305,77 @@ impl Shared {
         f32::from_bits(self.volume_bits.load(Ordering::Relaxed))
     }
 
-    /// Drop what is decoded and not yet heard; the position starts at `ms`.
+    /// Drop what is decoded and not yet heard (the output fades it out);
+    /// the position starts at `ms`.
     fn restart_at(&self, ms: u64) {
-        let buffer = self.buffer.lock();
-        if let Ok(mut buffer) = buffer {
-            buffer.clear();
-        }
-        self.origin
-            .store(self.heard.load(Ordering::Relaxed), Ordering::Relaxed);
+        let at = self.ring.flush();
+        self.origin.store(at, Ordering::Relaxed);
         self.base_ms.store(ms, Ordering::Relaxed);
         self.boundary.store(u64::MAX, Ordering::Relaxed);
     }
 
     fn buffered_frames(&self) -> usize {
-        self.buffer.lock().map(|b| b.len() / 2).unwrap_or(0)
+        self.ring.buffered() as usize
     }
 
-    /// Where the sound decoded next will be heard (in `heard`).
+    /// Where the sound decoded next will be heard (in the ring's frames).
     fn end_of_buffer(&self) -> u64 {
-        match self.buffer.lock() {
-            // (heard is counted under the same lock: the two agree)
-            Ok(b) => self.heard.load(Ordering::Relaxed) + (b.len() / 2) as u64,
-            Err(_) => self.heard.load(Ordering::Relaxed),
-        }
+        self.ring.written()
     }
 
-    fn push(&self, samples: &[f32]) {
-        if let Ok(mut buffer) = self.buffer.lock() {
-            buffer.extend(samples.iter().copied());
-        }
+    /// Samples into the ring: how many frames went in.
+    fn push(&self, samples: &[f32]) -> usize {
+        self.ring.push(samples)
     }
 
     /// Fill `out` (interleaved, `channels` a frame) with what is to be heard:
     /// the stereo sound at the volume (ramped over the buffer: no click),
     /// both sides mixed for one channel, nothing on the channels past two.
-    /// What the output's callback does; tests call it for an output of their own.
+    /// A pause, a seek, a new track fade out over [`FADE_SECS`] and fade in
+    /// again. No lock, no allocation: what the output's callback does; tests
+    /// call it for an output of their own.
     pub fn render(&self, out: &mut [f32], channels: usize, state: &mut RenderState) {
         let channels = channels.max(1);
         let frames = out.len() / channels;
-        state.frame.clear();
-        // (the lock, not a try: the decoder holds it only to copy a packet in
-        // or to count - a try that failed was a whole buffer of silence, heard
-        // as a dropout when the machine was busy)
-        if self.playing.load(Ordering::Relaxed) {
-            let mut buffer = self.buffer.lock().unwrap_or_else(|p| p.into_inner());
-            let take = (frames * 2).min(buffer.len());
-            state.frame.extend(buffer.drain(..take));
-            self.heard.fetch_add((take / 2) as u64, Ordering::Relaxed);
-        }
-        let heard = state.frame.len() / 2;
-        state.frame.resize(frames * 2, 0.0);
+        let playing = self.playing.load(Ordering::Relaxed);
         let target = if self.muted.load(Ordering::Relaxed) {
             0.0
         } else {
             self.volume()
         };
         let step = (target - state.gain) / frames.max(1) as f32;
-        for (i, slot) in out.chunks_exact_mut(channels).enumerate() {
+        let fade_step =
+            1.0 / (self.device_rate.load(Ordering::Relaxed).max(1) as f32 * FADE_SECS).max(1.0);
+        let mut reading = self.ring.begin(state.flushes);
+        for slot in out.chunks_exact_mut(channels) {
             state.gain += step;
-            let (l, r) = (
-                state.frame[i * 2] * state.gain,
-                state.frame[i * 2 + 1] * state.gain,
-            );
+            // paused, or a flush waiting: what is left fades out first
+            let hold = !playing || reading.flush.is_some();
+            state.fade = if hold {
+                (state.fade - fade_step).max(0.0)
+            } else {
+                (state.fade + fade_step).min(1.0)
+            };
+            if state.fade <= 0.0 && reading.flush.is_some() {
+                state.flushes = self.ring.skip(&mut reading);
+            }
+            let frame = if playing || state.fade > 0.0 {
+                self.ring.next(&mut reading)
+            } else {
+                None
+            };
+            let (l, r) = match frame {
+                Some((l, r)) => {
+                    self.tap.put(l, r);
+                    let g = state.gain * state.fade;
+                    (l * g, r * g)
+                }
+                None => {
+                    // (ran dry: what comes next fades in)
+                    state.fade = 0.0;
+                    (0.0, 0.0)
+                }
+            };
             if channels == 1 {
                 slot[0] = ((l + r) * 0.5).clamp(-1.0, 1.0);
                 continue;
@@ -355,17 +388,11 @@ impl Shared {
                 };
             }
         }
+        self.ring.end(reading);
         // (a remainder that is no whole frame: silence)
         let whole = frames * channels;
         out[whole..].iter_mut().for_each(|s| *s = 0.0);
         state.gain = target;
-        if heard > 0
-            && let Ok(mut tap) = self.tap.try_lock()
-        {
-            tap.extend(state.frame[..heard * 2].iter().copied());
-            let excess = tap.len().saturating_sub(TAP_FRAMES * 2);
-            tap.drain(..excess);
-        }
     }
 }
 
@@ -506,18 +533,22 @@ fn build<T>(
 where
     T: cpal::SizedSample + cpal::FromSample<f32>,
 {
-    let channels = config.channels as usize;
+    let channels = config.channels.max(1) as usize;
     let mut state = RenderState::default();
-    let mut mixed = Vec::<f32>::with_capacity(8192);
+    // (made once: the callback renders in pieces of this size, it never allocates)
+    let piece = (8192 / channels).max(1) * channels;
+    let mut mixed = vec![0.0f32; piece];
     let lost = shared.clone();
     device
         .build_output_stream(
             config,
             move |data: &mut [T], _: &cpal::OutputCallbackInfo| {
-                mixed.resize(data.len(), 0.0);
-                shared.render(&mut mixed, channels, &mut state);
-                for (out, v) in data.iter_mut().zip(&mixed) {
-                    *out = T::from_sample(*v);
+                for chunk in data.chunks_mut(piece) {
+                    let mixed = &mut mixed[..chunk.len()];
+                    shared.render(mixed, channels, &mut state);
+                    for (out, v) in chunk.iter_mut().zip(mixed.iter()) {
+                        *out = T::from_sample(*v);
+                    }
                 }
             },
             move |err| {
@@ -1115,6 +1146,10 @@ fn open(
     generation: u64,
     loudness: Loudness,
 ) -> Result<(Decoding, TrackInfo), String> {
+    let delay = OPEN_DELAY_MS.load(Ordering::Relaxed);
+    if delay > 0 {
+        thread::sleep(Duration::from_millis(delay));
+    }
     let (mss, hint) = open_file(path)?;
     open_media(mss, hint, true, path, out_rate, generation, loudness)
 }
@@ -1534,7 +1569,55 @@ struct Player {
     /// The track still heard while the queued one is decoded after it, and
     /// the queued one with its info (told when it is heard).
     ending: Option<(Box<Decoding>, Queued, TrackInfo)>,
+    /// The queued track being opened on a thread of its own (and then opened).
+    prepared: Option<Prepared>,
+    /// Decoded (levelled, resampled) and not yet equalized: up to
+    /// [`STAGE_SECS`]; where in it (frames) the queued track begins.
+    staged: VecDeque<f32>,
+    staged_boundary: Option<usize>,
+    /// Equalized and not yet taken by the ring (it was full).
+    carry: Vec<f32>,
+    /// An output to play on (else nothing plays), and when it was last tried.
+    output_ok: bool,
+    output_tried: Instant,
     chunk: Vec<f32>,
+}
+
+type Opened = Result<(Decoding, TrackInfo), String>;
+
+/// The queued track, opened ahead.
+struct Prepared {
+    queued: Queued,
+    rx: Receiver<Opened>,
+    done: Option<Opened>,
+}
+
+impl Prepared {
+    fn start(queued: Queued, out_rate: u32, loudness: Loudness) -> Prepared {
+        let (tx, rx) = crossbeam_channel::bounded(1);
+        let (path, generation) = (queued.path.clone(), queued.generation);
+        let spawned = thread::Builder::new()
+            .name("amp-open".into())
+            .spawn(move || {
+                let _ = tx.send(open(&path, out_rate, generation, loudness));
+            });
+        let done = spawned.err().map(|e| Err(e.to_string()));
+        Prepared { queued, rx, done }
+    }
+
+    /// Opened by now? (None: still opening.)
+    fn ready(&mut self) -> Option<&mut Opened> {
+        if self.done.is_none() {
+            match self.rx.try_recv() {
+                Ok(opened) => self.done = Some(opened),
+                Err(TryRecvError::Disconnected) => {
+                    self.done = Some(Err("it could not be opened".into()))
+                }
+                Err(TryRecvError::Empty) => {}
+            }
+        }
+        self.done.as_mut()
+    }
 }
 
 impl Player {
@@ -1548,6 +1631,14 @@ impl Player {
     fn connect(&mut self, device: Option<&str>) {
         self.device = device.map(str::to_owned);
         self.shared.lost.store(false, Ordering::Relaxed);
+        self.output_tried = Instant::now();
+        if NO_OUTPUT.load(Ordering::Relaxed) {
+            self.output_ok = false;
+            self.out_rate = 48_000;
+            self.shared.playing.store(false, Ordering::Relaxed);
+            return self.send(Event::Output("no sound: no audio device".into()));
+        }
+        self.output_ok = true;
         if self.headless {
             self.shared.device_rate.store(48_000, Ordering::Relaxed);
             self.out_rate = 48_000;
@@ -1568,6 +1659,8 @@ impl Player {
             }
             Err(why) => {
                 self.out_rate = 48_000;
+                self.output_ok = false;
+                self.shared.playing.store(false, Ordering::Relaxed);
                 self.send(Event::Output(format!("no sound: {why}")));
             }
         }
@@ -1593,7 +1686,7 @@ impl Player {
                 Some(Source::File(d)) => {
                     d.set_out_rate(self.out_rate);
                     let landed = d.seek(at).unwrap_or(0);
-                    self.shared.restart_at(landed);
+                    self.flush_at(landed);
                 }
                 Some(Source::Stream(s)) => {
                     s.rate.store(self.out_rate, Ordering::Relaxed);
@@ -1601,7 +1694,7 @@ impl Player {
                     s.pending.clear();
                     s.pending_frames = 0;
                     s.primed = false;
-                    self.shared.restart_at(0);
+                    self.flush_at(0);
                 }
                 None => {}
             }
@@ -1637,18 +1730,80 @@ impl Player {
     fn cancel_advance(&mut self) {
         if let Some((decoding, queued, _)) = self.ending.take() {
             self.current = Some(Source::File(decoding));
-            self.queued = Some(queued);
+            self.prepared = None;
+            self.prepare(Some(queued));
         }
         self.shared.boundary.store(u64::MAX, Ordering::Relaxed);
+        self.staged_boundary = None;
+    }
+
+    /// The queued track decoded behind the current one, taken back before
+    /// it is heard (the current one ends then); false when it is too late.
+    fn take_back_advance(&mut self) -> bool {
+        if self.ending.is_none() {
+            return true;
+        }
+        let boundary = self.shared.boundary.load(Ordering::Relaxed);
+        if boundary != u64::MAX {
+            // its start is in the ring already: taken out of it
+            if !self.shared.ring.unwrite_to(boundary) {
+                return false;
+            }
+            self.staged.clear();
+            self.carry.clear();
+        } else if let Some(at) = self.staged_boundary {
+            self.staged.truncate(at * 2);
+        }
+        self.shared.boundary.store(u64::MAX, Ordering::Relaxed);
+        self.staged_boundary = None;
+        if let Some((old, _, _)) = self.ending.take() {
+            // (it was at its end)
+            self.current = Some(Source::File(old));
+        }
+        true
+    }
+
+    /// What is decoded and not heard goes (faded out); the position starts at `ms`.
+    fn flush_at(&mut self, ms: u64) {
+        self.shared.restart_at(ms);
+        self.staged.clear();
+        self.staged_boundary = None;
+        self.carry.clear();
+    }
+
+    /// Name the track to follow: opened from now on, on a thread of its own.
+    fn prepare(&mut self, queued: Option<Queued>) {
+        let same = match (&self.prepared, &queued) {
+            (Some(p), Some(q)) => p.queued == *q,
+            (None, None) => true,
+            _ => false,
+        };
+        self.queued = queued.clone();
+        if same {
+            return;
+        }
+        self.prepared = queued
+            .filter(|q| !crate::playlist::is_stream(&q.path))
+            .map(|q| Prepared::start(q, self.out_rate, self.loudness));
     }
 
     fn reset(&mut self) {
         self.shared.playing.store(false, Ordering::Relaxed);
-        self.shared.restart_at(0);
+        self.flush_at(0);
         self.eq.reset();
         self.current = None;
         self.ending = None;
         self.queued = None;
+        self.prepared = None;
+    }
+
+    /// Play only with an output to play on (tried again first).
+    fn may_play(&mut self) -> bool {
+        if !self.output_ok {
+            let device = self.device.clone();
+            self.reopen(device);
+        }
+        self.output_ok
     }
 
     fn command(&mut self, command: Command) -> bool {
@@ -1669,6 +1824,7 @@ impl Player {
                         self.events.clone(),
                         self.wake.clone(),
                     )));
+                    let play = play && self.may_play();
                     self.shared.playing.store(play, Ordering::Relaxed);
                     return true;
                 }
@@ -1679,10 +1835,11 @@ impl Player {
                         } else {
                             0
                         };
-                        self.shared.restart_at(at);
+                        self.flush_at(at);
                         self.send(Event::Loaded { generation, info });
-                        self.shared.playing.store(play, Ordering::Relaxed);
                         self.current = Some(Source::File(Box::new(decoding)));
+                        let play = play && self.may_play();
+                        self.shared.playing.store(play, Ordering::Relaxed);
                     }
                     Err(message) => self.send(Event::Failed {
                         generation,
@@ -1691,15 +1848,25 @@ impl Player {
                 }
             }
             Command::Queue(queued) => {
-                // (while the queued one is already decoded, the next is told after it is heard)
-                if self.ending.is_none() {
-                    self.queued = queued;
+                // while the queued one is already decoded behind the current
+                // one, the next is told after it is heard - unless it is no
+                // longer the one to follow (the end of the track after all,
+                // another track): then it is taken back while it can be
+                let pending = self.ending.as_ref().map(|(_, q, _)| q.clone());
+                match pending {
+                    None => self.prepare(queued),
+                    Some(q) if Some(&q) != queued.as_ref() => {
+                        if self.take_back_advance() {
+                            self.prepare(queued);
+                        }
+                    }
+                    Some(_) => {}
                 }
             }
-            Command::Play => self
-                .shared
-                .playing
-                .store(self.current.is_some(), Ordering::Relaxed),
+            Command::Play => {
+                let play = self.current.is_some() && self.may_play();
+                self.shared.playing.store(play, Ordering::Relaxed);
+            }
             Command::Pause => self.shared.playing.store(false, Ordering::Relaxed),
             Command::Stop => {
                 self.shared.playing.store(false, Ordering::Relaxed);
@@ -1707,11 +1874,13 @@ impl Player {
                 if let Some(Source::Stream(_)) = self.current {
                     // a stream is let go (its connection closed); Play connects anew
                     self.current = None;
-                    self.shared.restart_at(0);
+                    self.flush_at(0);
                 } else if let Some(Source::File(d)) = self.current.as_mut() {
                     let at = d.seek(0.0).unwrap_or(0);
-                    self.shared.restart_at(at);
+                    self.flush_at(at);
                     self.eq.reset();
+                } else {
+                    self.flush_at(0); // (after the end: back to 0:00)
                 }
             }
             Command::Seek(secs) => {
@@ -1721,7 +1890,7 @@ impl Player {
                 if let Some(Source::File(d)) = self.current.as_mut()
                     && let Some(at) = d.seek(secs)
                 {
-                    self.shared.restart_at(at);
+                    self.flush_at(at);
                     self.eq.reset();
                 }
             }
@@ -1747,7 +1916,7 @@ impl Player {
     /// The queued track heard now: its position begins.
     fn check_boundary(&mut self) {
         let boundary = self.shared.boundary.load(Ordering::Relaxed);
-        if boundary == u64::MAX || self.shared.heard.load(Ordering::Relaxed) < boundary {
+        if boundary == u64::MAX || self.shared.ring.read() < boundary {
             return;
         }
         self.shared.origin.store(boundary, Ordering::Relaxed);
@@ -1761,50 +1930,103 @@ impl Player {
         }
     }
 
-    /// At the end of a file: the queued one decoded on after it, if it opens.
-    fn advance(&mut self) -> bool {
-        let Some(queued) = self.queued.clone() else {
-            return false;
-        };
-        if self.ending.is_some() || crate::playlist::is_stream(&queued.path) {
-            return false;
+    /// At the end of a file: the queued one decoded on after it, once its
+    /// opening (begun when it was queued) is done. Some(false): still opening.
+    fn advance(&mut self) -> Option<bool> {
+        if self.ending.is_some() {
+            return Some(false);
         }
+        let Some(prepared) = self.prepared.as_mut() else {
+            return Some(false);
+        };
+        prepared.ready()?;
+        let Some(Prepared {
+            queued,
+            done: Some(opened),
+            ..
+        }) = self.prepared.take()
+        else {
+            return Some(false);
+        };
+        self.queued = None;
+        // (one that fails says so when its turn comes)
+        let Ok((mut next, info)) = opened else {
+            return Some(false);
+        };
         let Some(Source::File(current)) = self.current.as_mut() else {
-            return false;
+            return Some(false);
         };
-        let Ok((mut next, info)) = open(
-            &queued.path,
-            self.out_rate,
-            queued.generation,
-            self.loudness,
-        ) else {
-            // (it fails when its turn comes, and says why)
-            self.queued = None;
-            return false;
-        };
+        next.set_out_rate(self.out_rate);
+        next.gain = self.loudness.factor(&next.info);
         if next.rate == current.rate {
             // the same resampler goes on: not even the filter's edge between them
             next.resampler = current.resampler.clone();
         } else {
             let mut tail = Vec::new();
             current.finish(&mut tail);
-            self.eq.process(&mut tail);
-            self.shared.push(&tail);
+            self.staged.extend(tail);
         }
         current.eof = true;
-        self.shared
-            .boundary
-            .store(self.shared.end_of_buffer(), Ordering::Relaxed);
-        self.queued = None;
+        self.staged_boundary = Some(self.staged.len() / 2);
         if let Some(Source::File(old)) = self.current.replace(Source::File(Box::new(next))) {
             self.ending = Some((old, queued, info));
         }
-        true
+        Some(true)
+    }
+
+    /// Staged sound into the ring (equalized on the way), as far as the
+    /// output needs it; the queued track's start marked where it comes.
+    fn feed(&mut self) -> bool {
+        let mut moved = false;
+        loop {
+            if !self.carry.is_empty() {
+                let n = self.shared.push(&self.carry);
+                self.carry.drain(..n * 2);
+                if !self.carry.is_empty() {
+                    return moved; // (the ring is full)
+                }
+            }
+            if self.staged_boundary == Some(0) {
+                self.shared
+                    .boundary
+                    .store(self.shared.end_of_buffer(), Ordering::Relaxed);
+                self.staged_boundary = None;
+            }
+            let buffered = self.shared.buffered_frames();
+            if buffered >= self.ahead || self.staged.is_empty() {
+                return moved;
+            }
+            let mut take = (self.ahead - buffered).min(4096).min(self.staged.len() / 2);
+            if let Some(b) = self.staged_boundary {
+                take = take.min(b);
+            }
+            self.chunk.clear();
+            self.chunk.extend(self.staged.drain(..take * 2));
+            if let Some(b) = self.staged_boundary.as_mut() {
+                *b -= take;
+            }
+            self.eq.process(&mut self.chunk);
+            let n = self.shared.push(&self.chunk);
+            self.carry.extend_from_slice(&self.chunk[n * 2..]);
+            moved = true;
+        }
     }
 
     /// Decode what the output needs next; false when there is nothing to do.
     fn tick(&mut self) -> bool {
         if !self.shared.playing.load(Ordering::Relaxed) {
+            // a stream that could not connect says so also when nothing plays
+            // (paused while it connected, no output to play on)
+            if let Some(Source::Stream(st)) = self.current.as_ref()
+                && let Some(message) = st.error.lock().ok().and_then(|mut e| e.take())
+            {
+                let generation = st.generation;
+                self.current = None;
+                self.send(Event::Failed {
+                    generation,
+                    message,
+                });
+            }
             return false;
         }
         let buffered = self.shared.buffered_frames();
@@ -1816,52 +2038,85 @@ impl Player {
     }
 
     fn tick_file(&mut self, buffered: usize) -> bool {
+        let moved = self.feed();
         let Some(Source::File(d)) = self.current.as_ref() else {
-            return false;
+            return moved;
         };
         let generation = d.generation;
         if d.eof {
-            if buffered == 0 && self.shared.boundary.load(Ordering::Relaxed) == u64::MAX {
+            let drained = self.staged.is_empty() && self.carry.is_empty();
+            if drained
+                && buffered == 0
+                && self.shared.buffered_frames() == 0
+                && self.shared.boundary.load(Ordering::Relaxed) == u64::MAX
+            {
                 self.shared.playing.store(false, Ordering::Relaxed);
                 self.current = None;
                 self.send(Event::Ended { generation });
             }
-            return false;
+            return moved;
         }
-        if buffered >= self.ahead {
-            return false;
+        let stage = (self.out_rate as f32 * STAGE_SECS) as usize;
+        if self.staged.len() / 2 >= stage {
+            return moved;
         }
-        self.chunk.clear();
+        let mut chunk = std::mem::take(&mut self.chunk);
+        chunk.clear();
         let result = match self.current.as_mut() {
-            Some(Source::File(d)) => d.step(&mut self.chunk),
-            _ => return false,
+            Some(Source::File(d)) => d.step(&mut chunk),
+            _ => return moved,
         };
-        match result {
-            Ok(true) => {}
-            Ok(false) => {
-                if !self.advance()
-                    && let Some(Source::File(d)) = self.current.as_mut()
+        let busy = match result {
+            Ok(true) => true,
+            Ok(false) => match self.advance() {
+                Some(true) => true,
+                // still opening: decoded again (the end again) once it is
+                None => false,
+                // nothing queued yet while much is still to be heard: the
+                // track to follow may still be named (it is named when the
+                // one before is heard - a short one is decoded long before)
+                Some(false)
+                    if self.queued.is_none()
+                        && self.prepared.is_none()
+                        && (self.staged.len() + self.carry.len()) / 2
+                            + self.shared.buffered_frames()
+                            > self.ahead =>
                 {
-                    d.finish(&mut self.chunk);
+                    false
                 }
-            }
+                Some(false) => {
+                    if let Some(Source::File(d)) = self.current.as_mut() {
+                        d.finish(&mut chunk);
+                    }
+                    true
+                }
+            },
             Err(message) => {
                 self.current = None;
                 self.ending = None;
+                self.flush_at(0);
                 self.shared.playing.store(false, Ordering::Relaxed);
                 self.send(Event::Failed {
                     generation,
                     message,
                 });
+                self.chunk = chunk;
                 return false;
             }
-        }
-        self.eq.process(&mut self.chunk);
-        self.shared.push(&self.chunk);
-        true
+        };
+        self.staged.extend(chunk.iter().copied());
+        self.chunk = chunk;
+        busy || moved
     }
 
     fn tick_stream(&mut self, buffered: usize) -> bool {
+        if !self.carry.is_empty() {
+            let n = self.shared.push(&self.carry);
+            self.carry.drain(..n * 2);
+            if !self.carry.is_empty() {
+                return false;
+            }
+        }
         let prime = (self.out_rate as f32 * STREAM_PRIME_SECS) as usize;
         let ahead = self.ahead;
         let Some(Source::Stream(s)) = self.current.as_mut() else {
@@ -1904,7 +2159,8 @@ impl Player {
         };
         s.pending_frames -= chunk.len() / 2;
         self.eq.process(&mut chunk);
-        self.shared.push(&chunk);
+        let n = self.shared.push(&chunk);
+        self.carry.extend_from_slice(&chunk[n * 2..]);
         true
     }
 }
@@ -1932,6 +2188,12 @@ fn run(
         device: None,
         losses: Vec::new(),
         ending: None,
+        prepared: None,
+        staged: VecDeque::new(),
+        staged_boundary: None,
+        carry: Vec::new(),
+        output_ok: false,
+        output_tried: Instant::now(),
         chunk: Vec::with_capacity(16_384),
     };
     player.connect(None);
@@ -1963,6 +2225,11 @@ fn run(
             return;
         }
         player.recover();
+        // no output: tried again now and then (a sound server that starts, a device plugged in)
+        if !player.output_ok && player.output_tried.elapsed() >= OUTPUT_RETRY {
+            let device = player.device.clone();
+            player.reopen(device);
+        }
         player.check_boundary();
         busy = player.tick();
     }
@@ -2068,13 +2335,15 @@ mod tests {
         shared.push(&[0.5, 0.25, 0.5, 0.25]);
         let mut state = RenderState {
             gain: 1.0,
-            ..Default::default()
+            fade: 1.0,
+            flushes: 0,
         };
         let mut out = [9.0f32; 3];
         shared.render(&mut out, 1, &mut state);
         assert_eq!(out, [0.375, 0.375, 0.0]);
         // four channels: the stereo on the first two, silence on the others
         shared.push(&[0.5, 0.25]);
+        state.fade = 1.0; // (it ran dry above: what comes now would fade in)
         let mut out = [9.0f32; 4];
         shared.render(&mut out, 4, &mut state);
         assert_eq!(out, [0.5, 0.25, 0.0, 0.0]);

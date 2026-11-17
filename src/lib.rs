@@ -16,5 +16,6 @@ pub mod mp4edit;
 pub mod mpris;
 pub mod net;
 pub mod playlist;
+pub mod ring;
 pub mod state;
 pub mod viz;

@@ -41,8 +41,7 @@ fn write_wav(path: &Path, rate: u32, secs: u32) {
 /// A chord with some noise: every face has something to show.
 fn feed(app: &App, phase: f32) {
     let shared = &app.engine().shared;
-    let mut tap = shared.tap.lock().unwrap();
-    tap.clear();
+    let mut tap = Vec::with_capacity(8192 * 2);
     let mut seed = 7u32;
     for i in 0..8192 {
         let t = i as f32 / 48_000.0 + phase;
@@ -53,9 +52,10 @@ fn feed(app: &App, phase: f32) {
             .enumerate()
             .map(|(k, f)| (t * f * std::f32::consts::TAU).sin() * 0.3 / (k as f32 + 1.0).sqrt())
             .sum();
-        tap.push_back(base + noise * 0.05);
-        tap.push_back(base * 0.8 + (t * 330.0 * std::f32::consts::TAU).cos() * 0.2 + noise * 0.05);
+        tap.push(base + noise * 0.05);
+        tap.push(base * 0.8 + (t * 330.0 * std::f32::consts::TAU).cos() * 0.2 + noise * 0.05);
     }
+    shared.tap.write(&tap);
     shared.playing.store(true, Ordering::Relaxed);
 }
 
