@@ -86,6 +86,9 @@ fn a_python_state_reads_and_ours_is_written_for_python() {
     assert_eq!(s.visualizer, "radial");
     assert_eq!(s.tracks.len(), 4);
     assert_eq!(s.tracks[3].path, "https://radio.example/live.mp3");
+    // (axross keeps durations in seconds)
+    assert_eq!(s.tracks[0].duration_ms, 61_000);
+    assert_eq!(s.tracks[2].duration_ms, 2_000);
     assert_eq!(s.visual_options.bars, 32);
     assert_eq!(
         s.visual_custom.get("low").map(String::as_str),

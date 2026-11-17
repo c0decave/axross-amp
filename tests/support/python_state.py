@@ -29,9 +29,9 @@ def main() -> int:
             "version": mp.STATE_VERSION, "volume": 37, "muted": True, "shuffle": True,
             "repeat": "one",
             "tracks": [
-                {"path": "/music/a.flac", "title": "First", "duration": 61000},
+                {"path": "/music/a.flac", "title": "First", "duration": 61},
                 {"path": "/music/b.mp3", "title": "", "duration": 0},
-                {"path": "/music/c.ogg", "title": "Third", "duration": 2000},
+                {"path": "/music/c.ogg", "title": "Third", "duration": 2},
                 {"path": "https://radio.example/live.mp3", "title": "Radio", "duration": 0},
             ],
             "current": 2, "position_ms": 900, "visualizer": "radial",
