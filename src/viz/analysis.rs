@@ -758,9 +758,9 @@ fn goniometer(f: &Frame<'_>, state: &mut VizState) {
     }
     let square = Rect::from_center_size(c, vec2(reach * 2.0, reach * 2.0));
     let u = gpu::Uniforms::new(gpu::Shader::Phosphor, a, s, 0.0).with_opacity(f.opacity);
-    let (gpu, second, cv) = (&mut state.gpu, f.second, &mut state.canvas);
+    let (gpu, second, cv, live) = (&mut state.gpu, f.second, &mut state.canvas, f.dt > 0.0);
     cv.draw(p, |pen| {
-        gpu::paint(p, pen, gpu, square, square, u, true, second);
+        gpu::paint(p, pen, gpu, square, square, u, true, second, live);
     });
     cv.draw(p, |pen| {
         pen.ring(c, reach, 1.0, s.grid());
@@ -1282,9 +1282,9 @@ fn mel(f: &Frame<'_>, state: &mut VizState) {
     let u =
         gpu::Uniforms::new(gpu::Shader::Mel, a, s, fine.step_fraction()).with_opacity(f.opacity);
     let clip = f.rect.expand(4.0);
-    let (gpu, second) = (&mut state.gpu, f.second);
+    let (gpu, second, live) = (&mut state.gpu, f.second, f.dt > 0.0);
     state.canvas.draw(p, |pen| {
-        gpu::paint(p, pen, gpu, plot, clip, u, true, second);
+        gpu::paint(p, pen, gpu, plot, clip, u, true, second, live);
     });
     // the frequencies of some bands
     let mel_of = |hz: f32| 2595.0 * (1.0 + hz / 700.0).log10();

@@ -218,6 +218,15 @@ pub struct State {
     pub sync: bool,
     /// Tests: the CPU's resolution fixed at this share of the face's.
     pub cpu_scale: Option<f32>,
+    /// The shaders' resolution as a share of the face's (below 1 on a slow
+    /// GPU: drawn small, scaled up), and the seconds between two frames
+    /// (the frame rate's cap: the CPU's thread makes no more pictures).
+    pub scale: f32,
+    pub interval: f32,
+    /// What a pixel of a shader face costs the GPU (ms, measured at the
+    /// start): the faces are drawn as small as keeps them within
+    /// GPU_BUDGET_MS a frame. 0: as they are.
+    pub ms_per_pixel: f32,
 }
 
 impl Default for State {
@@ -229,6 +238,9 @@ impl Default for State {
             cpu: None,
             sync: false,
             cpu_scale: None,
+            scale: 1.0,
+            interval: 1.0 / 30.0,
+            ms_per_pixel: 0.0,
         }
     }
 }
@@ -249,12 +261,26 @@ struct Slot {
     version: u64,
     group: wgpu::BindGroup,
     feedback: Option<Feedback>,
+    scaled: Option<Scaled>,
+}
+
+/// A face drawn smaller than it is shown: its own picture, the uniforms it
+/// is drawn with, the group that draws it (with the slot's picture) and
+/// the one that shows it (scaled up).
+struct Scaled {
+    texture: wgpu::Texture,
+    size: (u32, u32),
+    data_size: (u32, u32),
+    uniforms: wgpu::Buffer,
+    draw: wgpu::BindGroup,
+    blit: wgpu::BindGroup,
 }
 
 /// The pipelines and their slots, among egui's callback resources.
 struct Faces {
     pipeline: wgpu::RenderPipeline,
     feedback: wgpu::RenderPipeline,
+    offscreen: wgpu::RenderPipeline,
     layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
     linear: bool,
@@ -399,6 +425,7 @@ pub fn install(render_state: &egui_wgpu::RenderState) {
         Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
     );
     let feedback = pipeline("fs_feedback", wgpu::TextureFormat::Rgba8Unorm, None);
+    let offscreen = pipeline("fs_main", wgpu::TextureFormat::Rgba8Unorm, None);
     let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
         label: Some("axross-amp faces"),
         address_mode_u: wgpu::AddressMode::ClampToEdge,
@@ -410,6 +437,7 @@ pub fn install(render_state: &egui_wgpu::RenderState) {
     let mut faces = Faces {
         pipeline: main,
         feedback,
+        offscreen,
         layout,
         sampler,
         linear: render_state.target_format.is_srgb(),
@@ -431,6 +459,7 @@ pub fn install(render_state: &egui_wgpu::RenderState) {
             version: u64::MAX,
             group,
             feedback: None,
+            scaled: None,
         });
     }
     render_state
@@ -446,6 +475,8 @@ struct Paint {
     slot: usize,
     /// The face's size in points (the feedback's pictures follow it).
     size: (f32, f32),
+    /// Drawn at this share of its size and scaled up (1: as it is).
+    scale: f32,
 }
 
 impl CallbackTrait for Paint {
@@ -568,6 +599,9 @@ impl CallbackTrait for Paint {
                 );
             }
         }
+        if self.scale < 0.999 {
+            self.draw_small(device, queue, ppp, encoder, faces, slot, &u);
+        }
         Vec::new()
     }
 
@@ -582,16 +616,113 @@ impl CallbackTrait for Paint {
         };
         let slot = &faces.slots[self.slot % SLOTS];
         pass.set_pipeline(&faces.pipeline);
-        let group = match (
-            &slot.feedback,
-            self.uniforms.face() == Shader::Feedback as u32,
-        ) {
-            (Some(f), true) => &f.groups[f.last],
+        let feedback = self.uniforms.face() == Shader::Feedback as u32;
+        let group = match (&slot.feedback, &slot.scaled) {
+            (Some(f), _) if feedback => &f.groups[f.last],
+            (_, Some(small)) if self.scale < 0.999 && !feedback => &small.blit,
             _ => &slot.group,
         };
         pass.set_bind_group(0, group, &[]);
         pass.draw(0..3, 0..1);
     }
+}
+
+impl Paint {
+    /// The face drawn small into a picture of its own, the slot's uniforms
+    /// made to show that picture scaled up (`blit`, the shader's face 14).
+    #[allow(clippy::too_many_arguments)]
+    fn draw_small(
+        &self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        ppp: f32,
+        encoder: &mut wgpu::CommandEncoder,
+        faces: &mut Faces,
+        slot: usize,
+        u: &Uniforms,
+    ) {
+        let want = (
+            ((self.size.0 * ppp * self.scale) as u32).clamp(16, 4096),
+            ((self.size.1 * ppp * self.scale) as u32).clamp(9, 4096),
+        );
+        let data_size = faces.slots[slot].size;
+        if faces.slots[slot]
+            .scaled
+            .as_ref()
+            .is_none_or(|s| s.size != want || s.data_size != data_size)
+        {
+            let texture = Faces::texture(device, want, wgpu::TextureFormat::Rgba8Unorm, true);
+            let uniforms = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("axross-amp face uniforms (small)"),
+                size: (VEC4S * 16) as u64,
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            let draw = faces.group(device, &uniforms, &faces.slots[slot].texture);
+            let blit = faces.group(device, &faces.slots[slot].uniforms, &texture);
+            faces.slots[slot].scaled = Some(Scaled {
+                texture,
+                size: want,
+                data_size,
+                uniforms,
+                draw,
+                blit,
+            });
+        }
+        let Some(small) = faces.slots[slot].scaled.as_ref() else {
+            return;
+        };
+        // the face at its small size: its own area, no corners, opaque, as
+        // the scheme's colours are (the showing makes them linear if need be)
+        let mut drawn = *u;
+        drawn.v[0] = [0.0, 0.0, want.0 as f32, want.1 as f32];
+        drawn.v[1] = drawn.v[0];
+        drawn.v[3][3] = 0.0;
+        drawn.v[4][1] = 0.0;
+        drawn.v[4][3] = 1.0;
+        queue.write_buffer(&small.uniforms, 0, &to_bytes(&drawn));
+        // and shown: the picture over the face's area
+        let mut shown = *u;
+        shown.v[4][0] = BLIT as f32;
+        queue.write_buffer(&faces.slots[slot].uniforms, 0, &to_bytes(&shown));
+        let view = small
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("axross-amp face (small)"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &view,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+        pass.set_pipeline(&faces.offscreen);
+        pass.set_bind_group(0, &small.draw, &[]);
+        pass.draw(0..3, 0..1);
+    }
+}
+
+/// What a shader face may take of the GPU's time a frame (ms, by the
+/// clock: a software rasterizer spends that on each of its threads).
+const GPU_BUDGET_MS: f32 = 1.0;
+
+/// The shader's face that shows a picture drawn smaller, scaled up.
+const BLIT: u32 = 14;
+
+fn to_bytes(u: &Uniforms) -> [u8; VEC4S * 16] {
+    let mut bytes = [0u8; VEC4S * 16];
+    for (k, v) in u.v.iter().flatten().enumerate() {
+        bytes[k * 4..k * 4 + 4].copy_from_slice(&v.to_ne_bytes());
+    }
+    bytes
 }
 
 /// Draw `u`'s face into `rect` (`clip`: the rounded background it lies
@@ -607,6 +738,7 @@ pub fn paint(
     mut u: Uniforms,
     picture: bool,
     second: bool,
+    live: bool,
 ) {
     u.v[0] = [rect.left(), rect.top(), rect.width(), rect.height()];
     u.v[1] = [clip.left(), clip.top(), clip.width(), clip.height()];
@@ -619,16 +751,25 @@ pub fn paint(
                 picture: picture.then(|| state.pictures[usize::from(second)].clone()),
                 slot: state.pair * 2 + usize::from(second),
                 size: (rect.width(), rect.height()),
+                scale: if state.ms_per_pixel > 0.0 {
+                    let pixels = (rect.width() * rect.height()).max(1.0)
+                        * painter.ctx().pixels_per_point().powi(2);
+                    (GPU_BUDGET_MS / (state.ms_per_pixel * pixels))
+                        .sqrt()
+                        .clamp(0.25, 1.0)
+                } else {
+                    state.scale
+                },
             },
         ));
         return;
     }
     let picture = picture.then(|| state.pictures[usize::from(second)].clone());
-    let (sync, scale) = (state.sync, state.cpu_scale);
-    let cpu = state
-        .cpu
-        .get_or_insert_with(|| Cpu::start(painter.ctx().clone()));
-    cpu.frame(painter, rect, clip, u, picture, sync, scale, second);
+    let (sync, scale, interval) = (state.sync, state.cpu_scale, state.interval);
+    let cpu = state.cpu.get_or_insert_with(Cpu::start);
+    cpu.frame(
+        painter, rect, clip, u, picture, sync, scale, second, live, interval,
+    );
 }
 
 // -- the CPU's pictures ----------------------------------------------------------
@@ -657,12 +798,14 @@ struct Cpu {
     done: Receiver<Done>,
     textures: [Option<TextureHandle>; 2],
     pending: [bool; 2],
+    /// When each last asked for a picture.
+    asked: [Option<Instant>; 2],
     /// Pixels a frame (adjusted to the time it takes).
     budget: f32,
 }
 
 impl Cpu {
-    fn start(ctx: egui::Context) -> Cpu {
+    fn start() -> Cpu {
         let (jobs, rx) = channel::<Job>();
         let (tx, done) = channel::<Done>();
         let _ = std::thread::Builder::new()
@@ -691,7 +834,8 @@ impl Cpu {
                     {
                         break;
                     }
-                    ctx.request_repaint();
+                    // (no repaint asked for: the window shows the picture
+                    // at its next frame, at its own rate)
                 }
             });
         Cpu {
@@ -699,6 +843,7 @@ impl Cpu {
             done,
             textures: [None, None],
             pending: [false; 2],
+            asked: [None; 2],
             budget: 160.0 * 90.0,
         }
     }
@@ -714,6 +859,8 @@ impl Cpu {
         sync: bool,
         scale: Option<f32>,
         second: bool,
+        live: bool,
+        interval: f32,
     ) {
         let k = usize::from(second);
         let ppp = painter.ctx().pixels_per_point();
@@ -724,7 +871,13 @@ impl Cpu {
         };
         let width = ((rect.width() * ppp * share.sqrt()) as usize).max(16);
         let height = ((rect.height() * ppp * share.sqrt()) as usize).max(9);
-        if !self.pending[k] {
+        // a new picture only while the face moves (paused, stopped: the last
+        // one stays) and when the next frame is due (the frame rate's cap)
+        // (tests, in step with the frames: every frame is due)
+        let due = sync || self.asked[k].is_none_or(|t| t.elapsed().as_secs_f32() >= interval * 0.9);
+        let first = self.textures[k].is_none();
+        if !self.pending[k] && ((live && due) || first) {
+            self.asked[k] = Some(Instant::now());
             let job = Job {
                 u,
                 width,
@@ -1395,6 +1548,78 @@ fn sample(img: &[V3], w: usize, h: usize, uv: [f32; 2]) -> V3 {
     let top = mix3(img[j * w + i], img[j * w + i2], tx);
     let bottom = mix3(img[j2 * w + i], img[j2 * w + i2], tx);
     mix3(top, bottom, ty)
+}
+
+/// Where the shader faces are drawn, as measured: the GPU's cost of a pixel
+/// and the CPU's (its threads together), each in ms.
+#[derive(Clone, Copy, Debug)]
+pub struct Choice {
+    pub gpu: bool,
+    pub gpu_ms_per_pixel: f32,
+    pub cpu_ms_per_pixel: f32,
+}
+
+impl Choice {
+    /// Too slow to draw a face of the usual size (620 x 300) in 4 ms: the
+    /// window's frame rate is lowered too.
+    pub fn slow(&self) -> bool {
+        self.slow_for(self.gpu)
+    }
+
+    /// As [`Choice::slow`], for the GPU's way (`gpu`) or the CPU's.
+    pub fn slow_for(&self, gpu: bool) -> bool {
+        let per_pixel = if gpu {
+            self.gpu_ms_per_pixel
+        } else {
+            self.cpu_ms_per_pixel
+        };
+        per_pixel * 620.0 * 300.0 > 4.0
+    }
+}
+
+/// Measure a shader face (the liquid's noise: among the dearest) on the GPU
+/// (320 x 180, a few frames) and on the CPU (160 x 90): the cheaper draws.
+pub fn choose(render_state: &egui_wgpu::RenderState) -> Choice {
+    let mut u = Uniforms::default();
+    u.v[4] = [Shader::Liquid as u32 as f32, 0.0, 0.0, 1.0];
+    for i in 0..5 {
+        u.v[5 + i] = [0.2 * i as f32, 0.5, 0.8 - 0.1 * i as f32, 1.0];
+    }
+    // (the first frame builds the pipeline's state: not counted). What
+    // counts is the CPU's time where there is one to count: a software
+    // rasterizer spends it on several threads while the clock runs once
+    let _ = measure(render_state, u, (320, 180), 1);
+    let cpu_before = process_cpu();
+    let (gpu_wall, _) = measure(render_state, u, (320, 180), 12);
+    let gpu_ms = match (cpu_before, process_cpu()) {
+        (Some(a), Some(b)) => (b - a) * 1000.0 / 12.0,
+        _ => gpu_wall,
+    };
+    let started = Instant::now();
+    let (w, h) = (160, 90);
+    for y in 0..h {
+        for x in 0..w {
+            let uv = [(x as f32 + 0.5) / w as f32, (y as f32 + 0.5) / h as f32];
+            std::hint::black_box(shade(Shader::Liquid as u32, &u, uv, 16.0 / 9.0, None, 0.01));
+        }
+    }
+    // (its threads share the work, and its time: the time a pixel)
+    let cpu = started.elapsed().as_secs_f32() * 1000.0 / (w * h) as f32;
+    let gpu = (gpu_ms as f32 / (320.0 * 180.0)).max(0.0);
+    Choice {
+        gpu: gpu.is_finite() && gpu <= cpu,
+        gpu_ms_per_pixel: gpu,
+        cpu_ms_per_pixel: cpu,
+    }
+}
+
+/// The CPU seconds this process has used, where the system tells (Linux).
+fn process_cpu() -> Option<f64> {
+    let stat = std::fs::read_to_string("/proc/self/stat").ok()?;
+    let rest = stat.rsplit(')').next()?;
+    let fields: Vec<&str> = rest.split_whitespace().collect();
+    let ticks = |i: usize| fields.get(i).and_then(|v| v.parse::<f64>().ok());
+    Some((ticks(11)? + ticks(12)?) / 100.0)
 }
 
 /// What the GPU takes for one of its faces at `size` (pixels): rendered

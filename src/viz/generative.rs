@@ -221,9 +221,9 @@ fn shaded(f: &Frame<'_>, shader: Shader, state: &mut VizState, dt: f32) {
     }
     let u = u.with_opacity(f.opacity);
     let clip = f.rect.expand(4.0);
-    let (gpu, painter, second) = (&mut state.gpu, f.painter, f.second);
+    let (gpu, painter, second, live) = (&mut state.gpu, f.painter, f.second, f.dt > 0.0);
     state.canvas.draw(painter, |pen| {
-        gpu::paint(painter, pen, gpu, clip, clip, u, picture, second)
+        gpu::paint(painter, pen, gpu, clip, clip, u, picture, second, live)
     });
 }
 

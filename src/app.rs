@@ -23,6 +23,8 @@ const PANEL: Color32 = Color32::from_rgb(0x16, 0x1b, 0x22);
 const SAVE_EVERY: Duration = Duration::from_secs(3);
 /// How long a message stays in the status line.
 const STATUS_FOR: Duration = Duration::from_secs(8);
+/// The frame rate's cap on a slow (software) renderer.
+const SLOW_FPS: f32 = 20.0;
 const POSITION_EVERY: Duration = Duration::from_secs(30);
 /// The equalizer is written this long after its last change (axross's 250 ms).
 const EQ_SETTLE: Duration = Duration::from_millis(250);
@@ -60,6 +62,10 @@ pub struct App {
     eq_open: bool,
     /// The lower part shows the equalizer (else the playlist).
     eq_page: bool,
+    /// A slow renderer (software): the picture at most SLOW_FPS frames a second.
+    slow: bool,
+    /// Tests (AMP_STATS=FILE): frames drawn, written there now and then.
+    stats: Option<(PathBuf, u64, Instant)>,
     playlist_open: bool,
     big_visual: bool,
     /// The current track's waveform, read for the overview face: its
@@ -356,10 +362,35 @@ impl App {
         // (on a software rasterizer the shaders would take a CPU's time as
         // well: the CPU's own per-pixel drawing does better there;
         // AMP_GPU_SHADERS=1 uses them anyway)
+        // (measured: the shaders on the GPU or a CPU thread's drawing,
+        // whichever is cheaper here, the faces drawn as small as keeps them
+        // cheap - a software rasterizer draws them small - and on a slow one
+        // the frame rate lowered; AMP_GPU_SHADERS=1 / 0 decides instead)
+        let mut slow = false;
         if let Some(render_state) = cc.wgpu_render_state.as_ref() {
             viz::gpu::install(render_state);
-            let forced = std::env::var_os("AMP_GPU_SHADERS").is_some_and(|v| v == "1");
-            viz_state.set_gpu(forced || !viz::gpu::is_software(render_state));
+            let choice = viz::gpu::choose(render_state);
+            let gpu = match std::env::var("AMP_GPU_SHADERS").as_deref() {
+                Ok("1") => true,
+                Ok("0") => false,
+                _ => choice.gpu,
+            };
+            viz_state.set_gpu(gpu);
+            if gpu {
+                viz_state.gpu.ms_per_pixel = choice.gpu_ms_per_pixel;
+            }
+            slow = choice.slow_for(gpu);
+            eprintln!(
+                "axross-amp: shader faces on the {} ({:.2e} ms a pixel on the GPU, {:.2e} on the CPU){}",
+                if gpu { "GPU" } else { "CPU" },
+                choice.gpu_ms_per_pixel,
+                choice.cpu_ms_per_pixel,
+                if slow {
+                    "; a slow renderer: at most 20 frames a second"
+                } else {
+                    ""
+                }
+            );
         }
         let mut app = App {
             engine,
@@ -380,6 +411,8 @@ impl App {
             eq: eq_settings,
             eq_open: saved.equalizer_open,
             eq_page: false,
+            slow,
+            stats: std::env::var_os("AMP_STATS").map(|p| (PathBuf::from(p), 0, Instant::now())),
             playlist_open: saved.playlist_open,
             big_visual: false,
             overview: None,
@@ -2207,6 +2240,12 @@ impl App {
             .unwrap_or(0.0)
     }
 
+    /// Frames a second at most: the option, lowered on a slow renderer.
+    fn fps_cap(&self) -> f32 {
+        let fps = self.options.fps.clamp(10, 60) as f32;
+        if self.slow { fps.min(SLOW_FPS) } else { fps }
+    }
+
     /// Paused in a track: the picture holds still (stopped, it falls to rest).
     fn frozen(&self) -> bool {
         !self.playing()
@@ -2337,6 +2376,7 @@ impl App {
             second: false,
             loudness_target: self.amp.loudness_target,
         };
+        self.viz_state.gpu.interval = 1.0 / self.fps_cap();
         viz::draw(&frame, self.mode, &mut self.viz_state);
         drop(overview);
         // the face's name, for a moment after it changed (axross's 1.5 s)
@@ -3331,7 +3371,14 @@ impl eframe::App for App {
         self.url_window(&ctx);
         self.details_window(&ctx);
         self.file_dialog(&ctx);
-        let fps = self.options.fps.clamp(10, 60) as f32;
+        if let Some((path, frames, written)) = self.stats.as_mut() {
+            *frames += 1;
+            if written.elapsed() > Duration::from_millis(250) {
+                *written = Instant::now();
+                let _ = std::fs::write(&*path, format!("frames {frames}\n"));
+            }
+        }
+        let fps = self.fps_cap();
         // the picture moves while there is sound, and as long as it falls to
         // rest; off, the clock moves once a second; idle, nothing is drawn
         // until something changes (input, the engine: they wake the window)

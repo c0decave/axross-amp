@@ -794,7 +794,10 @@ pub fn draw(f: &Frame<'_>, key: &str, state: &mut VizState) {
     if let Some((old, t)) = state.fading {
         one(f, old, state, 1.0 - t, true);
         one(f, face.key, state, t, false);
-        f.painter.ctx().request_repaint();
+        // (at the frame rate's cap, as the faces themselves)
+        f.painter
+            .ctx()
+            .request_repaint_after(std::time::Duration::from_secs_f32(state.gpu.interval));
     } else {
         one(f, face.key, state, 1.0, false);
     }

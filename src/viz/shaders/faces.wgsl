@@ -425,23 +425,35 @@ fn fs_main(in: Out) -> @location(0) vec4<f32> {
     let px = in.position.xy;
     let uv = (px - u.rect.xy) / u.rect.zw;
     let aspect = u.rect.z / u.rect.w;
-    // (a pixel in the faces' units: 2 across the height)
-    var c = face_colour(uv, aspect, 2.0 / u.rect.w);
+    let face = i32(u.face.x + 0.5);
+    // the colour (premultiplied by `a`, how much of it there is)
+    var c: vec3<f32>;
+    var a = 1.0;
+    if face == 14 {
+        // a face drawn smaller (a slow GPU), shown scaled up
+        let t = textureSampleLevel(data, data_sampler, uv, 0.0);
+        c = t.rgb;
+        a = t.a;
+    } else {
+        // (a pixel in the faces' units: 2 across the height)
+        c = face_colour(uv, aspect, 2.0 / u.rect.w);
+        // (the phosphor lies over the face's ground: dark where nothing glows)
+        if face == 13 {
+            a = clamp(textureSampleLevel(data, data_sampler, uv, 0.0).r * 6.0, 0.0, 1.0);
+            c = c * a;
+        }
+    }
     // the background's rounded corners
     let half = u.clip.zw * 0.5;
     let centre = u.clip.xy + half;
     let radius = u.m.w;
     let d = abs(px - centre) - half + vec2<f32>(radius);
     let outside = length(max(d, vec2<f32>(0.0))) - radius;
-    var alpha = clamp(0.5 - outside, 0.0, 1.0) * u.face.w;
-    // (the phosphor lies over the face's ground: dark where nothing glows)
-    if i32(u.face.x + 0.5) == 13 {
-        alpha = alpha * clamp(textureSampleLevel(data, data_sampler, uv, 0.0).r * 6.0, 0.0, 1.0);
-    }
+    let mask = clamp(0.5 - outside, 0.0, 1.0) * u.face.w;
     if u.face.y > 0.5 {
         c = to_linear(c);
     }
-    return vec4<f32>(c * alpha, alpha);
+    return vec4<f32>(c * mask, a * mask);
 }
 
 // -- the feedback face (MilkDrop's way) ------------------------------------
