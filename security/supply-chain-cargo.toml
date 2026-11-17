@@ -1,0 +1,12 @@
+# axross's supply-chain gate for Cargo (security/supply_chain_cargo.py in
+# github.com/c0decave/axross; the CI checks it out into .axross) on this
+# project's Cargo.lock:
+#   python -I .axross/security/supply_chain_cargo.py --config security/supply-chain-cargo.toml check
+# Every crate needs a reviewed entry in cargo_baseline/ (one JSON file per
+# crate): a new crate or version fails until it is reviewed - `review
+# NAME==VERSION`, then `accept ... --by WHO --note "what was checked"`.
+lock = "../Cargo.lock"
+own = ["axross-amp"]
+baseline_dir = "cargo_baseline"
+cache_dir = "../target/supply-chain-cache"
+min_age_days = 14

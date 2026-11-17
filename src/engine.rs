@@ -25,7 +25,7 @@ use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, TryRecvError};
 use std::collections::VecDeque;
 use std::fs::File;
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -952,7 +952,9 @@ struct Decoding {
     track_id: u32,
     time_base: Option<TimeBase>,
     resampler: Resampler,
-    generation: u64,
+    /// Resampled to the output's rate here (a stream), or handed over at
+    /// the source's rate (a file: its reader resamples, gapless across tracks).
+    resample: bool,
     seekable: bool,
     scratch: Vec<f32>,
     stereo: Vec<f32>,
@@ -970,7 +972,6 @@ struct Decoding {
     length: Option<u64>,
     /// ReplayGain's factor for this track.
     gain: f32,
-    info: TrackInfo,
     /// At its end (and the resampler's tail given out).
     eof: bool,
 }
@@ -1130,10 +1131,58 @@ fn open_file(path: &str) -> Result<(MediaSourceStream<'static>, Hint), String> {
         return Err("the file is empty".into());
     }
     let file = File::open(path).map_err(|e| e.to_string())?;
+    let source: Box<dyn symphonia::core::io::MediaSource> =
+        if READ_STALL_MS.load(Ordering::Relaxed) > 0 {
+            Box::new(Stalling { file, read: 0 })
+        } else {
+            Box::new(file)
+        };
     Ok((
-        MediaSourceStream::new(Box::new(file), Default::default()),
+        MediaSourceStream::new(source, Default::default()),
         hint_for(path, None),
     ))
+}
+
+/// Tests: the next file read stalls this long once, after READ_STALL_AT bytes
+/// (a disk that sleeps, a network share that hesitates in the middle).
+#[doc(hidden)]
+pub static READ_STALL_MS: AtomicU64 = AtomicU64::new(0);
+#[doc(hidden)]
+pub static READ_STALL_AT: AtomicU64 = AtomicU64::new(0);
+
+struct Stalling {
+    file: File,
+    read: u64,
+}
+
+impl std::io::Read for Stalling {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if self.read >= READ_STALL_AT.load(Ordering::Relaxed) {
+            let ms = READ_STALL_MS.swap(0, Ordering::Relaxed);
+            if ms > 0 {
+                thread::sleep(Duration::from_millis(ms));
+            }
+        }
+        let n = self.file.read(buf)?;
+        self.read += n as u64;
+        Ok(n)
+    }
+}
+
+impl std::io::Seek for Stalling {
+    fn seek(&mut self, pos: std::io::SeekFrom) -> std::io::Result<u64> {
+        self.file.seek(pos)
+    }
+}
+
+impl symphonia::core::io::MediaSource for Stalling {
+    fn is_seekable(&self) -> bool {
+        true
+    }
+
+    fn byte_len(&self) -> Option<u64> {
+        self.file.metadata().ok().map(|m| m.len())
+    }
 }
 
 /// The decoder for a media source; `seekable` for a file.
@@ -1143,7 +1192,7 @@ fn open_media(
     seekable: bool,
     path: &str,
     out_rate: u32,
-    generation: u64,
+    _generation: u64,
     loudness: Loudness,
 ) -> Result<(Decoding, TrackInfo), String> {
     let mut format = symphonia::default::get_probe()
@@ -1236,7 +1285,7 @@ fn open_media(
         track_id: track.id,
         time_base: track.time_base,
         resampler: Resampler::new(rate, out_rate),
-        generation,
+        resample: true,
         seekable,
         scratch: Vec::new(),
         stereo: Vec::new(),
@@ -1248,7 +1297,6 @@ fn open_media(
         delay: edit.map(|(s, _)| s).unwrap_or(0),
         length: edit.and_then(|(_, l)| l),
         gain: loudness.factor(&info),
-        info: info.clone(),
         eof: false,
     };
     Ok((decoding, info))
@@ -1367,7 +1415,11 @@ impl Decoding {
                             *s *= self.gain;
                         }
                     }
-                    self.resampler.process(&self.stereo, out);
+                    if self.resample {
+                        self.resampler.process(&self.stereo, out);
+                    } else {
+                        out.extend_from_slice(&self.stereo);
+                    }
                     return Ok(true);
                 }
                 Err(SymError::DecodeError(_)) => continue, // (a damaged packet: the next one)
@@ -1379,7 +1431,9 @@ impl Decoding {
     /// The end: what the resampler still holds.
     fn finish(&mut self, out: &mut Vec<f32>) {
         if !self.eof {
-            self.resampler.flush(out);
+            if self.resample {
+                self.resampler.flush(out);
+            }
             self.eof = true;
         }
     }
@@ -1660,8 +1714,212 @@ fn produce(
 // -- the thread --------------------------------------------------------------------------------
 
 enum Source {
-    File(Box<Decoding>),
+    File(FileSource),
     Stream(StreamSource),
+}
+
+/// What a file's reading thread hands over.
+enum Feed {
+    Opened {
+        info: Box<TrackInfo>,
+        rate: u32,
+        landed_ms: u64,
+    },
+    /// Stereo at the file's rate, levelled; of the seek `epoch`.
+    Pcm {
+        epoch: u64,
+        samples: Vec<f32>,
+    },
+    Seeked {
+        epoch: u64,
+        landed_ms: u64,
+    },
+    End {
+        epoch: u64,
+    },
+    Failed(String),
+}
+
+enum Control {
+    Seek { secs: f64, epoch: u64 },
+    Gain(f32),
+}
+
+/// A file read and decoded on a thread of its own, up to [`STAGE_SECS`]
+/// ahead: a slow disk, a network share that hesitates, a file that takes
+/// long to open hold up only that thread - the ring is filled, commands
+/// are taken all the while.
+struct FileSource {
+    rx: Receiver<Feed>,
+    ctl: Sender<Control>,
+    /// Frames handed over and not yet taken (the thread reads ahead to its
+    /// budget).
+    queued: Arc<AtomicUsize>,
+    stop: Arc<AtomicBool>,
+    generation: u64,
+    epoch: u64,
+    info: Option<Box<TrackInfo>>,
+    rate: u32,
+    /// The end of what it reads came (for this epoch), and everything of it
+    /// was taken (the resampler's tail given out).
+    end: bool,
+    finished: bool,
+}
+
+impl Drop for FileSource {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+    }
+}
+
+impl FileSource {
+    fn start(path: String, generation: u64, start_ms: u64, loudness: Loudness) -> FileSource {
+        let (tx, rx) = crossbeam_channel::unbounded();
+        let (ctl, controls) = crossbeam_channel::unbounded::<Control>();
+        let queued = Arc::new(AtomicUsize::new(0));
+        let stop = Arc::new(AtomicBool::new(false));
+        let (q, st) = (queued.clone(), stop.clone());
+        let spawned = thread::Builder::new()
+            .name("amp-read".into())
+            .spawn(move || read_file(path, generation, start_ms, loudness, tx, controls, q, st));
+        let (failed_tx, failed_rx) = crossbeam_channel::bounded(1);
+        let rx = match spawned {
+            Ok(_) => rx,
+            Err(e) => {
+                let _ = failed_tx.send(Feed::Failed(e.to_string()));
+                failed_rx
+            }
+        };
+        FileSource {
+            rx,
+            ctl,
+            queued,
+            stop,
+            generation,
+            epoch: 0,
+            info: None,
+            rate: 0,
+            end: false,
+            finished: false,
+        }
+    }
+
+    /// Opened by now (its first message taken)? Err: it failed.
+    fn opened(&mut self) -> Result<bool, String> {
+        if self.info.is_some() {
+            return Ok(true);
+        }
+        match self.rx.try_recv() {
+            Ok(Feed::Opened { info, rate, .. }) => {
+                self.rate = rate;
+                self.info = Some(info);
+                Ok(true)
+            }
+            Ok(Feed::Failed(why)) => Err(why),
+            Ok(_) => Ok(false),
+            Err(TryRecvError::Empty) => Ok(false),
+            Err(TryRecvError::Disconnected) => Err("it could not be read".into()),
+        }
+    }
+
+    fn seek(&mut self, secs: f64) {
+        self.epoch += 1;
+        self.end = false;
+        self.finished = false;
+        let _ = self.ctl.send(Control::Seek {
+            secs,
+            epoch: self.epoch,
+        });
+    }
+}
+
+/// The reading thread of a [`FileSource`].
+#[allow(clippy::too_many_arguments)]
+fn read_file(
+    path: String,
+    generation: u64,
+    start_ms: u64,
+    loudness: Loudness,
+    tx: Sender<Feed>,
+    controls: Receiver<Control>,
+    queued: Arc<AtomicUsize>,
+    stop: Arc<AtomicBool>,
+) {
+    let (mut d, info) = match open(&path, 48_000, generation, loudness) {
+        Ok(opened) => opened,
+        Err(why) => {
+            let _ = tx.send(Feed::Failed(why));
+            return;
+        }
+    };
+    d.resample = false;
+    let landed_ms = if start_ms > 0 {
+        d.seek(start_ms as f64 / 1000.0).unwrap_or(0)
+    } else {
+        0
+    };
+    let rate = d.rate;
+    if tx
+        .send(Feed::Opened {
+            info: Box::new(info),
+            rate,
+            landed_ms,
+        })
+        .is_err()
+    {
+        return;
+    }
+    let budget = (rate as f32 * STAGE_SECS) as usize;
+    let mut epoch = 0;
+    let mut ended = false;
+    loop {
+        if stop.load(Ordering::Relaxed) {
+            return;
+        }
+        let handle = |c: Control, epoch: &mut u64, ended: &mut bool, d: &mut Decoding| match c {
+            Control::Seek { secs, epoch: e } => {
+                *epoch = e;
+                *ended = false;
+                let landed_ms = d.seek(secs).unwrap_or((secs * 1000.0) as u64);
+                let _ = tx.send(Feed::Seeked {
+                    epoch: e,
+                    landed_ms,
+                });
+            }
+            Control::Gain(g) => d.gain = g,
+        };
+        while let Ok(c) = controls.try_recv() {
+            handle(c, &mut epoch, &mut ended, &mut d);
+        }
+        if ended || queued.load(Ordering::Relaxed) >= budget {
+            match controls.recv_timeout(Duration::from_millis(10)) {
+                Ok(c) => handle(c, &mut epoch, &mut ended, &mut d),
+                Err(RecvTimeoutError::Disconnected) => return,
+                Err(RecvTimeoutError::Timeout) => {}
+            }
+            continue;
+        }
+        let mut samples = Vec::with_capacity(4096);
+        match d.step(&mut samples) {
+            Ok(true) => {
+                queued.fetch_add(samples.len() / 2, Ordering::Relaxed);
+                if tx.send(Feed::Pcm { epoch, samples }).is_err() {
+                    return;
+                }
+            }
+            Ok(false) => {
+                ended = true;
+                d.eof = false; // (a seek back reads on)
+                if tx.send(Feed::End { epoch }).is_err() {
+                    return;
+                }
+            }
+            Err(why) => {
+                let _ = tx.send(Feed::Failed(why));
+                return;
+            }
+        }
+    }
 }
 
 /// The decoder thread's state.
@@ -1683,56 +1941,20 @@ struct Player {
     losses: Vec<Instant>,
     /// The track still heard while the queued one is decoded after it, and
     /// the queued one with its info (told when it is heard).
-    ending: Option<(Box<Decoding>, Queued, TrackInfo)>,
-    /// The queued track being opened on a thread of its own (and then opened).
-    prepared: Option<Prepared>,
-    /// Decoded (levelled, resampled) and not yet equalized: up to
-    /// [`STAGE_SECS`]; where in it (frames) the queued track begins.
-    staged: VecDeque<f32>,
-    staged_boundary: Option<usize>,
+    ending: Option<(FileSource, Queued, TrackInfo)>,
+    /// The queued track, opened and read ahead on its own thread.
+    prepared: Option<(Queued, FileSource)>,
+    /// A file's sound to the output's rate - one resampler on across a
+    /// gapless join (the same rate: not even the filter's edge between them).
+    resampler: Resampler,
+    /// The queued track's first sound is the next to go into the ring.
+    pending_boundary: bool,
     /// Equalized and not yet taken by the ring (it was full).
     carry: Vec<f32>,
     /// An output to play on (else nothing plays), and when it was last tried.
     output_ok: bool,
     output_tried: Instant,
     chunk: Vec<f32>,
-}
-
-type Opened = Result<(Decoding, TrackInfo), String>;
-
-/// The queued track, opened ahead.
-struct Prepared {
-    queued: Queued,
-    rx: Receiver<Opened>,
-    done: Option<Opened>,
-}
-
-impl Prepared {
-    fn start(queued: Queued, out_rate: u32, loudness: Loudness) -> Prepared {
-        let (tx, rx) = crossbeam_channel::bounded(1);
-        let (path, generation) = (queued.path.clone(), queued.generation);
-        let spawned = thread::Builder::new()
-            .name("amp-open".into())
-            .spawn(move || {
-                let _ = tx.send(open(&path, out_rate, generation, loudness));
-            });
-        let done = spawned.err().map(|e| Err(e.to_string()));
-        Prepared { queued, rx, done }
-    }
-
-    /// Opened by now? (None: still opening.)
-    fn ready(&mut self) -> Option<&mut Opened> {
-        if self.done.is_none() {
-            match self.rx.try_recv() {
-                Ok(opened) => self.done = Some(opened),
-                Err(TryRecvError::Disconnected) => {
-                    self.done = Some(Err("it could not be opened".into()))
-                }
-                Err(TryRecvError::Empty) => {}
-            }
-        }
-        self.done.as_mut()
-    }
 }
 
 impl Player {
@@ -1798,10 +2020,12 @@ impl Player {
             self.eq.set_gains(self.gains.0);
             self.eq.enabled = self.gains.1;
             match self.current.as_mut() {
-                Some(Source::File(d)) => {
-                    d.set_out_rate(self.out_rate);
-                    let landed = d.seek(at).unwrap_or(0);
-                    self.flush_at(landed);
+                Some(Source::File(f)) => {
+                    // read again from what was heard (what was read ahead is
+                    // at the old rate in the ring)
+                    f.seek(at);
+                    self.resampler = Resampler::new(f.rate.max(1), self.out_rate);
+                    self.flush_at((at * 1000.0) as u64);
                 }
                 Some(Source::Stream(s)) => {
                     s.rate.store(self.out_rate, Ordering::Relaxed);
@@ -1843,13 +2067,14 @@ impl Player {
     /// Take back a queued track already decoded after the current one (a
     /// seek or a new output in the track still heard).
     fn cancel_advance(&mut self) {
-        if let Some((decoding, queued, _)) = self.ending.take() {
-            self.current = Some(Source::File(decoding));
+        if let Some((old, queued, _)) = self.ending.take() {
+            self.resampler = Resampler::new(old.rate.max(1), self.out_rate);
+            self.current = Some(Source::File(old));
             self.prepared = None;
             self.prepare(Some(queued));
         }
         self.shared.boundary.store(u64::MAX, Ordering::Relaxed);
-        self.staged_boundary = None;
+        self.pending_boundary = false;
     }
 
     /// The queued track decoded behind the current one, taken back before
@@ -1865,15 +2090,14 @@ impl Player {
             if !self.shared.ring.cut(boundary, CUT_MARGIN) {
                 return false;
             }
-            self.staged.clear();
             self.carry.clear();
-        } else if let Some(at) = self.staged_boundary {
-            self.staged.truncate(at * 2);
         }
         self.shared.boundary.store(u64::MAX, Ordering::Relaxed);
-        self.staged_boundary = None;
-        if let Some((old, _, _)) = self.ending.take() {
-            // (it was at its end)
+        self.pending_boundary = false;
+        if let Some((mut old, _, _)) = self.ending.take() {
+            // (it was at its end, all of it given out)
+            old.end = true;
+            old.finished = true;
             self.current = Some(Source::File(old));
         }
         true
@@ -1883,15 +2107,14 @@ impl Player {
     fn flush_at(&mut self, ms: u64) {
         self.shared.restart_at(ms);
         self.shared.ending.store(false, Ordering::Relaxed);
-        self.staged.clear();
-        self.staged_boundary = None;
+        self.pending_boundary = false;
         self.carry.clear();
     }
 
     /// Name the track to follow: opened from now on, on a thread of its own.
     fn prepare(&mut self, queued: Option<Queued>) {
         let same = match (&self.prepared, &queued) {
-            (Some(p), Some(q)) => p.queued == *q,
+            (Some((p, _)), Some(q)) => p == q,
             (None, None) => true,
             _ => false,
         };
@@ -1901,7 +2124,10 @@ impl Player {
         }
         self.prepared = queued
             .filter(|q| !crate::playlist::is_stream(&q.path))
-            .map(|q| Prepared::start(q, self.out_rate, self.loudness));
+            .map(|q| {
+                let f = FileSource::start(q.path.clone(), q.generation, 0, self.loudness);
+                (q, f)
+            });
     }
 
     fn reset(&mut self) {
@@ -1945,24 +2171,17 @@ impl Player {
                     self.shared.playing.store(play, Ordering::Relaxed);
                     return true;
                 }
-                match open(&path, self.out_rate, generation, self.loudness) {
-                    Ok((mut decoding, info)) => {
-                        let at = if start_ms > 0 {
-                            decoding.seek(start_ms as f64 / 1000.0).unwrap_or(0)
-                        } else {
-                            0
-                        };
-                        self.flush_at(at);
-                        self.send(Event::Loaded { generation, info });
-                        self.current = Some(Source::File(Box::new(decoding)));
-                        let play = play && self.may_play();
-                        self.shared.playing.store(play, Ordering::Relaxed);
-                    }
-                    Err(message) => self.send(Event::Failed {
-                        generation,
-                        message,
-                    }),
-                }
+                // opened on its reading thread: a file that takes long to open
+                // (a sleeping disk, a hung share) holds up no command
+                self.flush_at(start_ms);
+                self.current = Some(Source::File(FileSource::start(
+                    path,
+                    generation,
+                    start_ms,
+                    self.loudness,
+                )));
+                let play = play && self.may_play();
+                self.shared.playing.store(play, Ordering::Relaxed);
             }
             Command::Queue(queued) => {
                 // while the queued one is already decoded behind the current
@@ -1992,9 +2211,10 @@ impl Player {
                     // a stream is let go (its connection closed); Play connects anew
                     self.current = None;
                     self.flush_at(0);
-                } else if let Some(Source::File(d)) = self.current.as_mut() {
-                    let at = d.seek(0.0).unwrap_or(0);
-                    self.flush_at(at);
+                } else if let Some(Source::File(f)) = self.current.as_mut() {
+                    f.seek(0.0);
+                    self.resampler = Resampler::new(f.rate.max(1), self.out_rate);
+                    self.flush_at(0);
                     self.eq.reset();
                 } else {
                     self.flush_at(0); // (after the end: back to 0:00)
@@ -2004,10 +2224,12 @@ impl Player {
                 if let Some(Source::File(_)) = self.current {
                     self.cancel_advance();
                 }
-                if let Some(Source::File(d)) = self.current.as_mut()
-                    && let Some(at) = d.seek(secs)
+                if let Some(Source::File(f)) = self.current.as_mut()
+                    && f.info.as_ref().is_none_or(|i| i.seekable)
                 {
-                    self.flush_at(at);
+                    f.seek(secs);
+                    self.resampler = Resampler::new(f.rate.max(1), self.out_rate);
+                    self.flush_at((secs.max(0.0) * 1000.0) as u64);
                     self.eq.reset();
                 }
             }
@@ -2018,8 +2240,10 @@ impl Player {
             }
             Command::Loudness(loudness) => {
                 self.loudness = loudness;
-                if let Some(Source::File(d)) = self.current.as_mut() {
-                    d.gain = loudness.factor(&d.info);
+                if let Some(Source::File(f)) = self.current.as_ref()
+                    && let Some(info) = &f.info
+                {
+                    let _ = f.ctl.send(Control::Gain(loudness.factor(info)));
                 }
             }
             Command::Output(device) => {
@@ -2047,90 +2271,103 @@ impl Player {
         }
     }
 
-    /// At the end of a file: the queued one decoded on after it, once its
-    /// opening (begun when it was queued) is done. Some(false): still opening.
+    /// At the end of a file: the queued one on after it, once it is open.
+    /// Some(false): nothing to go on with; None: still opening.
     fn advance(&mut self) -> Option<bool> {
         if self.ending.is_some() {
             return Some(false);
         }
-        let Some(prepared) = self.prepared.as_mut() else {
+        let Some((_, next)) = self.prepared.as_mut() else {
             return Some(false);
         };
-        prepared.ready()?;
-        let Some(Prepared {
-            queued,
-            done: Some(opened),
-            ..
-        }) = self.prepared.take()
-        else {
-            return Some(false);
-        };
-        self.queued = None;
-        // (one that fails says so when its turn comes)
-        let Ok((mut next, info)) = opened else {
-            return Some(false);
-        };
-        let Some(Source::File(current)) = self.current.as_mut() else {
-            return Some(false);
-        };
-        next.set_out_rate(self.out_rate);
-        next.gain = self.loudness.factor(&next.info);
-        if next.rate == current.rate {
-            // the same resampler goes on: not even the filter's edge between them
-            next.resampler = current.resampler.clone();
-        } else {
-            let mut tail = Vec::new();
-            current.finish(&mut tail);
-            self.staged.extend(tail);
+        match next.opened() {
+            Ok(false) => return None,
+            Ok(true) => {}
+            Err(_) => {
+                // (one that fails says so when its turn comes)
+                self.prepared = None;
+                self.queued = None;
+                return Some(false);
+            }
         }
-        current.eof = true;
-        self.staged_boundary = Some(self.staged.len() / 2);
-        if let Some(Source::File(old)) = self.current.replace(Source::File(Box::new(next))) {
+        let (queued, next) = self.prepared.take()?;
+        self.queued = None;
+        let info = next.info.as_deref().cloned().unwrap_or_default();
+        let Some(Source::File(current)) = self.current.as_ref() else {
+            return Some(false);
+        };
+        if next.rate != current.rate {
+            // another rate: what the resampler still holds of this one first
+            let mut tail = Vec::new();
+            self.resampler.flush(&mut tail);
+            self.eq.process(&mut tail);
+            self.carry.extend_from_slice(&tail);
+            self.resampler = Resampler::new(next.rate.max(1), self.out_rate);
+        }
+        self.pending_boundary = true;
+        if let Some(Source::File(old)) = self.current.replace(Source::File(next)) {
             self.ending = Some((old, queued, info));
         }
         Some(true)
     }
 
-    /// Staged sound into the ring (equalized on the way), as far as the
-    /// output needs it; the queued track's start marked where it comes.
-    fn feed(&mut self) -> bool {
-        let mut moved = false;
-        loop {
-            if !self.carry.is_empty() {
-                let n = self.shared.push(&self.carry);
-                self.carry.drain(..n * 2);
-                if !self.carry.is_empty() {
-                    return moved; // (the ring is full)
-                }
-            }
-            if self.staged_boundary == Some(0) {
-                self.shared
-                    .boundary
-                    .store(self.shared.end_of_buffer(), Ordering::Relaxed);
-                self.staged_boundary = None;
-            }
-            let buffered = self.shared.buffered_frames();
-            if buffered >= self.ahead || self.staged.is_empty() {
-                return moved;
-            }
-            let mut take = (self.ahead - buffered).min(4096).min(self.staged.len() / 2);
-            if let Some(b) = self.staged_boundary {
-                take = take.min(b);
-            }
-            self.chunk.clear();
-            self.chunk.extend(self.staged.drain(..take * 2));
-            if let Some(b) = self.staged_boundary.as_mut() {
-                *b -= take;
-            }
-            self.eq.process(&mut self.chunk);
-            let n = self.shared.push(&self.chunk);
-            self.carry.extend_from_slice(&self.chunk[n * 2..]);
-            moved = true;
+    /// A file being opened: opened (told, also while nothing plays), or failed.
+    fn poll_open(&mut self) {
+        let Some(Source::File(f)) = self.current.as_mut() else {
+            return;
+        };
+        if f.info.is_some() {
+            return;
         }
+        let generation = f.generation;
+        match f.rx.try_recv() {
+            Ok(Feed::Opened {
+                info,
+                rate,
+                landed_ms,
+            }) => {
+                f.rate = rate;
+                f.info = Some(info.clone());
+                self.resampler = Resampler::new(rate.max(1), self.out_rate);
+                if f.epoch == 0 {
+                    self.shared.base_ms.store(landed_ms, Ordering::Relaxed);
+                }
+                self.send(Event::Loaded {
+                    generation,
+                    info: *info,
+                });
+            }
+            Ok(Feed::Failed(message)) => {
+                self.current = None;
+                self.shared.playing.store(false, Ordering::Relaxed);
+                self.send(Event::Failed {
+                    generation,
+                    message,
+                });
+            }
+            Ok(_) | Err(TryRecvError::Empty) => {}
+            Err(TryRecvError::Disconnected) => {
+                self.current = None;
+                self.send(Event::Failed {
+                    generation,
+                    message: "it could not be read".into(),
+                });
+            }
+        }
+    }
+
+    /// Push what waits, true when all of it went in.
+    fn push_carry(&mut self) -> bool {
+        if !self.carry.is_empty() {
+            let n = self.shared.push(&self.carry);
+            self.carry.drain(..n * 2);
+        }
+        self.carry.is_empty()
     }
 
     /// Decode what the output needs next; false when there is nothing to do.
     fn tick(&mut self) -> bool {
+        self.poll_open();
         if !self.shared.playing.load(Ordering::Relaxed) {
             // a stream that could not connect says so also when nothing plays
             // (paused while it connected, no output to play on)
@@ -2154,77 +2391,129 @@ impl Player {
         }
     }
 
-    fn tick_file(&mut self, buffered: usize) -> bool {
-        let moved = self.feed();
-        let Some(Source::File(d)) = self.current.as_ref() else {
-            return moved;
-        };
-        let generation = d.generation;
-        if d.eof {
-            let drained = self.staged.is_empty() && self.carry.is_empty();
-            self.shared.ending.store(drained, Ordering::Relaxed);
-            if drained
-                && buffered == 0
-                && self.shared.buffered_frames() == 0
-                && self.shared.boundary.load(Ordering::Relaxed) == u64::MAX
-            {
-                self.shared.playing.store(false, Ordering::Relaxed);
-                self.current = None;
-                self.send(Event::Ended { generation });
+    /// A file's sound from its reading thread into the ring (resampled,
+    /// equalized), as far as the output needs it; its end, the next track
+    /// after it, its failure.
+    fn tick_file(&mut self, _buffered: usize) -> bool {
+        let mut moved = false;
+        loop {
+            if !self.push_carry() {
+                return moved; // (the ring is full)
             }
-            return moved;
-        }
-        let stage = (self.out_rate as f32 * STAGE_SECS) as usize;
-        if self.staged.len() / 2 >= stage {
-            return moved;
-        }
-        let mut chunk = std::mem::take(&mut self.chunk);
-        chunk.clear();
-        let result = match self.current.as_mut() {
-            Some(Source::File(d)) => d.step(&mut chunk),
-            _ => return moved,
-        };
-        let busy = match result {
-            Ok(true) => true,
-            Ok(false) => match self.advance() {
-                Some(true) => true,
-                // still opening: decoded again (the end again) once it is
-                None => false,
-                // nothing queued yet while much is still to be heard: the
-                // track to follow may still be named (it is named when the
-                // one before is heard - a short one is decoded long before)
-                Some(false)
-                    if self.queued.is_none()
-                        && self.prepared.is_none()
-                        && (self.staged.len() + self.carry.len()) / 2
-                            + self.shared.buffered_frames()
-                            > self.ahead =>
-                {
-                    false
-                }
-                Some(false) => {
-                    if let Some(Source::File(d)) = self.current.as_mut() {
-                        d.finish(&mut chunk);
+            let Some(Source::File(f)) = self.current.as_mut() else {
+                return moved;
+            };
+            if f.end {
+                return self.at_end(moved);
+            }
+            if self.shared.buffered_frames() >= self.ahead {
+                return moved;
+            }
+            let feed = match f.rx.try_recv() {
+                Ok(feed) => feed,
+                Err(TryRecvError::Empty) => return moved,
+                Err(TryRecvError::Disconnected) => Feed::Failed("it could not be read".into()),
+            };
+            let generation = f.generation;
+            match feed {
+                Feed::Opened {
+                    info,
+                    rate,
+                    landed_ms,
+                } => {
+                    f.rate = rate;
+                    f.info = Some(info.clone());
+                    self.resampler = Resampler::new(rate.max(1), self.out_rate);
+                    if f.epoch == 0 {
+                        self.shared.base_ms.store(landed_ms, Ordering::Relaxed);
                     }
-                    true
+                    self.send(Event::Loaded {
+                        generation,
+                        info: *info,
+                    });
                 }
-            },
-            Err(message) => {
-                self.current = None;
-                self.ending = None;
-                self.flush_at(0);
-                self.shared.playing.store(false, Ordering::Relaxed);
-                self.send(Event::Failed {
-                    generation,
-                    message,
-                });
-                self.chunk = chunk;
-                return false;
+                Feed::Seeked { epoch, landed_ms } => {
+                    if epoch == f.epoch {
+                        self.shared.base_ms.store(landed_ms, Ordering::Relaxed);
+                    }
+                }
+                Feed::Pcm { epoch, samples } => {
+                    f.queued.fetch_sub(samples.len() / 2, Ordering::Relaxed);
+                    if epoch != f.epoch {
+                        continue; // (read before a seek)
+                    }
+                    if std::mem::take(&mut self.pending_boundary) {
+                        // the queued track's first sound: heard from here
+                        self.shared
+                            .boundary
+                            .store(self.shared.end_of_buffer(), Ordering::Relaxed);
+                    }
+                    self.chunk.clear();
+                    self.resampler.process(&samples, &mut self.chunk);
+                    self.eq.process(&mut self.chunk);
+                    let n = self.shared.push(&self.chunk);
+                    self.carry.extend_from_slice(&self.chunk[n * 2..]);
+                    moved = true;
+                }
+                Feed::End { epoch } => {
+                    if epoch == f.epoch {
+                        f.end = true;
+                    }
+                }
+                Feed::Failed(message) => {
+                    self.current = None;
+                    self.ending = None;
+                    self.flush_at(0);
+                    self.shared.playing.store(false, Ordering::Relaxed);
+                    self.send(Event::Failed {
+                        generation,
+                        message,
+                    });
+                    return false;
+                }
             }
+        }
+    }
+
+    /// The current file read to its end: the queued one on after it, or
+    /// (nothing named while much is still to be heard) wait, or its end.
+    fn at_end(&mut self, moved: bool) -> bool {
+        let Some(Source::File(f)) = self.current.as_ref() else {
+            return moved;
         };
-        self.staged.extend(chunk.iter().copied());
-        self.chunk = chunk;
-        busy || moved
+        if !f.finished {
+            match self.advance() {
+                Some(true) => return true,
+                None => return moved, // (still opening)
+                Some(false) => {}
+            }
+            let left = self.carry.len() / 2 + self.shared.buffered_frames();
+            if self.queued.is_none() && self.prepared.is_none() && left > self.ahead {
+                // the track to follow may still be named (it is named when the
+                // one before is heard - a short one is read long before)
+                return moved;
+            }
+            let mut tail = Vec::new();
+            self.resampler.flush(&mut tail);
+            self.eq.process(&mut tail);
+            self.carry.extend_from_slice(&tail);
+            if let Some(Source::File(f)) = self.current.as_mut() {
+                f.finished = true;
+            }
+            return true;
+        }
+        let drained = self.carry.is_empty();
+        self.shared.ending.store(drained, Ordering::Relaxed);
+        if drained
+            && self.shared.buffered_frames() == 0
+            && self.shared.boundary.load(Ordering::Relaxed) == u64::MAX
+        {
+            let generation = f.generation;
+            self.shared.playing.store(false, Ordering::Relaxed);
+            self.current = None;
+            self.send(Event::Ended { generation });
+        }
+        moved
     }
 
     fn tick_stream(&mut self, buffered: usize) -> bool {
@@ -2307,8 +2596,8 @@ fn run(
         losses: Vec::new(),
         ending: None,
         prepared: None,
-        staged: VecDeque::new(),
-        staged_boundary: None,
+        resampler: Resampler::new(48_000, 48_000),
+        pending_boundary: false,
         carry: Vec::new(),
         output_ok: false,
         output_tried: Instant::now(),

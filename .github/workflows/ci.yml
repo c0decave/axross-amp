@@ -8,7 +8,59 @@ permissions:
   contents: read
 
 jobs:
+  # Before anything is built (a build runs the crates' build scripts and
+  # proc macros): axross's supply-chain gate on Cargo.lock - every crate from
+  # crates.io with the checksum it publishes, not yanked, at least 14 days
+  # old, no RustSec / OSV advisory (OSV must answer), no typo of a popular
+  # name, and its .crate the one reviewed in security/cargo_baseline/ (build
+  # scripts, proc macros, binaries, findings); then the same with GuardDog's
+  # and axross's YARA rules, from the scanners' hashed lock that axross's
+  # PyPI gate checks first.
+  supply-chain:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: axross's gate, its scanners' lock and their reviewed baseline
+        uses: actions/checkout@v4
+        with:
+          repository: c0decave/axross
+          path: .axross
+          persist-credentials: false
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            /security/
+            /build/requirements-scan-tools.txt
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Downloads and crates.io's answers of earlier runs (by checksum; nothing is trusted from it unchecked)
+        uses: actions/cache@v4
+        with:
+          path: target/supply-chain-cache
+          key: supply-chain-${{ hashFiles('Cargo.lock') }}
+          restore-keys: supply-chain-
+      - name: Gate (crates.io, RustSec and OSV, age, names, content against the baseline)
+        run: python -I .axross/security/supply_chain_cargo.py --config security/supply-chain-cargo.toml check --require-osv --report supply-chain-report
+      - name: The scanners, checked by axross's PyPI gate, then installed by hash
+        run: |
+          python -I .axross/security/supply_chain_gate.py --config security/scan-tools-gate.toml check --reduced-locks "$RUNNER_TEMP/reduced"
+          python -m venv "$RUNNER_TEMP/scan-venv"
+          "$RUNNER_TEMP/scan-venv/bin/pip" install -q --require-hashes --only-binary=:all: -r "$RUNNER_TEMP/reduced/requirements-scan-tools.txt"
+          python -I .axross/security/supply_chain_gate.py --config security/scan-tools-gate.toml verify-env --python "$RUNNER_TEMP/scan-venv/bin/python" --lock .axross/build/requirements-scan-tools.txt
+      - name: Gate with the scanners (YARA over every member)
+        run: python -I .axross/security/supply_chain_cargo.py --config security/supply-chain-cargo.toml check --require-osv --scan-python "$RUNNER_TEMP/scan-venv/bin/python" --report supply-chain-report
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: supply-chain-report
+          path: supply-chain-report
+          if-no-files-found: ignore
+
   test:
+    needs: supply-chain
     strategy:
       fail-fast: false
       matrix:
@@ -27,7 +79,7 @@ jobs:
       - name: Tests (the window test renders with Mesa's lavapipe on Linux)
         if: runner.os == 'Linux'
         run: cargo test
-      - name: Tests (no GPU on these runners: the window test is skipped)
+      - name: "Tests (no GPU on these runners: the window test is skipped)"
         if: runner.os != 'Linux'
         run: cargo test --lib --bins
       - run: cargo build --release
