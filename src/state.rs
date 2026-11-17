@@ -26,6 +26,8 @@ const MAX_FILE_BYTES: u64 = 16 << 20;
 #[derive(Clone, Debug, PartialEq)]
 pub struct Track {
     pub path: String,
+    /// "" for the default (the file's name); `duration_ms` 0 when unknown -
+    /// kept in the file as whole seconds, as axross does.
     pub title: String,
     pub duration_ms: u64,
 }
@@ -211,7 +213,13 @@ pub fn read_state(path: &Path) -> PlayerState {
             state.tracks.push(Track {
                 path,
                 title: text(obj, "title").unwrap_or_default(),
-                duration_ms: int(obj, "duration").unwrap_or(0).max(0) as u64,
+                // (whole seconds in the file, as axross's player keeps them)
+                duration_ms: obj
+                    .get("duration")
+                    .and_then(Value::as_f64)
+                    .filter(|d| d.is_finite() && *d > 0.0)
+                    .map(|d| (d.min(1e9) * 1000.0) as u64)
+                    .unwrap_or(0),
             });
         }
     }
@@ -264,7 +272,7 @@ pub fn write_state(path: &Path, state: &PlayerState) -> std::io::Result<()> {
         .tracks
         .iter()
         .take(MAX_TRACKS)
-        .map(|t| json!({"path": t.path, "title": t.title, "duration": t.duration_ms}))
+        .map(|t| json!({"path": t.path, "title": t.title, "duration": t.duration_ms / 1000}))
         .collect();
     let mut options = map
         .get("visual_options")
@@ -376,7 +384,7 @@ mod tests {
             vec![Track {
                 path: "/m/a.mp3".into(),
                 title: "A".into(),
-                duration_ms: 1234
+                duration_ms: 1_234_000
             }]
         );
         assert_eq!(state.current, 0);
@@ -396,6 +404,27 @@ mod tests {
                 0o600
             );
         }
+    }
+
+    #[test]
+    fn a_track_duration_is_in_seconds_as_axross_writes_it() {
+        // axross's player keeps `duration` in whole seconds (`_track_ms // 1000`)
+        let path = temp("seconds");
+        fs::write(
+            &path,
+            r#"{"tracks": [{"path": "/m/a.mp3", "title": "", "duration": 125},
+                           {"path": "/m/b.mp3", "title": "", "duration": 61.0}]}"#,
+        )
+        .unwrap();
+        let state = read_state(&path);
+        assert_eq!(state.tracks[0].duration_ms, 125_000);
+        assert_eq!(state.tracks[1].duration_ms, 61_000);
+        let mut state = state;
+        state.tracks[0].duration_ms = 200_700; // (3:20.7 heard here)
+        write_state(&path, &state).unwrap();
+        let back: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(back["tracks"][0]["duration"], json!(200));
+        assert_eq!(back["tracks"][1]["duration"], json!(61));
     }
 
     #[test]

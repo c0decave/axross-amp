@@ -325,6 +325,7 @@ pub fn read_playlist(path: &Path) -> Result<Vec<Track>, String> {
     let pls = extension(path) == "pls";
     let mut tracks = Vec::new();
     let mut title = String::new();
+    let mut seconds = 0u64;
     for raw in text.lines() {
         let line = raw.trim().trim_start_matches('\u{feff}');
         if line.is_empty() || line.len() > MAX_LINE || line.contains('\0') {
@@ -348,10 +349,16 @@ pub fn read_playlist(path: &Path) -> Result<Vec<Track>, String> {
             value.trim().to_owned()
         } else {
             if let Some(info) = line.strip_prefix("#EXTINF:") {
-                title = info
-                    .split_once(',')
-                    .map(|(_, t)| t.trim().to_owned())
-                    .unwrap_or_default();
+                let (length, name) = info.split_once(',').unwrap_or((info, ""));
+                title = name.trim().to_owned();
+                // "-1" (a stream) or nonsense: unknown
+                seconds = length
+                    .split_whitespace()
+                    .next()
+                    .and_then(|l| l.parse::<f64>().ok())
+                    .filter(|l| l.is_finite() && *l > 0.0)
+                    .map(|l| l.min(1e9) as u64)
+                    .unwrap_or(0);
                 continue;
             }
             if line.starts_with('#') {
@@ -378,7 +385,7 @@ pub fn read_playlist(path: &Path) -> Result<Vec<Track>, String> {
         tracks.push(Track {
             path: resolved,
             title: std::mem::take(&mut title),
-            duration_ms: 0,
+            duration_ms: std::mem::take(&mut seconds) * 1000,
         });
         if tracks.len() >= MAX_TRACKS {
             break;
@@ -494,6 +501,7 @@ mod tests {
         let m3u = read_playlist(&dir.join("list.m3u")).unwrap();
         assert_eq!(m3u.len(), 2);
         assert!(m3u[0].path.ends_with("sub/a.mp3") && m3u[0].title == "Song A");
+        assert_eq!((m3u[0].duration_ms, m3u[1].duration_ms), (123_000, 0));
         assert_eq!(m3u[1].path, "https://radio.example/live");
         let pls = read_playlist(&dir.join("radio.pls")).unwrap();
         assert_eq!(
@@ -503,7 +511,7 @@ mod tests {
         let (found, skipped) = collect(&[dir.to_string_lossy().into_owned(), "nope.xyz".into()]);
         assert_eq!(found.len(), 2); // b.flac, sub/a.mp3 (playlists are not walked into)
         assert_eq!(skipped, vec!["nope.xyz".to_string()]);
-        assert!(to_m3u(&m3u).contains("#EXTINF:-1,Song A"));
+        assert!(to_m3u(&m3u).contains("#EXTINF:123,Song A"));
         for name in ["x.opus", "x.webm", "x.OGG"] {
             assert!(is_audio(Path::new(name)), "{name}");
         }
