@@ -75,6 +75,8 @@ pub struct App {
     /// The player on the desktop's bus (MPRIS), and its cover's file:// URL.
     #[cfg(target_os = "linux")]
     mpris: Option<crate::mpris::Mpris>,
+    #[cfg(target_os = "linux")]
+    covers: crate::mpris::Covers,
     art_url: String,
     /// The track playing came by itself (the one before ended): a track that
     /// cannot be played is then skipped; one the user chose stays, with why.
@@ -321,6 +323,8 @@ impl App {
             window_title: String::new(),
             #[cfg(target_os = "linux")]
             mpris: None,
+            #[cfg(target_os = "linux")]
+            covers: Default::default(),
             art_url: String::new(),
             automatic: false,
             duration: None,
@@ -750,10 +754,8 @@ impl App {
             .and_then(|bytes| cover_texture(ctx, bytes));
         self.art_url.clear();
         #[cfg(target_os = "linux")]
-        if self.mpris.is_some()
-            && let Some(bytes) = info.cover.as_deref()
-        {
-            self.art_url = crate::mpris::write_cover(bytes).unwrap_or_default();
+        if self.mpris.is_some() {
+            self.art_url = self.covers.show(info.cover.as_deref());
         }
         self.info = info;
         // what was said about opening it is over (a note about a track
@@ -1780,6 +1782,7 @@ impl App {
                     };
                     self.add(&[target], Then::Play);
                 }
+                Request::Open(items) => self.add(&items, Then::Play),
                 Request::Raise => {
                     ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
                     ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
@@ -2670,7 +2673,7 @@ impl eframe::App for App {
     fn on_exit(&mut self) {
         self.save(true);
         #[cfg(target_os = "linux")]
-        crate::mpris::remove_covers();
+        self.covers.show(None);
     }
 }
 

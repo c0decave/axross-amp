@@ -407,6 +407,15 @@ pub fn collect_with(args: &[String], progress: &mut dyn FnMut(usize)) -> Collect
         if tracks.len() > MAX_TRACKS {
             break;
         }
+        // a file:// URI (a desktop's "open with" passes them)
+        let decoded;
+        let arg = match arg.strip_prefix("file://") {
+            Some(rest) => {
+                decoded = percent_decode(rest.strip_prefix("localhost").unwrap_or(rest));
+                &decoded
+            }
+            None => arg,
+        };
         if is_stream(arg) {
             tracks.push(Track {
                 path: arg.clone(),
@@ -430,7 +439,7 @@ pub fn collect_with(args: &[String], progress: &mut dyn FnMut(usize)) -> Collect
                 duration_ms: 0,
             });
         } else {
-            skipped.push(arg.clone());
+            skipped.push(arg.to_owned());
         }
         progress(tracks.len());
     }

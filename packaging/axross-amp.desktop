@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=axross-amp
+GenericName=Music Player
+Comment=Play music and internet radio, with an equalizer, visualizations, a mixer and Bluetooth
+Exec=axross-amp %U
+Icon=axross-amp
+Terminal=false
+Categories=AudioVideo;Audio;Player;Music;
+Keywords=music;audio;player;radio;equalizer;visualizer;playlist;
+MimeType=audio/mpeg;audio/mp3;audio/flac;audio/x-flac;audio/ogg;audio/x-vorbis+ogg;audio/vorbis;audio/opus;audio/x-opus+ogg;audio/mp4;audio/x-m4a;audio/aac;audio/x-aac;audio/wav;audio/x-wav;audio/aiff;audio/x-aiff;audio/x-caf;audio/webm;audio/x-matroska;audio/x-mpegurl;audio/mpegurl;application/vnd.apple.mpegurl;audio/x-scpls;
+StartupWMClass=axross-amp
+SingleMainWindow=true

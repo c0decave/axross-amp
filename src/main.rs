@@ -11,11 +11,13 @@
 
 use axross_amp::app;
 
-const USAGE: &str = "axross-amp [FILE|FOLDER|PLAYLIST|URL ...]
+const USAGE: &str = "axross-amp [--new-instance] [FILE|FOLDER|PLAYLIST|URL ...]
 
 Play local audio (MP3, FLAC, Ogg Vorbis, Opus, AAC / M4A, ALAC, WAV, AIFF, CAF),
 folders and M3U / PLS playlists, and internet radio by its http(s) URL.
 The Mixer tab drives the sound server (pactl), the Bluetooth tab BlueZ.
+A player already running (Linux) takes the files of a second start;
+--new-instance starts another one anyway.
 
 Keys: Space play / pause, Left / Right seek 5 s (Shift: 30 s), Ctrl+Left /
 Right previous / next, Up / Down or + / - volume, Home the track's start,
@@ -33,7 +35,16 @@ fn main() -> eframe::Result {
         println!("axross-amp {}", env!("CARGO_PKG_VERSION"));
         return Ok(());
     }
+    let new_instance = args.iter().any(|a| a == "--new-instance");
     let files: Vec<String> = args.into_iter().filter(|a| !a.starts_with("--")).collect();
+    // one player: a second start (a file opened from the file manager) hands
+    // its files to the one running and ends
+    #[cfg(target_os = "linux")]
+    if !new_instance && axross_amp::mpris::forward(None, &files) {
+        return Ok(());
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = new_instance;
     // the window as large as it was left
     let size = axross_amp::state::read_amp(
         &axross_amp::state::config_dir().join(axross_amp::state::AMP_FILE),

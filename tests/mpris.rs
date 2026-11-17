@@ -180,3 +180,45 @@ fn the_desktop_sees_and_drives_the_player() {
         "axross-amp"
     );
 }
+
+#[test]
+fn a_second_start_hands_its_files_to_the_player_running() {
+    let dir = folder("mpris-instance");
+    let Some(bus) = daemon(&dir) else {
+        eprintln!("no dbus-daemon: skipped");
+        return;
+    };
+    // no player yet: nothing takes them (the second start plays itself)
+    assert!(!axross_amp::mpris::forward(Some(&bus.1), &["x.wav".into()]));
+    let files = tracks(&dir, &["first.wav"], 3.0);
+    let mut h = app_on(&dir, &bus.1, files);
+    assert!(until(&mut h, 5.0, |a| a.is_loaded()));
+    let client = zbus::blocking::connection::Builder::address(bus.1.as_str())
+        .unwrap()
+        .build()
+        .unwrap();
+    let dbus = zbus::blocking::fdo::DBusProxy::new(&client).unwrap();
+    assert!(until(&mut h, 5.0, |_| dbus
+        .name_has_owner("org.mpris.MediaPlayer2.axross_amp".try_into().unwrap())
+        .unwrap_or(false)));
+    // "open with" from a file manager: a file:// URI with a space, and a folder
+    let more = dir.join("more dir");
+    std::fs::create_dir_all(&more).unwrap();
+    write_wav(&more.join("other one.wav"), 2.0);
+    let uri = format!("file://{}", more.join("other one.wav").display()).replace(' ', "%20");
+    let forwarding = {
+        let address = bus.1.clone();
+        std::thread::spawn(move || axross_amp::mpris::forward(Some(&address), &[uri]))
+    };
+    assert!(until(&mut h, 5.0, |a| a.snapshot().tracks.len() == 2));
+    assert!(
+        forwarding.join().unwrap(),
+        "the player running did not take it"
+    );
+    assert!(until(&mut h, 5.0, |a| a.snapshot().current == 1 && a.is_loaded()));
+    assert!(
+        h.state().snapshot().tracks[1]
+            .path
+            .ends_with("more dir/other one.wav")
+    );
+}

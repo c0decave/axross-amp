@@ -12,6 +12,7 @@
 use crate::engine::Shared;
 use crossbeam_channel::{Receiver, Sender};
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 use zbus::blocking::Connection;
 use zbus::zvariant::{ObjectPath, OwnedValue, Value};
@@ -38,8 +39,74 @@ pub enum Request {
     /// "None", "Track" or "Playlist".
     Loop(String),
     OpenUri(String),
+    /// Another start of the program handed these over (files, folders,
+    /// URLs): added, the first played.
+    Open(Vec<String>),
     Raise,
     Quit,
+}
+
+/// The interface through which a second start hands its files to the
+/// player already running (one player, not two playing over each other).
+pub const INSTANCE: &str = "org.axross.amp.Instance";
+
+struct Instance {
+    tx: Sender<Request>,
+    wake: Arc<dyn Fn() + Send + Sync>,
+}
+
+#[zbus::interface(name = "org.axross.amp.Instance")]
+impl Instance {
+    /// Add and play `items` (absolute paths, URLs); none: show the window.
+    fn open(&self, items: Vec<String>) {
+        let items: Vec<String> = items
+            .into_iter()
+            .filter(|i| !i.is_empty() && i.len() <= 4096 && !i.contains('\0'))
+            .take(10_000)
+            .collect();
+        if !items.is_empty() {
+            let _ = self.tx.send(Request::Open(items));
+        }
+        let _ = self.tx.send(Request::Raise);
+        (self.wake)();
+    }
+}
+
+/// Hand `items` to the player already running on the session bus (or the
+/// bus at `address`): true when there is one and it took them. Relative
+/// paths are made absolute here (the other player has another directory).
+pub fn forward(address: Option<&str>, items: &[String]) -> bool {
+    let built = match address {
+        Some(a) => zbus::blocking::connection::Builder::address(a),
+        None => zbus::blocking::connection::Builder::session(),
+    }
+    .and_then(|b| b.method_timeout(std::time::Duration::from_secs(3)).build());
+    let Ok(conn) = built else {
+        return false;
+    };
+    let Ok(dbus) = zbus::blocking::fdo::DBusProxy::new(&conn) else {
+        return false;
+    };
+    let Ok(name) = zbus::names::BusName::try_from(NAME) else {
+        return false;
+    };
+    if !dbus.name_has_owner(name).unwrap_or(false) {
+        return false;
+    }
+    let items: Vec<String> = items
+        .iter()
+        .map(|i| {
+            if crate::playlist::is_stream(i) || i.starts_with("file://") {
+                i.clone()
+            } else {
+                std::path::absolute(i)
+                    .map(|p| p.to_string_lossy().into_owned())
+                    .unwrap_or_else(|_| i.clone())
+            }
+        })
+        .collect();
+    conn.call_method(Some(NAME), PATH, Some(INSTANCE), "Open", &(items,))
+        .is_ok()
 }
 
 /// What plays, as the desktop is told.
@@ -380,13 +447,17 @@ impl Mpris {
                     tx: tx.clone(),
                     wake: wake.clone(),
                 };
+                let instance = Instance {
+                    tx: tx.clone(),
+                    wake: wake.clone(),
+                };
                 let player = Player {
                     tx,
                     wake,
                     state: s,
                     engine,
                 };
-                match connect(address, root, player) {
+                match connect(address, root, player, instance) {
                     Ok(connection) => {
                         let _ = c.set(connection);
                     }
@@ -486,7 +557,12 @@ impl Mpris {
     }
 }
 
-fn connect(address: Option<String>, root: Root, player: Player) -> Result<Connection, String> {
+fn connect(
+    address: Option<String>,
+    root: Root,
+    player: Player,
+    instance: Instance,
+) -> Result<Connection, String> {
     let builder = match address {
         Some(a) => zbus::blocking::connection::Builder::address(a.as_str()),
         None => zbus::blocking::connection::Builder::session(),
@@ -495,6 +571,7 @@ fn connect(address: Option<String>, root: Root, player: Player) -> Result<Connec
     let conn = builder
         .serve_at(PATH, root)
         .and_then(|b| b.serve_at(PATH, player))
+        .and_then(|b| b.serve_at(PATH, instance))
         .and_then(|b| b.build())
         .map_err(|e| e.to_string())?;
     // the name; a second player takes a name of its own (the specification's way)
@@ -510,42 +587,167 @@ fn connect(address: Option<String>, root: Root, player: Player) -> Result<Connec
     Err("the name on the bus is taken".into())
 }
 
-/// The cover written where the desktop can read it: its file:// URL.
-pub fn write_cover(bytes: &[u8]) -> Option<String> {
-    let ext = if bytes.starts_with(b"\x89PNG") {
-        "png"
-    } else if bytes.starts_with(&[0xff, 0xd8]) {
-        "jpg"
-    } else {
-        return None;
-    };
-    let dir = std::env::var_os("XDG_RUNTIME_DIR")
-        .map(std::path::PathBuf::from)
-        .filter(|d| d.is_dir())
-        .unwrap_or_else(std::env::temp_dir);
-    let path = dir.join(format!("axross-amp-cover-{}.{ext}", std::process::id()));
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create(true).truncate(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    use std::io::Write;
-    let mut file = options.open(&path).ok()?;
-    file.write_all(bytes).ok()?;
-    Some(format!("file://{}", path.display()))
+/// The covers shown to the desktop (`mpris:artUrl`): each in a file of its
+/// own named by its content (a desktop that has read one URL reads a new
+/// one again), in a folder only this user can enter; the one before is
+/// removed, and the last when the player goes.
+pub struct Covers {
+    dir: Option<PathBuf>,
+    current: Option<PathBuf>,
 }
 
-/// The cover files of this process go when it does.
-pub fn remove_covers() {
-    let dir = std::env::var_os("XDG_RUNTIME_DIR")
-        .map(std::path::PathBuf::from)
-        .filter(|d| d.is_dir())
-        .unwrap_or_else(std::env::temp_dir);
-    for ext in ["png", "jpg"] {
-        let _ = std::fs::remove_file(
-            dir.join(format!("axross-amp-cover-{}.{ext}", std::process::id())),
+impl Default for Covers {
+    fn default() -> Self {
+        let base = std::env::var_os("XDG_RUNTIME_DIR")
+            .map(PathBuf::from)
+            .filter(|d| d.is_dir());
+        Covers::in_folder(match base {
+            Some(run) => run.join("axross-amp"),
+            None => std::env::temp_dir().join(format!("axross-amp-{}", uid().unwrap_or(0))),
+        })
+    }
+}
+
+/// This process's user (who owns /proc/self).
+fn uid() -> Option<u32> {
+    use std::os::unix::fs::MetadataExt;
+    std::fs::metadata("/proc/self").ok().map(|m| m.uid())
+}
+
+/// `dir` as a private folder: made with mode 0700, or one that is there is
+/// a real folder (no symbolic link) of this user that nobody else can enter.
+fn private_folder(dir: &Path) -> Option<PathBuf> {
+    use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
+    let _ = std::fs::DirBuilder::new().mode(0o700).create(dir);
+    let meta = std::fs::symlink_metadata(dir).ok()?;
+    let ours = meta.file_type().is_dir()
+        && Some(meta.uid()) == uid()
+        && meta.permissions().mode() & 0o077 == 0;
+    ours.then(|| dir.to_path_buf())
+}
+
+impl Covers {
+    pub fn in_folder(dir: PathBuf) -> Covers {
+        Covers {
+            dir: private_folder(&dir),
+            current: None,
+        }
+    }
+
+    /// Show `bytes` (None: no cover): its file:// URL ("" when there is none).
+    pub fn show(&mut self, bytes: Option<&[u8]>) -> String {
+        let path = bytes.and_then(|b| self.write(b));
+        if self.current != path
+            && let Some(old) = self.current.take()
+        {
+            let _ = std::fs::remove_file(old);
+        }
+        self.current = path.clone();
+        path.map(|p| format!("file://{}", p.display()))
+            .unwrap_or_default()
+    }
+
+    fn write(&self, bytes: &[u8]) -> Option<PathBuf> {
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+        let ext = if bytes.starts_with(b"\x89PNG") {
+            "png"
+        } else if bytes.starts_with(&[0xff, 0xd8]) {
+            "jpg"
+        } else {
+            return None;
+        };
+        // FNV-1a of the picture: the same cover, the same name
+        let hash = bytes.iter().fold(0xcbf2_9ce4_8422_2325u64, |h, b| {
+            (h ^ *b as u64).wrapping_mul(0x0100_0000_01b3)
+        });
+        let path = self.dir.as_ref()?.join(format!("cover-{hash:016x}.{ext}"));
+        if self.current.as_ref() == Some(&path) {
+            return Some(path);
+        }
+        // a new file only (create_new: nothing there is followed or overwritten)
+        let _ = std::fs::remove_file(&path);
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&path)
+            .ok()?;
+        file.write_all(bytes).ok()?;
+        Some(path)
+    }
+}
+
+impl Drop for Covers {
+    fn drop(&mut self) {
+        if let Some(old) = self.current.take() {
+            let _ = std::fs::remove_file(old);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_desktop_file_is_the_one_mpris_names() {
+        // DesktopEntry "axross-amp": packaging/axross-amp.desktop, its icon there
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("packaging");
+        let entry = std::fs::read_to_string(dir.join("axross-amp.desktop")).unwrap();
+        for line in [
+            "Type=Application",
+            "Exec=axross-amp %U",
+            "Icon=axross-amp",
+            "Terminal=false",
+        ] {
+            assert!(entry.lines().any(|l| l == line), "{line}");
+        }
+        let mimes = entry
+            .lines()
+            .find_map(|l| l.strip_prefix("MimeType="))
+            .unwrap();
+        for m in ["audio/mpeg", "audio/flac", "audio/ogg", "audio/x-scpls"] {
+            assert!(mimes.split(';').any(|x| x == m), "{m}");
+        }
+        assert!(dir.join("axross-amp.svg").exists());
+    }
+
+    #[test]
+    fn each_cover_a_file_of_its_own_in_a_private_folder() {
+        use std::os::unix::fs::PermissionsExt;
+        let base = std::env::temp_dir().join(format!("amp-covers-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let mut covers = Covers::in_folder(base.clone());
+        let mode = std::fs::metadata(&base).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o700);
+        let a = covers.show(Some(b"\x89PNG first"));
+        let b = covers.show(Some(b"\xff\xd8 second"));
+        assert!(a.ends_with(".png") && b.ends_with(".jpg") && a != b);
+        assert!(
+            !Path::new(&a["file://".len()..]).exists(),
+            "the one before stays"
         );
+        assert_eq!(
+            std::fs::read(&b["file://".len()..]).unwrap(),
+            b"\xff\xd8 second"
+        );
+        assert_eq!(covers.show(None), "");
+        assert!(!Path::new(&b["file://".len()..]).exists());
+        // a folder that others can enter is not used
+        std::fs::set_permissions(&base, std::fs::Permissions::from_mode(0o777)).unwrap();
+        let mut open = Covers::in_folder(base.clone());
+        assert_eq!(open.show(Some(b"\x89PNG x")), "");
+        // a symbolic link where a cover is written is not followed
+        std::fs::set_permissions(&base, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let victim = base.with_extension("victim");
+        std::fs::write(&victim, b"keep").unwrap();
+        let mut covers = Covers::in_folder(base.clone());
+        let url = covers.show(Some(b"\x89PNG y"));
+        let name = &url["file://".len()..];
+        covers.show(None);
+        std::os::unix::fs::symlink(&victim, name).unwrap();
+        covers.show(Some(b"\x89PNG y"));
+        assert_eq!(std::fs::read(&victim).unwrap(), b"keep");
     }
 }

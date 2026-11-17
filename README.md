@@ -97,6 +97,18 @@ cargo test                          # the window test renders it (needs a Vulkan
                                     # Mesa's lavapipe works without a GPU)
 ```
 
+To have it in the desktop's menu and as an "Open with" for audio files (Linux):
+
+```sh
+install -Dm755 target/release/axross-amp ~/.local/bin/axross-amp
+install -Dm644 packaging/axross-amp.desktop ~/.local/share/applications/axross-amp.desktop
+install -Dm644 packaging/axross-amp.svg ~/.local/share/icons/hicolor/scalable/apps/axross-amp.svg
+update-desktop-database ~/.local/share/applications   # (where it is installed)
+```
+
+One player at a time: a second start (a file opened from the file manager) hands its
+files to the one running, over the session D-Bus; `--new-instance` starts another.
+
 On Linux the ALSA headers are needed (`libasound2-dev`); PulseAudio / PipeWire is
 spoken natively. libopus is built from its sources, which needs CMake.
 
