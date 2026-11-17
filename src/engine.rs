@@ -320,9 +320,11 @@ impl Shared {
         let channels = channels.max(1);
         let frames = out.len() / channels;
         state.frame.clear();
-        if self.playing.load(Ordering::Relaxed)
-            && let Ok(mut buffer) = self.buffer.try_lock()
-        {
+        // (the lock, not a try: the decoder holds it only to copy a packet in
+        // or to count - a try that failed was a whole buffer of silence, heard
+        // as a dropout when the machine was busy)
+        if self.playing.load(Ordering::Relaxed) {
+            let mut buffer = self.buffer.lock().unwrap_or_else(|p| p.into_inner());
             let take = (frames * 2).min(buffer.len());
             state.frame.extend(buffer.drain(..take));
             self.heard.fetch_add((take / 2) as u64, Ordering::Relaxed);
