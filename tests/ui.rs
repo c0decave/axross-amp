@@ -199,22 +199,28 @@ fn the_readme_picture() {
     // every face from the same music, for the README's gallery
     let gallery = shots().join("gallery");
     std::fs::create_dir_all(&gallery).unwrap();
-    for (k, key) in FACES
+    for key in FACES
         .iter()
         .filter(|f| f.group != Group::Off)
         .map(|f| f.key)
-        .enumerate()
     {
-        // (the music goes on where it is lively: the demo is a minute long)
-        if k % 12 == 0 {
+        // (the music goes on where it is lively, and never runs out: the
+        // demo is 40 s long, the waterfall waits 9 s)
+        let at = harness.state().engine().shared.position();
+        if at > 24.0 || (key == "waterfall" && at > 18.0) || at < 1.0 {
             harness
                 .state()
                 .engine()
-                .send(axross_amp::engine::Command::Seek(14.0));
+                .send(axross_amp::engine::Command::Seek(10.0));
         }
         harness.state_mut().set_mode(key);
-        // (the overview once the whole track is read)
-        let wait = if key == "overview" { 15_000 } else { 1800 };
+        // (the overview once the whole track is read; the waterfall once
+        // its history is full: 256 steps at 30 a second)
+        let wait = match key {
+            "overview" => 15_000,
+            "waterfall" => 9_000,
+            _ => 1800,
+        };
         let end = std::time::Instant::now() + std::time::Duration::from_millis(wait);
         while std::time::Instant::now() < end {
             harness

@@ -22,13 +22,19 @@ picture is made by `AMP_DEMO_TRACK=… cargo test --test ui -- --ignored`.</sub>
   as axross's; pause, seek, stop and a new track fade (no clicks), and so does a
   dropout's edge. At unity gain the samples go out bit for bit (a master peaking just
   under full scale is not bent); a track ReplayGain makes louder goes through a
-  look-ahead true-peak limiter (-1 dBTP measured by BS.1770's own 4x filter, 4 ms
-  ahead, its gain eased in and out) instead of clipping, and so does a track
-  resampled to the output's rate (-0.3 dBTP: a hot master's peaks between the samples
-  would clip there). An optional **crossfade** (1 to 12 s, off by default; equal
-  power) fades a track into the next - never inside an album, which stays gapless, and
-  each track at its own ReplayGain. The output callback takes no lock and allocates
-  nothing (a lock-free ring;
+  look-ahead true-peak limiter (-1 dBTP, 4 ms ahead, its gain eased in and out)
+  instead of clipping. The output has one too, always in the path (4 ms later, bit
+  for bit where it holds nothing back), holding the peaks at -0.3 dBTP wherever the
+  sound may go over full scale: a track resampled to the output's rate (its peaks
+  between samples become samples), two tracks summed in a crossfade, the equalizer
+  raising a band. Both find the peaks by BS.1770's 4x filter and aim 0.35 dB lower, as
+  that filter reads broadband sound low (the tests measure at 8x). An optional
+  **crossfade** (1 to 12 s, off by default; equal power) fades a track into the next -
+  never inside an album, which stays gapless (an album by its tags, or untagged files
+  of one folder in order: a live album's rips), each track at its own ReplayGain; the
+  meters count the new track from the fade's middle. Optionally a track chosen while
+  another plays fades in over it for a second. The output callback takes no lock and
+  allocates nothing (a lock-free ring;
   a test counts its allocations through a real device); files are read and decoded
   seconds ahead on threads of their own, so a slow disk or a stalled network share is
   no dropout. A small output buffer is asked for (1024 frames); the position and the
@@ -47,9 +53,13 @@ picture is made by `AMP_DEMO_TRACK=… cargo test --test ui -- --ignored`.</sub>
   the whole window comes from the cover, kept readable), the picture large - as large
   as a short playlist leaves room for - and below it the playlist (two lines a track,
   the playing one with its cover and bars that move with the sound) or the equalizer
-  (a dB scale, each band filled from its 0 dB line). The pictures' colours come from
-  the cover too, when it has some (or a scheme of axross's, below); the "Cover" face
-  makes the cover the picture, glowing with the bass. Nothing to play: a drop zone with
+  (a dB scale, each band filled from its 0 dB line). The card's cover is 120 to 200
+  px as the window allows, and the cover is kept up to 1024 px for it and for the
+  "Cover" face, which makes the cover the picture, glowing with the bass. The
+  pictures' colours come from the cover too, when it has some (or a scheme of
+  axross's, below): not its colours mixed (that made browns and olive greys) but a
+  ramp designed round its main hue in OKLCH - lightness rising evenly, a floor of
+  chroma - and the pictures are dithered (no bands in slow gradients). Nothing to play: a drop zone with
   Open files, Open folder, Add a URL and the keys. Paused, the picture stands still;
   changing faces fades one into the next.
 - **Visualizations**, 49 of them in three groups:
@@ -57,10 +67,11 @@ picture is made by `AMP_DEMO_TRACK=… cargo test --test ui -- --ignored`.</sub>
     colours and constants; [side by side](docs/axross-and-amp.png)): spectrum,
     mirrored, radial and polar spectrum, line spectrum, LED equalizer, particle
     columns, waterfall, ridgelines with their sun, spectrum terrain, 3D ring, bell
-    curves, wave ribbon, kaleidoscope, oscilloscope, stereo scope, VU meter, starfield
-    (the starfield with trails and a glow, the stereo scope with a phosphor's
-    persistence, the waterfall optionally smooth at high resolution - 256 log bands of
-    the fine spectrum, as foobar2000's spectrogram).
+    curves, wave ribbon, kaleidoscope, oscilloscope, stereo scope, VU meter,
+    starfield. Two differ by default: the waterfall is smooth, at high resolution (256
+    log bands of the fine spectrum, as foobar2000's spectrogram; axross's bars are an
+    option), and the two scopes find their gain (quiet or near-mono music still fills
+    them). Trails and glow for the starfield and the stereo scope are an option.
   - *Analysis* - a spectrum analyzer (8192-point FFT, a held peak curve, the
     strongest peak with its note and cents, the note and level under the pointer),
     a loudness meter after EBU R128 (momentary, short-term, integrated with both
@@ -73,9 +84,9 @@ picture is made by `AMP_DEMO_TRACK=… cargo test --test ui -- --ignored`.</sub>
     spectrogram in magma.
   - *Generative* - the cover, liquid (domain-warped noise), fire, metaballs, aurora,
     flow field, synthwave, a tunnel of glowing lines, galaxy, Julia set (smooth escape
-    colours, orbit traps), reaction-diffusion, a feedback face in MilkDrop's way (its
-    last frame warped under a new layer; five presets, a new one each phrase of 16
-    beats), a flyover of a raymarched night landscape the bass lifts, crystals
+    colours, orbit traps), reaction-diffusion, a feedback face in MilkDrop's manner
+    (its last frame warped under a new layer; five looks of its own, a new one each
+    phrase of 16 beats - it reads no MilkDrop presets), a flyover of a raymarched night landscape the bass lifts, crystals
     (Voronoi cells), a skyline (searchlights, traffic, roofs lit by their bands),
     isometric bars, DNA helix, spirograph, polygon morph, moiré (antialiased), beat
     rings, smoke and the title's words on the beat.
@@ -84,10 +95,12 @@ picture is made by `AMP_DEMO_TRACK=… cargo test --test ui -- --ignored`.</sub>
   their own from every sample played - minimised, on another tab or with the picture
   off too. The pixel faces are WGSL shaders run through egui's wgpu renderer. Where
   the renderer is slow (a software rasterizer such as llvmpipe: measured at the start,
-  by the CPU time a face costs either way) the window is drawn at most 20 times a
-  second and the shader faces either smaller and scaled up or by a thread of the
-  player's own per pixel, whichever measured cheaper; at rest nothing is drawn (no
-  frames, no work) and the last picture stays. The picture is analysed once a
+  by the CPU time a face costs either way) the window is drawn at most 12 times a
+  second, fewer where a frame costs more (a large window: down to 3), so that it
+  takes about 0.6 of a core; the cover face 4 times; the shader faces in at most
+  about 90,000 pixels, scaled up, or by a thread of the player's own per pixel,
+  whichever measured cheaper. At rest nothing is drawn (no frames, no work) and the
+  last picture stays. The picture is analysed once a
   frame for all faces, and neither that nor most faces allocate in a frame; the
   pictures move alike at any frame rate. In axross's colour schemes (Classic, Fire,
   Ice, Neon, Mono, Follow the theme, Custom - edited here), with its options (bars,
@@ -126,7 +139,7 @@ picture is made by `AMP_DEMO_TRACK=… cargo test --test ui -- --ignored`.</sub>
   volume, the visualization (`~/.config/axross/media_player.json`) and axross's one
   equalizer (`~/.config/axross/audio.json`) - the player inside axross and this
   program pick up where the other left off. Keys they do not know are kept. What
-  only this program has (window size, ReplayGain, crossfade, the cover's colours) is in
+  only this program has (window size, ReplayGain, crossfade, the cover's colours, the face options) is in
   `~/.config/axross/axross-amp.json`, as axross rewrites its own file with its keys.
   Files are written on a thread of their own, merged with what axross's player wrote
   meanwhile (its playlist is not undone by a change of volume here).
@@ -217,9 +230,10 @@ Known limits: cpal's PulseAudio back end (cpal 0.18.2, the newest) takes a mutex
 after the output callback has returned, to hand the samples over - outside this
 player's callback, which itself takes no lock, and out of its hands until cpal
 changes it. HLS radio (`.m3u8` segment lists) is not played. On a software renderer
-the whole window is drawn by the CPU: playing, it costs one to two cores at 20 frames
-a second (measured on llvmpipe in a real window by `tests/real_window.rs`); at rest
-about nothing.
+the whole window is drawn by the CPU (llvmpipe: 0.06 to 0.25 s of a core a frame,
+more as the window grows): the frame rate is lowered to stay under a core, so a
+large window on a software renderer moves at a few frames a second
+(`tests/real_window.rs` measures it); at rest it costs about nothing.
 The beat is found from the onsets; on syncopated music the tempo may read half or
 double. The notes below about C2 are not told apart from their neighbours.
 
@@ -239,16 +253,20 @@ against the GPU, the cost of a frame at 620 x 300, 1920 x 1080 and 3840 x 2160, 
 allocations of a frame counted; the analysis against known signals (a 1 kHz sine at
 -18 dBFS reads -18 LUFS, mono correlates +1 and inverted -1, a C major chord lights
 C, E and G, clicks at 128 BPM are 128 BPM, an intersample peak is found) and EBU
-Tech 3341's cases 1-5, 9-11 and 15-18 and Tech 3342's cases 1-4 synthesised (6 is
-5.0, 7, 8, 19-23 and 3342's 5 and 6 are EBU's recordings, 12-14 could not be checked
-against the specification here: not claimed); end to end through the player, the
+Tech 3341's cases 1-5, 9-11 and 15-18 and Tech 3342's cases 1-4 synthesised. Not
+covered: 3341's case 6 (5.0 - the meter measures what is played, the stereo
+downmix), 7, 8, 19-23 and 3342's 5 and 6 (EBU's own recordings, not derivable),
+12-14 (their signals could not be checked against the specification here: not
+claimed); end to end through the player, the
 same integrated loudness shown, hidden, with the picture off and at 3 fps, the meters
 starting a new track at its first sound, a chord progression's key and a melody's
 notes; the CPU's drawing of the shader faces against the GPU's by SSIM in each colour
 channel and by ΔE at the same moment; a hot master bit for bit at unity gain, the
-limiter's true peak, a crossfade, an album gapless with a crossfade set. In a real
-window (Xvfb, `tests/real_window.rs`) the frame rate stays under its cap and at rest
-the player costs under 5 % of a core.
+limiter's true peak (measured at 8x: a dense master resampled, two hot masters
+crossfaded), a crossfade, a fade when changing track, an album gapless with a
+crossfade set (also untagged rips of one folder). In a real window (Xvfb,
+`tests/real_window.rs`, also 1200 x 980) the frame rate stays under its cap, on a
+software renderer the player takes under a core (`--release`), and at rest under 5 %.
 `tests/python_compat.rs` has axross's own Python read and write the shared state file
 (`AMP_AXROSS`, `AMP_PYTHON`; it says loudly when it could not).
 `docs/axross_faces.py` renders axross's own faces (offscreen Qt) from the same signal
