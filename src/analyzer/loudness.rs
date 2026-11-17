@@ -486,6 +486,15 @@ mod tests {
 
 /// EBU Tech 3341 (loudness metering: the EBU mode) and Tech 3342 (loudness
 /// range): their synthesised test signals and what a meter must read.
+///
+/// Not here: 3341's case 6 (a 5.0 signal: this meter is stereo), cases 7
+/// and 8 and 3342's 5 and 6 (EBU's own programme recordings), 19 to 23
+/// (EBU's true-peak recordings), and 12 to 14 (momentary bursts: their
+/// exact signals could not be checked against the specification here, so
+/// they are not claimed). Cases 9 to 11 are made from the specification's
+/// descriptions as remembered (the documents were not at hand): steady and
+/// alternating sines and tone bursts whose expected readings follow from
+/// the definitions, whatever EBU's own files hold exactly.
 #[cfg(test)]
 mod ebu {
     use super::*;
@@ -557,6 +566,84 @@ mod ebu {
             "case 5: {}",
             m.integrated
         );
+    }
+
+    /// A stereo 1 kHz sine of these parts (dBFS, or None: silence, and
+    /// seconds), pushed 10 ms at a time; the short-term loudness after each
+    /// push, with the part it fell in.
+    fn short_terms(parts: &[(Option<f64>, f64)]) -> Vec<(usize, f32)> {
+        let rate = 48_000u32;
+        let mut m = Meter::new(rate);
+        let mut out = Vec::new();
+        let mut at = 0u64;
+        for (k, (dbfs, secs)) in parts.iter().enumerate() {
+            let amp = dbfs.map_or(0.0, |d| 10f64.powf(d / 20.0));
+            let frames = (secs * rate as f64).round() as u64;
+            let mut chunk = Vec::with_capacity(960);
+            for i in 0..frames {
+                let t = (at + i) as f64 / rate as f64;
+                let v = ((2.0 * PI * 1000.0 * t).sin() * amp) as f32;
+                chunk.extend([v, v]);
+                if chunk.len() == 960 {
+                    m.push(&chunk);
+                    chunk.clear();
+                    out.push((k, m.short_term));
+                }
+            }
+            m.push(&chunk);
+            out.push((k, m.short_term));
+            at += frames;
+        }
+        out
+    }
+
+    #[test]
+    fn tech_3341_case_9_short_term_of_an_alternating_sine() {
+        // 1.34 s at -20 dBFS, 1.66 s at -30, again and again: every 3 s
+        // window holds one of each, -23 LUFS, so the short-term loudness
+        // reads -23 (+-0.1) throughout once 3 s are in
+        let parts: Vec<_> = (0..10)
+            .flat_map(|_| [(Some(-20.0), 1.34), (Some(-30.0), 1.66)])
+            .collect();
+        let s = short_terms(&parts);
+        for (k, v) in s.iter().skip(310) {
+            assert!((v + 23.0).abs() <= 0.1, "part {k}: S {v}");
+        }
+    }
+
+    #[test]
+    fn tech_3341_cases_10_and_11_the_most_of_short_tone_bursts() {
+        // 3 s bursts with silence between: each burst's highest short-term
+        // loudness is its level (+-0.1), wherever the burst falls against
+        // the meter's 100 ms steps (case 10: at -23, shifted by 0 .. 90 ms)
+        // and whatever its level (case 11: -38 .. -19)
+        let mut parts = Vec::new();
+        let mut want = Vec::new();
+        for i in 0..10 {
+            parts.push((None, 4.0 + i as f64 * 0.011));
+            parts.push((Some(-23.0), 3.0));
+            want.push((parts.len() - 1, -23.0));
+        }
+        for level in (-38..=-19).step_by(3) {
+            parts.push((None, 4.05));
+            parts.push((Some(level as f64), 3.0));
+            want.push((parts.len() - 1, level as f32));
+        }
+        parts.push((None, 3.5));
+        let s = short_terms(&parts);
+        for (part, level) in want {
+            // (the burst's highest: in it, or just after while its window
+            // still holds most of it)
+            let most = s
+                .iter()
+                .filter(|(k, _)| *k == part || *k == part + 1)
+                .map(|(_, v)| *v)
+                .fold(f32::NEG_INFINITY, f32::max);
+            assert!(
+                (most - level).abs() <= 0.1,
+                "burst at {level}: S max {most}"
+            );
+        }
     }
 
     #[test]
