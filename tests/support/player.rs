@@ -143,3 +143,46 @@ pub fn gaps(heard: &[f32]) -> Vec<(usize, usize)> {
     }
     out
 }
+
+/// A chord over the whole range with a little noise and a beat, in
+/// stereo (every face has something to show), at 48 kHz.
+pub fn write_chord(path: &Path, secs: u32) {
+    let rate = 48_000u32;
+    let frames = rate * secs;
+    let mut f = std::fs::File::create(path).unwrap();
+    let data = frames * 4;
+    f.write_all(b"RIFF").unwrap();
+    f.write_all(&(36 + data).to_le_bytes()).unwrap();
+    f.write_all(b"WAVEfmt ").unwrap();
+    for v in [
+        16u32.to_le_bytes().as_slice(),
+        &1u16.to_le_bytes(),
+        &2u16.to_le_bytes(),
+        &rate.to_le_bytes(),
+        &(rate * 4).to_le_bytes(),
+        &4u16.to_le_bytes(),
+        &16u16.to_le_bytes(),
+    ] {
+        f.write_all(v).unwrap();
+    }
+    f.write_all(b"data").unwrap();
+    f.write_all(&data.to_le_bytes()).unwrap();
+    let mut seed = 7u32;
+    let mut out = Vec::with_capacity(data as usize);
+    for i in 0..frames {
+        let t = i as f32 / rate as f32;
+        seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+        let noise = (seed >> 9) as f32 / (1u32 << 23) as f32 - 0.5;
+        let beat = (-(t * 2.0).fract() * 8.0).exp();
+        let base: f32 = [55.0, 110.0, 220.0, 440.0, 880.0, 1760.0, 3520.0, 7040.0]
+            .iter()
+            .enumerate()
+            .map(|(k, hz)| (t * hz * std::f32::consts::TAU).sin() * 0.22 / (k as f32 + 1.0).sqrt())
+            .sum();
+        let l = base * (0.6 + 0.4 * beat) + noise * 0.04;
+        let r = base * 0.8 + (t * 330.0 * std::f32::consts::TAU).cos() * 0.15 + noise * 0.04;
+        out.extend_from_slice(&((l.clamp(-1.0, 1.0) * 30_000.0) as i16).to_le_bytes());
+        out.extend_from_slice(&((r.clamp(-1.0, 1.0) * 30_000.0) as i16).to_le_bytes());
+    }
+    f.write_all(&out).unwrap();
+}

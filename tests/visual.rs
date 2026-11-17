@@ -30,10 +30,7 @@ fn a_right_click_on_the_picture_offers_its_options() {
     h.get_by_role_and_label(egui::accesskit::Role::Button, "Visualization")
         .click();
     settle(&mut h, 2);
-    // the faces in their groups
-    h.get_by_role_and_label(egui::accesskit::Role::Button, "Classic")
-        .click();
-    settle(&mut h, 2);
+    // the faces in their groups, side by side
     h.get_by_label("3D ring").click();
     settle(&mut h, 2);
     assert_eq!(h.state().mode(), "ring");
@@ -51,12 +48,9 @@ fn a_right_click_on_the_picture_offers_its_options() {
     h.get_by_role_and_label(egui::accesskit::Role::Button, "Visualization")
         .click();
     settle(&mut h, 2);
-    h.get_by_role_and_label(egui::accesskit::Role::Button, "Generative")
-        .click();
+    h.get_by_label("Kinetic typography").click();
     settle(&mut h, 2);
-    h.get_by_label("Plasma").click();
-    settle(&mut h, 2);
-    assert_eq!(h.state().mode(), "plasma");
+    assert_eq!(h.state().mode(), "typography");
     // the colours of the window itself
     h.get_by_label("⚙").click();
     settle(&mut h, 2);

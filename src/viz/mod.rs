@@ -557,6 +557,26 @@ impl Pen<'_> {
         }
     }
 
+    /// A soft disc: `inner` at the centre fading to `outer` at `radius`
+    /// (a glow when they are additive colours).
+    pub fn radial(&mut self, centre: Pos2, radius: f32, inner: Color32, outer: Color32) {
+        if radius <= 0.0 {
+            return;
+        }
+        const SIDES: usize = 48;
+        let i0 = self.mesh.vertices.len() as u32;
+        self.mesh.colored_vertex(centre, inner);
+        for k in 0..SIDES {
+            let a = std::f32::consts::TAU * k as f32 / SIDES as f32;
+            self.mesh
+                .colored_vertex(centre + egui::vec2(a.cos(), a.sin()) * radius, outer);
+        }
+        for k in 0..SIDES as u32 {
+            self.mesh
+                .add_triangle(i0, i0 + 1 + k, i0 + 1 + (k + 1) % SIDES as u32);
+        }
+    }
+
     /// The area between the line in `self.points` and `base` (y), each
     /// strip in `fill(y)` at its top and `base_colour` at the base.
     pub fn under(&mut self, base: f32, base_colour: Color32, fill: impl Fn(f32) -> Color32) {

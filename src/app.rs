@@ -1053,6 +1053,10 @@ impl App {
             .current
             .and_then(|i| self.playlist.tracks.get(i))
             .is_some_and(|t| t.path == details.path);
+        // (Escape closes it, as a dialog)
+        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            open = false;
+        }
         egui::Window::new("Track details")
             .open(&mut open)
             .collapsible(false)
@@ -1788,30 +1792,33 @@ impl App {
     /// full screen, the playlist shown or not - axross's context menu.
     fn visual_menu(&mut self, ui: &mut Ui) {
         ui.menu_button("Visualization", |ui| {
-            for group in [
-                viz::Group::Classic,
-                viz::Group::Analysis,
-                viz::Group::Generative,
-            ] {
-                ui.menu_button(group.name(), |ui| {
-                    egui::ScrollArea::vertical()
-                        .max_height(480.0)
-                        .show(ui, |ui| {
-                            for face in viz::FACES.iter().filter(|f| f.group == group) {
-                                if ui.radio(self.mode == face.key, face.name).clicked() {
-                                    self.mode = face.key;
-                                    self.dirty = true;
-                                    ui.close();
-                                }
+            // the groups side by side: every face at a glance, no menu in a menu
+            ui.horizontal_top(|ui| {
+                for group in [
+                    viz::Group::Classic,
+                    viz::Group::Analysis,
+                    viz::Group::Generative,
+                ] {
+                    ui.vertical(|ui| {
+                        ui.label(RichText::new(group.name()).strong().color(MUTED));
+                        for face in viz::FACES.iter().filter(|f| f.group == group) {
+                            if ui.radio(self.mode == face.key, face.name).clicked() {
+                                self.mode = face.key;
+                                self.dirty = true;
+                                ui.close();
                             }
-                        });
-                });
-            }
-            if ui.radio(self.mode == "off", "Off").clicked() {
-                self.mode = "off";
-                self.dirty = true;
-                ui.close();
-            }
+                        }
+                        if group == viz::Group::Analysis {
+                            ui.add_space(8.0);
+                            if ui.radio(self.mode == "off", "Off").clicked() {
+                                self.mode = "off";
+                                self.dirty = true;
+                                ui.close();
+                            }
+                        }
+                    });
+                }
+            });
         });
         ui.label(RichText::new("Colours").strong());
         let named = viz::SCHEMES.iter().map(|(k, n, _)| (*k, *n));
@@ -2348,7 +2355,13 @@ impl App {
 
     fn transport(&mut self, ui: &mut Ui) {
         ui.horizontal(|ui| {
-            let big = vec2(46.0, 34.0);
+            // (a narrow window: smaller buttons, room for the volume)
+            let narrow = ui.available_width() < 520.0;
+            let big = if narrow {
+                vec2(36.0, 32.0)
+            } else {
+                vec2(46.0, 34.0)
+            };
             if ui
                 .add(egui::Button::new(RichText::new("⏮").size(18.0)).min_size(big))
                 .accessible_name("Previous")
@@ -2360,7 +2373,11 @@ impl App {
             let play = if self.playing() { "⏸" } else { "▶" };
             let button = egui::Button::new(RichText::new(play).size(22.0).color(Color32::WHITE))
                 .fill(ACCENT)
-                .min_size(vec2(58.0, 38.0))
+                .min_size(if narrow {
+                    vec2(48.0, 36.0)
+                } else {
+                    vec2(58.0, 38.0)
+                })
                 .corner_radius(CornerRadius::same(19));
             if ui
                 .add(button)
@@ -2386,7 +2403,7 @@ impl App {
             {
                 self.next(false);
             }
-            ui.add_space(6.0);
+            ui.add_space(if narrow { 2.0 } else { 6.0 });
             let shuffle = self.playlist.shuffle;
             if ui
                 .add(
@@ -2437,7 +2454,8 @@ impl App {
             }
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 let mut volume = self.volume;
-                ui.spacing_mut().slider_width = 110.0;
+                // (narrow: the slider gives way, never over the buttons)
+                ui.spacing_mut().slider_width = (ui.available_width() - 84.0).clamp(36.0, 110.0);
                 let response = ui
                     .add(
                         egui::Slider::new(&mut volume, 0..=100)
@@ -2445,7 +2463,7 @@ impl App {
                             .trailing_fill(true),
                     )
                     .accessible_name("Volume")
-                    .on_hover_text(format!("Volume {volume} % (↑/↓, +/−, the wheel)"));
+                    .on_hover_text(format!("Volume {volume} % (↑/↓, +/-, the wheel)"));
                 if response.changed() {
                     self.set_volume(volume);
                 }

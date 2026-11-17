@@ -416,9 +416,7 @@ fn synthwave(f: &Frame<'_>, pen: &mut Pen<'_>, st: &mut State, dt: f32) {
     // the sun: stripes cut into its lower half, growing with the bass
     let radius = w.min(h) * 0.22 * (1.0 + 0.18 * a.bass + 0.08 * a.beat.pulse);
     let c = pos2(r.center().x, horizon - radius * 0.38);
-    for k in 0..4 {
-        pen.circle(c, radius * (1.15 + 0.12 * k as f32), glow(s.high, 0.07));
-    }
+    pen.radial(c, radius * 1.7, glow(s.high, 0.45), Color32::TRANSPARENT);
     let stripes = 22;
     for i in 0..stripes {
         let y0 = c.y - radius + 2.0 * radius * i as f32 / stripes as f32;
@@ -519,14 +517,8 @@ fn galaxy(f: &Frame<'_>, pen: &mut Pen<'_>, st: &mut State, dt: f32) {
     let size = r.width().min(r.height() * 1.6) * 0.48;
     // the core
     let core = size * (0.12 + 0.1 * a.bass + 0.05 * a.beat.pulse);
-    for k in 0..6 {
-        pen.circle(
-            c,
-            core * (1.0 + k as f32 * 0.6),
-            glow(s.mid, 0.16 - k as f32 * 0.02),
-        );
-    }
-    pen.circle(c, core * 0.45, glow(s.peak, 0.6));
+    pen.radial(c, core * 4.0, glow(s.mid, 0.55), Color32::TRANSPARENT);
+    pen.radial(c, core * 1.2, glow(s.peak, 0.8), Color32::TRANSPARENT);
     for [radius, angle, bright, tint] in &st.stars {
         // inner stars turn faster
         let turn = angle + st.galaxy_turn * (1.0 / (radius + 0.3));
@@ -621,13 +613,12 @@ fn skyline(f: &Frame<'_>, pen: &mut Pen<'_>, st: &mut State) {
         mix(s.background, s.low, 0.35),
     );
     let moon = pos2(r.left() + w * 0.8, r.top() + h * 0.2);
-    for k in 0..4 {
-        pen.circle(
-            moon,
-            h * (0.06 + 0.035 * k as f32) * (1.0 + 0.3 * a.beat.pulse),
-            glow(s.peak, 0.06),
-        );
-    }
+    pen.radial(
+        moon,
+        h * 0.2 * (1.0 + 0.3 * a.beat.pulse),
+        glow(s.peak, 0.3),
+        Color32::TRANSPARENT,
+    );
     pen.circle(moon, h * 0.055, mix(s.peak, s.high, 0.15));
     let step = (a.time * 6.0) as u32;
     let treble = third(a, 2);
@@ -1112,7 +1103,12 @@ fn beatrings(f: &Frame<'_>, pen: &mut Pen<'_>, st: &mut State, dt: f32) {
         );
     }
     let core = base * (0.55 + 0.4 * a.bass + 0.35 * a.beat.pulse);
-    pen.circle(c, core * 1.6, glow(s.at(a.energy), 0.25));
+    pen.radial(
+        c,
+        core * 2.4,
+        glow(s.at(a.energy), 0.5),
+        Color32::TRANSPARENT,
+    );
     pen.circle(c, core, s.at(0.4 + 0.6 * a.energy));
     pen.circle(c, core * 0.4, mix(s.at(a.energy), s.peak, 0.6));
 }
