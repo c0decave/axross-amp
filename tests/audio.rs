@@ -468,7 +468,10 @@ fn real_sound_from_every_format_with_eq_volume_seek_streams_and_errors() {
     }
     let mut big_png = Vec::new();
     image::DynamicImage::ImageRgb8(big)
-        .write_to(&mut std::io::Cursor::new(&mut big_png), image::ImageFormat::Png)
+        .write_to(
+            &mut std::io::Cursor::new(&mut big_png),
+            image::ImageFormat::Png,
+        )
         .unwrap();
     with_cover(&corpus.join("tone.mp3"), &big_png, &covered);
     let info = play(covered.to_str().unwrap(), 0, |_| {}).info.unwrap();

@@ -89,8 +89,12 @@ pub struct App {
     dialog: FileDialog,
     picking: Picking,
     selected: Option<usize>,
+    /// Frames the analysis ran.
+    analyzer_frames: u64,
     /// Rows chosen together (Ctrl / Shift-click); empty: only `selected`.
     chosen: Vec<usize>,
+    /// The playlist before its last removals (Ctrl+Z), and the track playing then.
+    undo: Vec<(Vec<Track>, Option<String>)>,
     dragging: Option<usize>,
     dirty: bool,
     eq_dirty: bool,
@@ -190,11 +194,8 @@ fn tags_of(info: &TrackInfo) -> Track {
         path: String::new(),
         title,
         duration_ms: info.duration.map(|d| (d * 1000.0) as u64).unwrap_or(0),
-        artist: if info.album_artist.is_empty() {
-            info.artist.clone()
-        } else {
-            info.album_artist.clone()
-        },
+        // (the track's own artist - the album artist only where it has none)
+        artist: info.artist.clone(),
         album: info.album.clone(),
         disc: info.disc_number.unwrap_or(0).min(100_000) as u32,
         track: info.track_number.unwrap_or(0).min(100_000) as u32,
@@ -384,6 +385,8 @@ impl App {
             picking: Picking::Nothing,
             selected: None,
             chosen: Vec::new(),
+            analyzer_frames: 0,
+            undo: Vec::new(),
             dragging: None,
             dirty: false,
             eq_dirty: false,
@@ -639,15 +642,47 @@ impl App {
 
     fn take_added(&mut self, collected: playlist::Collected, then: Then) {
         let first = self.playlist.tracks.len();
-        let offered = collected.tracks.len();
-        let count = self.playlist.add_tracks(collected.tracks);
+        // a track already in the list is not added again (the one there plays)
+        let mut present: std::collections::HashMap<String, usize> = self
+            .playlist
+            .tracks
+            .iter()
+            .enumerate()
+            .map(|(i, t)| (t.path.clone(), i))
+            .collect();
+        let mut first_known = None;
+        let mut fresh = Vec::new();
+        let mut again = 0;
+        for t in collected.tracks {
+            match present.get(&t.path) {
+                Some(i) => {
+                    again += 1;
+                    first_known = first_known.or(Some(*i));
+                }
+                None => {
+                    present.insert(t.path.clone(), usize::MAX);
+                    fresh.push(t);
+                }
+            }
+        }
+        let offered = fresh.len() + again;
+        let count = self.playlist.add_tracks(fresh);
         self.scanner.scan(&self.playlist.tracks[first..]);
         let mut status = match (count, collected.skipped.len()) {
             (0, 0) if offered == 0 => "Nothing to add.".to_owned(),
+            (0, 0) => String::new(),
             (n, 0) => format!("{n} added"),
             (n, s) => format!("{n} added, {s} skipped (not audio)"),
         };
-        if collected.truncated || count < offered {
+        if again > 0 {
+            if !status.is_empty() {
+                status.push_str("; ");
+            }
+            status.push_str(&format!(
+                "{again} already in the playlist (not added again)"
+            ));
+        }
+        if collected.truncated || count + again < offered {
             status.push_str(&format!(
                 "; the playlist holds at most {} tracks - the rest was left out",
                 crate::state::MAX_TRACKS
@@ -662,7 +697,35 @@ impl App {
         };
         if play && count > 0 {
             self.play_index(first, 0, true);
+        } else if play && let Some(i) = first_known.filter(|i| *i != usize::MAX) {
+            self.play_index(i, 0, true);
         }
+    }
+
+    /// Keep the playlist as it is, for Ctrl+Z (before a removal or Clear).
+    fn remember_for_undo(&mut self) {
+        let playing = self
+            .playlist
+            .current
+            .and_then(|i| self.playlist.tracks.get(i))
+            .map(|t| t.path.clone());
+        self.undo.push((self.playlist.tracks.clone(), playing));
+        if self.undo.len() > 20 {
+            self.undo.remove(0);
+        }
+    }
+
+    /// Ctrl+Z: the playlist as it was before the last removal or Clear.
+    fn undo(&mut self) {
+        let Some((tracks, playing)) = self.undo.pop() else {
+            return;
+        };
+        let current = playing.and_then(|p| tracks.iter().position(|t| t.path == p));
+        let n = tracks.len();
+        self.playlist.replace(tracks, current);
+        self.select(None);
+        self.dirty = true;
+        self.status = format!("Undone: the playlist has its {n} tracks again.");
     }
 
     /// Titles and lengths the scanner read: into the tracks that lack them.
@@ -1424,6 +1487,10 @@ impl App {
         if !self.gate.any {
             return;
         }
+        if ui.input(|i| i.modifiers.command && i.key_pressed(Key::Z)) {
+            self.undo();
+            return;
+        }
         let pressed = |k: Key| ui.input(|i| i.key_pressed(k));
         let modifiers = ui.input(|i| i.modifiers);
         let pos = self.engine.shared.position();
@@ -1562,6 +1629,7 @@ impl App {
     /// chosen (Delete again goes on down the list), else the choice follows
     /// the rows it was on.
     fn remove_rows(&mut self, gone: &[usize], then_next: bool) {
+        self.remember_for_undo();
         let first = gone.iter().copied().min().unwrap_or(0);
         let before = self.chosen_rows();
         self.playlist.remove_many(gone);
@@ -1580,6 +1648,11 @@ impl App {
             self.chosen = if kept.len() > 1 { kept } else { Vec::new() };
         }
         self.dirty = true;
+        self.status = format!(
+            "{} removed - Ctrl+Z brings {} back.",
+            gone.len(),
+            if gone.len() == 1 { "it" } else { "them" }
+        );
     }
 
     /// The selected track one place up or down in the list.
@@ -2011,6 +2084,11 @@ impl App {
         }
     }
 
+    /// Frames the analysis ran (tests: none with the picture off).
+    pub fn analyzer_frames(&self) -> u64 {
+        self.analyzer_frames
+    }
+
     /// The window's title (tests).
     pub fn title(&self) -> &str {
         &self.window_title
@@ -2033,8 +2111,12 @@ impl App {
             .shared
             .device_rate
             .load(std::sync::atomic::Ordering::Relaxed);
-        self.analyzer
-            .update(&self.tap, rate, &self.options, dt, self.playing());
+        // (off: no analysis, no frames for it)
+        if self.mode != "off" {
+            self.analyzer
+                .update(&self.tap, rate, &self.options, dt, self.playing());
+            self.analyzer_frames += 1;
+        }
         viz::draw(
             ui.painter(),
             rect,
@@ -2377,10 +2459,21 @@ impl App {
                 .small(),
             );
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if ui.small_button("Clear").clicked() {
+                if ui.small_button("Clear").clicked() && !self.playlist.tracks.is_empty() {
+                    self.remember_for_undo();
+                    let n = self.playlist.tracks.len();
                     self.playlist.clear();
                     self.select(None);
                     self.dirty = true;
+                    self.status = format!("{n} tracks removed - Ctrl+Z brings them back.");
+                }
+                if !self.undo.is_empty()
+                    && ui
+                        .small_button("↶ Undo")
+                        .on_hover_text("Bring back what was removed (Ctrl+Z)")
+                        .clicked()
+                {
+                    self.undo();
                 }
                 if ui
                     .small_button("Save…")
@@ -2443,6 +2536,7 @@ impl App {
             let mut play: Option<usize> = None;
             let mut remove: Option<usize> = None;
             let mut details: Option<usize> = None;
+            let mut play_next: Option<usize> = None;
             let mut moved: Option<(usize, usize)> = None;
             let mut clicked: Option<(usize, egui::Modifiers)> = None;
             let height = ui.available_height().max(120.0);
@@ -2520,6 +2614,16 @@ impl App {
                         egui::FontId::monospace(12.0),
                         MUTED,
                     );
+                    if let Some(n) = self.playlist.up_next_place(i) {
+                        // (to play next: its place in that queue)
+                        ui.painter().text(
+                            rect.right_center() - vec2(72.0, 0.0),
+                            egui::Align2::RIGHT_CENTER,
+                            format!("next {n}"),
+                            egui::FontId::proportional(11.0),
+                            ACCENT,
+                        );
+                    }
                     let duration = if track.duration_ms > 0 {
                         clock(track.duration_ms as f64 / 1000.0)
                     } else if playlist::is_stream(&track.path) {
@@ -2572,6 +2676,10 @@ impl App {
                             play = Some(i);
                             ui.close();
                         }
+                        if ui.button("⏭ Play next").clicked() {
+                            play_next = Some(i);
+                            ui.close();
+                        }
                         if ui.button("✖ Remove").clicked() {
                             remove = Some(i);
                             ui.close();
@@ -2612,6 +2720,12 @@ impl App {
             }
             if let Some(i) = details {
                 self.show_details(i);
+            }
+            if let Some(i) = play_next {
+                let picked = self.chosen_rows();
+                let rows = if picked.contains(&i) { picked } else { vec![i] };
+                self.playlist.play_next(&rows);
+                self.status = format!("{} to play next", rows.len());
             }
             if self.gate.any && ui.input(|inp| inp.key_pressed(Key::Delete)) {
                 let picked = self.chosen_rows();
@@ -2844,11 +2958,15 @@ impl eframe::App for App {
         self.details_window(&ctx);
         self.file_dialog(&ctx);
         let fps = self.options.fps.clamp(10, 60) as f32;
-        // (the picture moves while there is sound, and as long as it falls to rest)
-        if self.playing() || self.analyzer.bars.iter().any(|b| *b > 0.001) {
+        // the picture moves while there is sound, and as long as it falls to
+        // rest; off, the clock moves once a second; idle, nothing is drawn
+        // until something changes (input, the engine: they wake the window)
+        if self.mode == "off" {
+            if self.playing() {
+                ctx.request_repaint_after(Duration::from_secs(1));
+            }
+        } else if self.playing() || self.analyzer.bars.iter().any(|b| *b > 0.001) {
             ctx.request_repaint_after(Duration::from_secs_f32(1.0 / fps));
-        } else {
-            ctx.request_repaint_after(Duration::from_millis(500));
         }
     }
 

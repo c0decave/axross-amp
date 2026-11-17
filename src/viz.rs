@@ -7,7 +7,7 @@ use egui::{Color32, Painter, Pos2, Rect, Shape, Stroke, Vec2, epaint::Mesh, pos2
 use std::f32::consts::{PI, TAU};
 
 /// The faces, in the order a click steps through them: (key, name).
-pub const MODES: [(&str, &str); 18] = [
+pub const MODES: [(&str, &str); 19] = [
     ("spectrum", "Spectrum"),
     ("mirror", "Mirrored spectrum"),
     ("radial", "Radial spectrum"),
@@ -26,6 +26,8 @@ pub const MODES: [(&str, &str); 18] = [
     ("lissajous", "Stereo scope"),
     ("vu", "VU meter"),
     ("starfield", "Starfield"),
+    // (no picture at all: no frames drawn for it - a laptop's battery)
+    ("off", "Off"),
 ];
 
 /// The key a saved name stands for here (a face of axross's not drawn here
@@ -38,9 +40,12 @@ pub fn known(key: &str) -> &'static str {
         .unwrap_or("spectrum")
 }
 
+/// The face after `key` (a click on the picture, V): "off" is chosen in
+/// the menu only, never stepped into.
 pub fn next(key: &str) -> &'static str {
     let i = MODES.iter().position(|(k, _)| *k == key).unwrap_or(0);
-    MODES[(i + 1) % MODES.len()].0
+    let next = MODES[(i + 1) % MODES.len()].0;
+    if next == "off" { MODES[0].0 } else { next }
 }
 
 pub fn name(key: &str) -> &'static str {
@@ -223,6 +228,15 @@ pub fn draw(
         "bells" => bells(painter, rect, a, s),
         "ribbon" => ribbon(painter, rect, a, s, state.phase),
         "kaleidoscope" => kaleidoscope(painter, rect, a, s, state.phase),
+        "off" => {
+            painter.text(
+                rect.center(),
+                egui::Align2::CENTER_CENTER,
+                "Visualization off",
+                egui::FontId::proportional(14.0),
+                s.peak.gamma_multiply(0.45),
+            );
+        }
         "mirror" => mirror(painter, rect, a, s),
         "radial" => radial(painter, rect, a, s, false),
         "polar" => radial(painter, rect, a, s, true),

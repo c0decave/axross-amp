@@ -212,3 +212,95 @@ fn several_rows_are_chosen_removed_and_dragged_together() {
     settle(&mut h, 2);
     assert_eq!(rows(&h), ["d", "a"]);
 }
+
+#[test]
+fn removals_and_clear_are_undone_with_ctrl_z() {
+    let dir = folder("pl-undo");
+    let files = tracks(&dir, &["a.wav", "b.wav", "c.wav"], 1.0);
+    let mut h = harness(&dir, files);
+    assert!(until(&mut h, 5.0, |a| a.is_loaded()));
+    settle(&mut h, 2);
+    h.get_by_role_and_label(egui::accesskit::Role::ListItem, "b")
+        .click();
+    settle(&mut h, 1);
+    h.key_press(Key::Delete);
+    settle(&mut h, 2);
+    assert_eq!(rows(&h), ["a", "c"]);
+    h.get_by_label("Clear").click();
+    settle(&mut h, 2);
+    assert!(rows(&h).is_empty());
+    key_with(&mut h, Key::Z, egui::Modifiers::COMMAND);
+    settle(&mut h, 2);
+    assert_eq!(rows(&h), ["a", "c"]);
+    h.get_by_label("↶ Undo").click();
+    settle(&mut h, 2);
+    assert_eq!(rows(&h), ["a", "b", "c"]);
+    assert_eq!(
+        h.state().snapshot().current,
+        0,
+        "the track playing stays current"
+    );
+}
+
+#[test]
+fn a_track_already_there_is_not_added_twice() {
+    let dir = folder("pl-dupes");
+    let files = tracks(&dir, &["a.wav", "b.wav"], 1.0);
+    let mut h = harness(&dir, files.clone());
+    assert!(until(&mut h, 5.0, |a| a.is_loaded()));
+    // dropped again, with a new one
+    let more = tracks(&dir, &["c.wav"], 1.0);
+    for f in files.iter().chain(&more) {
+        h.input_mut()
+            .dropped_files
+            .push(std::sync::Arc::new(Dropped(f.into())));
+    }
+    assert!(until(&mut h, 5.0, |a| a.status().contains("already")));
+    assert_eq!(h.state().snapshot().tracks.len(), 3);
+    assert!(
+        h.state()
+            .status()
+            .contains("1 added; 2 already in the playlist"),
+        "{}",
+        h.state().status()
+    );
+}
+
+/// A file dropped on the window.
+#[derive(Debug)]
+struct Dropped(std::path::PathBuf);
+
+impl egui::DroppedFile for Dropped {
+    fn path(&self) -> &std::path::Path {
+        &self.0
+    }
+
+    fn bytes(&self) -> Result<Vec<u8>, String> {
+        std::fs::read(&self.0).map_err(|e| e.to_string())
+    }
+}
+
+#[test]
+fn play_next_from_a_rows_menu() {
+    let dir = folder("pl-next");
+    let files = tracks(&dir, &["a.wav", "b.wav", "c.wav"], 0.4);
+    let mut h = harness(&dir, files);
+    assert!(until(&mut h, 5.0, |a| a.is_loaded()));
+    settle(&mut h, 2);
+    h.get_by_role_and_label(egui::accesskit::Role::ListItem, "c")
+        .click_secondary();
+    settle(&mut h, 2);
+    h.get_by_label("⏭ Play next").click();
+    settle(&mut h, 2);
+    let mut output = axross_amp::engine::RenderState::default();
+    let mut order = vec![h.state().snapshot().current];
+    for _ in 0..20 {
+        listen(&mut h, &mut output, 0.1);
+        let c = h.state().snapshot().current;
+        if order.last() != Some(&c) {
+            order.push(c);
+        }
+    }
+    // (then the list goes on from a: b, and c in its turn)
+    assert_eq!(order, vec![0, 2, 1, 2], "c was to play next");
+}

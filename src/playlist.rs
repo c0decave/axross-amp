@@ -98,6 +98,10 @@ pub struct Playlist {
     resume_at: Option<usize>,
     /// Counts the changes of `tracks` (a view of them knows when to look again).
     pub version: u64,
+    /// Tracks to play next, before the list's own order ("Play next"); the
+    /// track the list goes on from after them, and the one handed out last.
+    up_next: std::collections::VecDeque<usize>,
+    return_to: Option<usize>,
 }
 
 /// How many tracks Previous can go back through.
@@ -116,6 +120,8 @@ impl Default for Playlist {
             going_back: None,
             resume_at: None,
             version: 0,
+            up_next: Default::default(),
+            return_to: None,
         }
     }
 }
@@ -162,8 +168,16 @@ impl Playlist {
                 self.history.remove(0);
             }
         }
+        // the next of those asked to play next: the list goes on later from
+        // where it is now; another track chosen: from that one
+        if self.up_next.front() == Some(&index) {
+            self.return_to = self.return_to.or(self.current);
+        } else {
+            self.return_to = None;
+        }
         self.current = Some(index);
         self.resume_at = None;
+        self.up_next.retain(|i| *i != index);
         if let Some(order) = self.order.as_mut() {
             order.retain(|i| *i != index);
         }
@@ -173,6 +187,8 @@ impl Playlist {
     /// through `map`: None drops it.
     fn remap(&mut self, map: impl Fn(usize) -> Option<usize>) {
         self.version += 1;
+        self.return_to = self.return_to.and_then(&map);
+        self.up_next = self.up_next.iter().filter_map(|i| map(*i)).collect();
         self.current = self.current.and_then(&map);
         self.history = self.history.iter().filter_map(|i| map(*i)).collect();
         self.history.dedup();
@@ -195,7 +211,23 @@ impl Playlist {
         self.history.clear();
         self.going_back = None;
         self.resume_at = None;
+        self.up_next.clear();
         self.version += 1;
+    }
+
+    /// Play `indexes` next, in this order, after what was asked before.
+    pub fn play_next(&mut self, indexes: &[usize]) {
+        for i in indexes {
+            if *i < self.tracks.len() && !self.up_next.contains(i) && Some(*i) != self.current {
+                self.up_next.push_back(*i);
+            }
+        }
+        self.version += 1;
+    }
+
+    /// Where track `index` is among those to play next (1 the next).
+    pub fn up_next_place(&self, index: usize) -> Option<usize> {
+        self.up_next.iter().position(|i| *i == index).map(|p| p + 1)
     }
 
     /// Add tracks (paths or stream URLs); returns how many were added.
@@ -229,6 +261,7 @@ impl Playlist {
 
     pub fn clear(&mut self) {
         self.version += 1;
+        self.up_next.clear();
         self.tracks.clear();
         self.current = None;
         self.order = None;
@@ -400,6 +433,25 @@ impl Playlist {
         if self.tracks.is_empty() {
             return None;
         }
+        // what was asked to play next comes first; then the list goes on
+        // from where it was
+        // (taken from the queue when it is played: Playlist::play)
+        if let Some(&next) = self.up_next.front() {
+            return Some(next);
+        }
+        if let Some(back) = self.return_to.filter(|r| *r < self.tracks.len()) {
+            let here = self.current.replace(back);
+            let chosen = self.choose_in_order(ended, take);
+            self.current = here;
+            if take {
+                self.return_to = None;
+            }
+            return chosen;
+        }
+        self.choose_in_order(ended, take)
+    }
+
+    fn choose_in_order(&mut self, ended: bool, take: bool) -> Option<usize> {
         if ended && self.repeat == Repeat::One && self.current.is_some() {
             return self.current;
         }
@@ -1034,6 +1086,26 @@ mod tests {
         assert!(t[1].path.ends_with("/Ça va/y.flac"), "{}", t[1].path);
         fs::write(dir.join("bin.m3u"), b"a.mp3\0").unwrap();
         assert!(read_playlist(&dir.join("bin.m3u")).is_err());
+    }
+
+    #[test]
+    fn play_next_comes_first_and_follows_the_tracks() {
+        let mut p = list(6);
+        p.play(0);
+        p.play_next(&[4, 2]);
+        assert_eq!(p.peek_next(), Some(4));
+        // a track above them goes: they move up with their tracks
+        p.remove(1);
+        assert_eq!((p.up_next_place(3), p.up_next_place(1)), (Some(1), Some(2)));
+        assert_eq!(p.next(true), Some(3));
+        p.play(3);
+        assert_eq!(p.next(true), Some(1));
+        p.play(1);
+        assert_eq!(
+            p.next(true),
+            Some(1),
+            "then the list goes on from where it was"
+        );
     }
 
     #[test]

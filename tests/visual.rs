@@ -57,3 +57,22 @@ fn a_right_click_on_the_picture_offers_its_options() {
     settle(&mut h, 2);
     assert!(!h.state().big_visual());
 }
+
+#[test]
+fn off_draws_no_analysis() {
+    let dir = folder("visual-off");
+    let files = tracks(&dir, &["a.wav"], 3.0);
+    let mut h = harness(&dir, files);
+    assert!(until(&mut h, 5.0, |a| a.is_loaded()));
+    h.state_mut().set_mode("off");
+    settle(&mut h, 2);
+    let before = h.state().analyzer_frames();
+    settle(&mut h, 10);
+    assert_eq!(
+        h.state().analyzer_frames(),
+        before,
+        "the analysis ran with the picture off"
+    );
+    // a click on the picture never steps into "off"
+    assert_eq!(axross_amp::viz::next("starfield"), "spectrum");
+}
