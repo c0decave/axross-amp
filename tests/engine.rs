@@ -512,3 +512,40 @@ fn a_failed_file_is_said_and_a_folder_is_no_file() {
     let seen = wait_for(&engine, 2.0, |e| matches!(e, Event::Failed { .. }));
     assert!(seen.last().unwrap().ends_with("no such file"), "{seen:?}");
 }
+
+#[test]
+fn a_lost_output_is_opened_again_and_a_failing_one_is_said() {
+    let dir = folder("lost-output");
+    std::fs::write(dir.join("a.wav"), wav_bytes(RATE, 3.0, 330.0, None)).unwrap();
+    let engine = Engine::start_headless(|| {});
+    load(&engine, &dir.join("a.wav").to_string_lossy(), 1);
+    let mut output = Output::new();
+    let mut events = Vec::new();
+    output.play(&engine, 0.3, |_, e| events.push(describe(e)));
+    // the device goes (a headset switched off): the output is opened again,
+    // the track plays on
+    engine.shared.simulate_output_loss();
+    output.play(&engine, 0.3, |_, e| events.push(describe(e)));
+    assert_eq!(
+        events.iter().filter(|e| e.starts_with("output")).count(),
+        2,
+        "{events:?}"
+    );
+    assert!(engine.shared.playing.load(Ordering::Relaxed));
+    let heard = output.heard.len();
+    output.play(&engine, 0.2, |_, _| {});
+    assert!(
+        output.heard[heard..].iter().any(|s| *s != 0.0),
+        "silent after"
+    );
+    // it fails again and again: it gives up and says so
+    for _ in 0..3 {
+        engine.shared.simulate_output_loss();
+        output.play(&engine, 0.1, |_, e| events.push(describe(e)));
+    }
+    assert!(
+        events.last().unwrap().contains("keeps failing"),
+        "{events:?}"
+    );
+    assert!(!engine.shared.playing.load(Ordering::Relaxed));
+}

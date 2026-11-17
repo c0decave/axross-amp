@@ -385,6 +385,21 @@ fn real_sound_from_every_format_with_eq_volume_seek_streams_and_errors() {
     );
     // (a mute ramps down within the first buffer: at most that is left)
 
+    // an output chosen that is not there (a headset switched off): the default plays
+    let played = play(flac.to_str().unwrap(), 0, |e| {
+        e.send(Command::Output(Some("alsa:no-such-device".into())))
+    });
+    report.push(format!("missing output: {:?}", played.events));
+    assert!(
+        played
+            .events
+            .iter()
+            .any(|e| e.contains("the output chosen is not there")),
+        "{:?}",
+        played.events
+    );
+    assert!(played.ended && read_wav(&capture).audible_secs() > 2.9);
+
     // a start position: only the last second is heard
     let played = play(flac.to_str().unwrap(), 2000, |_| {});
     let secs = read_wav(&capture).audible_secs();

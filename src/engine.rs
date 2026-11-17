@@ -218,6 +218,8 @@ pub struct Shared {
     pub muted: AtomicBool,
     pub device_rate: AtomicU32,
     pub tap: Mutex<VecDeque<f32>>,
+    /// The output reported that it is gone (the decoder thread opens it anew).
+    lost: AtomicBool,
 }
 
 /// What the output callback keeps between its calls.
@@ -249,7 +251,14 @@ impl Shared {
             muted: AtomicBool::new(false),
             device_rate: AtomicU32::new(48_000),
             tap: Mutex::new(VecDeque::with_capacity(TAP_FRAMES * 2)),
+            lost: AtomicBool::new(false),
         }
+    }
+
+    /// As when the output reports that its device is gone (tests).
+    #[doc(hidden)]
+    pub fn simulate_output_loss(&self) {
+        self.lost.store(true, Ordering::Relaxed);
     }
 
     /// The position of the sound heard (seconds).
@@ -497,6 +506,7 @@ where
     let channels = config.channels as usize;
     let mut state = RenderState::default();
     let mut mixed = Vec::<f32>::with_capacity(8192);
+    let lost = shared.clone();
     device
         .build_output_stream(
             config,
@@ -507,7 +517,19 @@ where
                     *out = T::from_sample(*v);
                 }
             },
-            |err| eprintln!("axross-amp: output: {err}"),
+            move |err| {
+                eprintln!("axross-amp: output: {err}");
+                // a device that went away, a stream to be made anew: the
+                // decoder thread opens the output again
+                if matches!(
+                    err.kind(),
+                    cpal::ErrorKind::DeviceNotAvailable
+                        | cpal::ErrorKind::StreamInvalidated
+                        | cpal::ErrorKind::HostUnavailable
+                ) {
+                    lost.lost.store(true, Ordering::Relaxed);
+                }
+            },
             None,
         )
         .map_err(|e| e.to_string())
@@ -1503,6 +1525,9 @@ struct Player {
     loudness: Loudness,
     current: Option<Source>,
     queued: Option<Queued>,
+    /// The output device chosen (None: the default), and when it failed lately.
+    device: Option<String>,
+    losses: Vec<Instant>,
     /// The track still heard while the queued one is decoded after it, and
     /// the queued one with its info (told when it is heard).
     ending: Option<(Box<Decoding>, Queued, TrackInfo)>,
@@ -1515,13 +1540,23 @@ impl Player {
         (self.wake)();
     }
 
+    /// Open the output `device` (None: the default); one that is not there
+    /// (unplugged, a headset gone) gives way to the default output.
     fn connect(&mut self, device: Option<&str>) {
+        self.device = device.map(str::to_owned);
+        self.shared.lost.store(false, Ordering::Relaxed);
         if self.headless {
             self.shared.device_rate.store(48_000, Ordering::Relaxed);
             self.out_rate = 48_000;
             return self.send(Event::Output("no device (headless)".into()));
         }
-        match open_output(self.shared.clone(), device) {
+        let opened = match open_output(self.shared.clone(), device) {
+            Err(why) if device.is_some() => open_output(self.shared.clone(), None)
+                .map(|(s, r, name)| (s, r, format!("{name} - the output chosen is not there")))
+                .map_err(|_| why),
+            other => other,
+        };
+        match opened {
             Ok((stream, rate, name)) => {
                 self.shared.device_rate.store(rate, Ordering::Relaxed);
                 self.stream = Some(stream);
@@ -1534,6 +1569,64 @@ impl Player {
             }
         }
         self.ahead = (self.out_rate as f32 * AHEAD_SECS) as usize;
+    }
+
+    /// The output anew on `device`, the track going on where it was (at
+    /// another rate: resampled anew from there).
+    fn reopen(&mut self, device: Option<String>) {
+        let playing = self.shared.playing.load(Ordering::Relaxed);
+        self.cancel_advance();
+        let at = self.shared.position();
+        drop(self.stream.take()); // (the old device lets go first)
+        let before = self.out_rate;
+        self.connect(device.as_deref());
+        if self.out_rate != before {
+            // another rate: the equalizer anew, the sound decoded
+            // ahead dropped, the track resampled from where it was
+            self.eq = Equalizer::new(self.out_rate);
+            self.eq.set_gains(self.gains.0);
+            self.eq.enabled = self.gains.1;
+            match self.current.as_mut() {
+                Some(Source::File(d)) => {
+                    d.set_out_rate(self.out_rate);
+                    let landed = d.seek(at).unwrap_or(0);
+                    self.shared.restart_at(landed);
+                }
+                Some(Source::Stream(s)) => {
+                    s.rate.store(self.out_rate, Ordering::Relaxed);
+                    while s.pcm.try_recv().is_ok() {}
+                    s.pending.clear();
+                    s.pending_frames = 0;
+                    s.primed = false;
+                    self.shared.restart_at(0);
+                }
+                None => {}
+            }
+        }
+        self.shared
+            .playing
+            .store(playing && self.current.is_some(), Ordering::Relaxed);
+    }
+
+    /// The output failed (a device unplugged, the sound server gone):
+    /// opened again - up to three times in ten seconds, then it says so.
+    fn recover(&mut self) {
+        if !self.shared.lost.swap(false, Ordering::Relaxed) {
+            return;
+        }
+        let now = Instant::now();
+        self.losses
+            .retain(|t| now.duration_since(*t) < Duration::from_secs(10));
+        self.losses.push(now);
+        if self.losses.len() > 3 {
+            drop(self.stream.take());
+            self.shared.playing.store(false, Ordering::Relaxed);
+            return self.send(Event::Output(
+                "no sound: the output keeps failing - choose one in the Mixer tab".into(),
+            ));
+        }
+        let device = self.device.clone();
+        self.reopen(device);
     }
 
     /// Take back a queued track already decoded after the current one (a
@@ -1641,38 +1734,8 @@ impl Player {
                 }
             }
             Command::Output(device) => {
-                let playing = self.shared.playing.load(Ordering::Relaxed);
-                self.cancel_advance();
-                let at = self.shared.position();
-                drop(self.stream.take()); // (the old device lets go first)
-                let before = self.out_rate;
-                self.connect(device.as_deref());
-                if self.out_rate != before {
-                    // another rate: the equalizer anew, the sound decoded
-                    // ahead dropped, the track resampled from where it was
-                    self.eq = Equalizer::new(self.out_rate);
-                    self.eq.set_gains(self.gains.0);
-                    self.eq.enabled = self.gains.1;
-                    match self.current.as_mut() {
-                        Some(Source::File(d)) => {
-                            d.set_out_rate(self.out_rate);
-                            let landed = d.seek(at).unwrap_or(0);
-                            self.shared.restart_at(landed);
-                        }
-                        Some(Source::Stream(s)) => {
-                            s.rate.store(self.out_rate, Ordering::Relaxed);
-                            while s.pcm.try_recv().is_ok() {}
-                            s.pending.clear();
-                            s.pending_frames = 0;
-                            s.primed = false;
-                            self.shared.restart_at(0);
-                        }
-                        None => {}
-                    }
-                }
-                self.shared
-                    .playing
-                    .store(playing && self.current.is_some(), Ordering::Relaxed);
+                self.losses.clear();
+                self.reopen(device);
             }
         }
         true
@@ -1863,6 +1926,8 @@ fn run(
         loudness: Loudness::default(),
         current: None,
         queued: None,
+        device: None,
+        losses: Vec::new(),
         ending: None,
         chunk: Vec::with_capacity(16_384),
     };
@@ -1894,6 +1959,7 @@ fn run(
         {
             return;
         }
+        player.recover();
         player.check_boundary();
         busy = player.tick();
     }
