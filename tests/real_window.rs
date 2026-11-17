@@ -153,9 +153,9 @@ fn run(
     std::thread::sleep(Duration::from_secs(4));
     let secs = t0.elapsed().as_secs_f64();
     let (f1, c1) = (frames(&stats), cpu_seconds(pid));
-    // the track (13 s) has ended: 3 s for the picture to fall to rest, 3 s
-    // counted
-    std::thread::sleep(Duration::from_secs(5));
+    // the track (13 s, begun a second or two after the start in a debug
+    // build) has ended: 4 s for the picture to fall to rest, 3 s counted
+    std::thread::sleep(Duration::from_secs(7));
     let (c2, t2) = (cpu_seconds(pid), Instant::now());
     std::thread::sleep(Duration::from_secs(3));
     let idle = (cpu_seconds(pid) - c2) / t2.elapsed().as_secs_f64();

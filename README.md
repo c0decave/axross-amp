@@ -27,12 +27,21 @@ picture is made by `AMP_DEMO_TRACK=… cargo test --test ui -- --ignored`.</sub>
   for bit where it holds nothing back), holding the peaks at -0.3 dBTP wherever the
   sound may go over full scale: a track resampled to the output's rate (its peaks
   between samples become samples), two tracks summed in a crossfade, the equalizer
-  raising a band. Both find the peaks by BS.1770's 4x filter and aim 0.35 dB lower, as
-  that filter reads broadband sound low (the tests measure at 8x). An optional
-  **crossfade** (1 to 12 s, off by default; equal power) fades a track into the next -
-  never inside an album, which stays gapless (an album by its tags, or untagged files
-  of one folder in order: a live album's rips), each track at its own ReplayGain; the
-  meters count the new track from the fade's middle. Optionally a track chosen while
+  raising a band. The output's finds the peaks between samples 8x oversampled (a
+  64-tap windowed sinc; it reads clipped, bright masters right where BS.1770's 4x
+  filter reads them up to 0.8 dB low), aims 0.5 dB under its ceiling, holds from
+  0.3 s before a crossfade, and where it holds nothing it neither looks nor scans:
+  its cost is a copy. An optional **crossfade** (1 to 12 s, off by default) fades a
+  track into the next - its law following how alike the two are (equal power for
+  unrelated tracks, equal amplitude for alike ones: the level stays) - never inside
+  an album, which stays gapless: tagged, the album (and album artist) decides;
+  untagged, two files of one folder numbered one after the other ("01 ...", "02
+  ..." or track numbers) are an album's; a flat folder of unrelated files fades. Each
+  track keeps its own ReplayGain; the meters count the new track from the fade's
+  middle. Masters that themselves go 3-4 dB over full scale between their samples
+  are held at the ceiling in a fade at the cost of ~3 dB of level there (a gain
+  limiter cannot do otherwise without clipping; outside the fade they play bit for
+  bit). Optionally a track chosen while
   another plays fades in over it for a second. The output callback takes no lock and
   allocates nothing (a lock-free ring;
   a test counts its allocations through a real device); files are read and decoded
@@ -54,12 +63,15 @@ picture is made by `AMP_DEMO_TRACK=… cargo test --test ui -- --ignored`.</sub>
   as a short playlist leaves room for - and below it the playlist (two lines a track,
   the playing one with its cover and bars that move with the sound) or the equalizer
   (a dB scale, each band filled from its 0 dB line). The card's cover is 120 to 200
-  px as the window allows, and the cover is kept up to 1024 px for it and for the
-  "Cover" face, which makes the cover the picture, glowing with the bass. The
-  pictures' colours come from the cover too, when it has some (or a scheme of
-  axross's, below): not its colours mixed (that made browns and olive greys) but a
-  ramp designed round its main hue in OKLCH - lightness rising evenly, a floor of
-  chroma - and the pictures are dithered (no bands in slow gradients). Nothing to play: a drop zone with
+  px as the window allows; the cover (kept up to 1024 px) is made the size it is
+  shown at, in pixels, on a thread of its own by a Lanczos filter and cropped to a
+  square (egui's renderer makes no mipmaps: made smaller by the GPU it aliased).
+  The "Cover" face makes the cover the picture, glowing with the bass (without a
+  cover, a record in the scheme's colours). The pictures' colours come from the
+  cover too, when it has some (or a scheme of axross's, below): not its colours
+  mixed (that made browns and olive greys) but a ramp designed in OKLCH round its
+  main hue - and its second, where it has one - lightness rising evenly, a floor of
+  chroma; the pictures are dithered (no bands in slow gradients). Nothing to play: a drop zone with
   Open files, Open folder, Add a URL and the keys. Paused, the picture stands still;
   changing faces fades one into the next.
 - **Visualizations**, 49 of them in three groups:
@@ -105,7 +117,9 @@ picture is made by `AMP_DEMO_TRACK=… cargo test --test ui -- --ignored`.</sub>
   pictures move alike at any frame rate. In axross's colour schemes (Classic, Fire,
   Ice, Neon, Mono, Follow the theme, Custom - edited here), with its options (bars,
   smoothing, peak fall, frame rate). A click shows the next face (Shift+V the one
-  before), a double-click makes it large (its title kept above it), F11 full screen, a
+  before), a double-click makes it large (its title kept above it, with "Show the
+  playlist" - the list under the picture - and "Normal size"; Escape too), F11 full
+  screen, a
   right click its menu with every face at a glance; "Off" draws nothing.
 - **Playlist**: shuffle (Previous goes back the way it came), repeat (all / one), a
   filter (Ctrl+F), sorting (title, artist, album with its discs and track numbers,
@@ -268,7 +282,10 @@ changes it. HLS radio (`.m3u8` segment lists) is not played. On a software rende
 the whole window is drawn by the CPU (llvmpipe: 0.06 to 0.25 s of a core a frame,
 more as the window grows): the frame rate is lowered to stay under a core, so a
 large window on a software renderer moves at a few frames a second
-(`tests/real_window.rs` measures it); at rest it costs about nothing.
+(`tests/real_window.rs` measures it); at rest it costs about nothing. There was no
+GPU of its own to measure on here: the GPU's cost of the faces
+(`--ignored` in `tests/faces.rs`) has only been measured on Mesa's lavapipe and
+llvmpipe, by the clock.
 The beat is found from the onsets; on syncopated music the tempo may read half or
 double. The notes below about C2 are not told apart from their neighbours.
 
