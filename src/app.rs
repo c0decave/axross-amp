@@ -1172,6 +1172,9 @@ impl App {
             .open(&mut open)
             .collapsible(false)
             .default_width(420.0)
+            // (over the window's middle, below its tabs)
+            .pivot(egui::Align2::CENTER_TOP)
+            .default_pos(ctx.content_rect().center_top() + vec2(0.0, 90.0))
             .show(ctx, |ui| {
                 let mut rows: Vec<(String, String)> =
                     vec![("Location".into(), details.path.clone())];
@@ -1202,17 +1205,7 @@ impl App {
                         put("Station", i.station.clone());
                         put("Station's genre", i.station_genre.clone());
                         put("Length", i.duration.map(clock).unwrap_or_default());
-                        put(
-                            "Format",
-                            format!(
-                                "{}, {} Hz, {} channel{}{}",
-                                i.codec,
-                                i.rate,
-                                i.channels,
-                                if i.channels == 1 { "" } else { "s" },
-                                i.bits.map(|b| format!(", {b} bit")).unwrap_or_default()
-                            ),
-                        );
+                        put("Format", format_line(&i.codec, i.rate, i.channels, i.bits));
                         let gain = |g: Option<f32>, p: Option<f32>| match (g, p) {
                             (Some(g), Some(p)) => format!("{g:+.2} dB, peak {p:.3}"),
                             (Some(g), None) => format!("{g:+.2} dB"),
@@ -3818,6 +3811,17 @@ pub fn accent_of(art: &crate::engine::Art) -> Option<Color32> {
     Some(c)
 }
 
+/// A track's format in words: its codec, rate, channels and bits (unless
+/// the codec's name says them already: "PCM 16-bit").
+fn format_line(codec: &str, rate: u32, channels: usize, bits: Option<u32>) -> String {
+    let bits = bits
+        .filter(|b| !codec.contains(&format!("{b}-bit")) && !codec.contains(&format!("{b} bit")))
+        .map(|b| format!(", {b} bit"))
+        .unwrap_or_default();
+    let s = if channels == 1 { "" } else { "s" };
+    format!("{codec}, {rate} Hz, {channels} channel{s}{bits}")
+}
+
 /// White or near-black, whichever reads better on `fill`.
 fn ink_on(fill: Color32) -> Color32 {
     let dark = Color32::from_rgb(0x0d, 0x11, 0x17);
@@ -3845,6 +3849,22 @@ fn faces_list(ui: &mut Ui, mode: &mut &'static str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_format_says_the_bits_once() {
+        assert_eq!(
+            format_line("PCM 16-bit", 48_000, 2, Some(16)),
+            "PCM 16-bit, 48000 Hz, 2 channels"
+        );
+        assert_eq!(
+            format_line("FLAC", 44_100, 1, Some(24)),
+            "FLAC, 44100 Hz, 1 channel, 24 bit"
+        );
+        assert_eq!(
+            format_line("MP3", 44_100, 2, None),
+            "MP3, 44100 Hz, 2 channels"
+        );
+    }
 
     #[test]
     fn the_accent_comes_from_the_cover_and_reads_on_the_window() {

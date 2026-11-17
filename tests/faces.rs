@@ -60,6 +60,22 @@ fn stats(
     }
 }
 
+/// Pixels of a face's picture in the frame's 4 px margin (and its corners)
+/// that are not as the empty frame has them.
+fn spilled(image: &image::RgbaImage, empty: &image::RgbaImage) -> usize {
+    let (w, h) = (image.width(), image.height());
+    let mut n = 0;
+    for y in 0..h {
+        for x in 0..w {
+            let margin = x < 3 || y < 3 || x >= w - 3 || y >= h - 3;
+            if margin && far(image.get_pixel(x, y), empty.get_pixel(x, y)) {
+                n += 1;
+            }
+        }
+    }
+    n
+}
+
 /// The track's waveform as the player reads it (min, max, rms a column).
 fn overview_of(sound: &[f32]) -> Overview {
     let frames = sound.len() / 2;
@@ -91,6 +107,12 @@ fn every_face_draws_moves_and_is_kept_as_a_picture() {
     };
     let mut report = Vec::new();
     let mut failures = Vec::new();
+    // the frame alone (no face): what lies round and under its corners
+    let empty = {
+        let mut h = faces::harness("off", vec2(620.0, 300.0), true, 1.0);
+        faces::frame(&mut h);
+        h.render().expect("renders")
+    };
     for face in FACES.iter().filter(|f| f.group != Group::Off) {
         let mut h = faces::harness(face.key, vec2(620.0, 300.0), true, 3.0);
         if face.key == "overview" {
@@ -129,6 +151,12 @@ fn every_face_draws_moves_and_is_kept_as_a_picture() {
         // something of its own, in more than two colours, moving with the sound
         if !(0.001..=1.0).contains(&st.coverage) || st.colours < 3 || st.motion < 0.0005 {
             failures.push(report.last().unwrap().clone());
+        }
+        // ... and nothing outside the frame's inner edge: not over its
+        // rounded corners, not in the margin round it
+        let outside = spilled(&second, &empty);
+        if outside > 0 {
+            failures.push(format!("{}: {outside} pixels outside its frame", face.key));
         }
     }
     println!("{}", report.join("\n"));

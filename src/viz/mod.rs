@@ -913,11 +913,12 @@ pub fn fading(state: &VizState) -> Option<&'static str> {
 
 fn one(f: &Frame<'_>, key: &'static str, state: &mut VizState, opacity: f32, second: bool) {
     let Some(face) = find(key) else { return };
-    // (a little room within the rounded corners; nothing drawn outside)
+    // (a little room within the rounded corners; nothing drawn outside it,
+    // so nothing over the corners either)
     let inner = f.rect.shrink(4.0);
     let mut clipped = f
         .painter
-        .with_clip_rect(f.rect.intersect(f.painter.clip_rect()));
+        .with_clip_rect(inner.intersect(f.painter.clip_rect()));
     clipped.multiply_opacity(opacity);
     let frame = Frame {
         rect: inner,
