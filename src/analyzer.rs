@@ -151,16 +151,27 @@ impl Analyzer {
         let bin_hz = rate / FFT_SIZE as f32;
         let high = HIGH_HZ.min(rate * 0.48);
         let scale = 2.0 / (FFT_SIZE as f32 * 0.5); // (a full-scale sine reads about 0 dB through the Hann window)
+        let top = FFT_SIZE / 2 - 1;
         (0..n)
             .map(|b| {
                 let lo = LOW_HZ * (high / LOW_HZ).powf(b as f32 / n as f32);
                 let hi = LOW_HZ * (high / LOW_HZ).powf((b + 1) as f32 / n as f32);
-                let first = ((lo / bin_hz) as usize).max(1);
-                let last = ((hi / bin_hz) as usize).max(first).min(FFT_SIZE / 2 - 1);
-                let mag = (first..=last)
-                    .map(|k| self.spectrum[k].norm())
-                    .fold(0.0f32, f32::max)
-                    * scale;
+                // the bins whose centre lies in the band; a band narrower than
+                // a bin (the lowest ones) reads the spectrum at its centre,
+                // between two bins - else neighbours showed the same bin
+                let first = (lo / bin_hz).ceil() as usize;
+                let last = ((hi / bin_hz).ceil() as usize).saturating_sub(1).min(top);
+                let mag = if first <= last && first >= 1 {
+                    (first..=last)
+                        .map(|k| self.spectrum[k].norm())
+                        .fold(0.0f32, f32::max)
+                } else {
+                    let at = ((lo * hi).sqrt() / bin_hz).clamp(1.0, top as f32);
+                    let k = at.floor() as usize;
+                    let t = at - k as f32;
+                    let next = (k + 1).min(top);
+                    self.spectrum[k].norm() * (1.0 - t) + self.spectrum[next].norm() * t
+                } * scale;
                 let db = 20.0 * mag.max(1e-9).log10();
                 ((db - FLOOR_DB) / -FLOOR_DB).clamp(0.0, 1.0)
             })
@@ -205,6 +216,30 @@ mod tests {
         }
         assert!(a.bars.iter().all(|b| *b < 0.01));
         assert!(a.peaks.iter().all(|p| *p < 0.2));
+    }
+
+    #[test]
+    fn no_two_bars_read_the_same_bin() {
+        // noise: every bar its own value (the lowest ones shared FFT bins)
+        let mut seed = 3u32;
+        let tap: Vec<f32> = (0..8192)
+            .map(|_| {
+                seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                (seed >> 8) as f32 / (1u32 << 24) as f32 - 0.5
+            })
+            .collect();
+        for bars in [32, 64, 128] {
+            let mut a = Analyzer::new();
+            let options = VisualOptions {
+                bars,
+                smoothing: 0,
+                ..Default::default()
+            };
+            a.update(&tap, 48_000, &options, 1.0 / 30.0, true);
+            for pair in a.bars.windows(2) {
+                assert_ne!(pair[0], pair[1], "{bars} bars: {:?}", &a.bars[..12]);
+            }
+        }
     }
 
     #[test]

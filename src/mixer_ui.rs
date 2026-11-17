@@ -2,7 +2,7 @@
 //! sound server (crate::mixer) - outputs, inputs, the applications playing
 //! and recording, the cards' profiles.
 
-use crate::mixer::{Action, Device, Kind, Mixer, Status, Stream};
+use crate::mixer::{Action, Device, Kind, MAX_PERCENT, Mixer, Status, Stream};
 use egui::{Color32, ComboBox, RichText, Ui};
 
 const MUTED: Color32 = Color32::from_rgb(0x8b, 0x94, 0x9e);
@@ -32,8 +32,15 @@ fn icon(bus: &str, form: &str, kind: Kind) -> &'static str {
     }
 }
 
-/// A volume slider 0-150 % with mute; Some(Action) for what was changed.
-fn volume_row(ui: &mut Ui, label: &str, percent: f64, muted: bool) -> (Option<f64>, Option<bool>) {
+/// A volume slider (0 to `max` %) with mute: the volume while it is dragged
+/// (the mixer sets the newest), the mute when it is clicked.
+fn volume_row(
+    ui: &mut Ui,
+    label: &str,
+    percent: f64,
+    muted: bool,
+    max: f64,
+) -> (Option<f64>, Option<bool>) {
     let mut value = percent;
     let mut new_mute = None;
     let mut new_volume = None;
@@ -49,13 +56,17 @@ fn volume_row(ui: &mut Ui, label: &str, percent: f64, muted: bool) -> (Option<f6
         ui.spacing_mut().slider_width = (ui.available_width() - 60.0).max(80.0);
         let response = ui
             .add(
-                egui::Slider::new(&mut value, 0.0..=150.0)
+                egui::Slider::new(&mut value, 0.0..=max)
                     .show_value(false)
                     .trailing_fill(true),
             )
             .accessible_name(format!("Volume of {label}"))
-            .on_hover_text(format!("{value:.0} % (above 100 %: amplified)"));
-        if response.drag_stopped() || (response.changed() && !response.dragged()) {
+            .on_hover_text(if max > 100.0 {
+                format!("{value:.0} % (above 100 %: amplified)")
+            } else {
+                format!("{value:.0} %")
+            });
+        if response.changed() || response.drag_stopped() {
             new_volume = Some(value);
         }
         ui.label(
@@ -111,7 +122,8 @@ fn device_rows(ui: &mut Ui, mixer: &Mixer, devices: &[Device], title: &str) {
                     },
                     d.label()
                 );
-                let (volume, mute) = volume_row(ui, &which, d.volume_percent(), d.muted);
+                let (volume, mute) =
+                    volume_row(ui, &which, d.volume_percent(), d.muted, MAX_PERCENT);
                 if let Some(percent) = volume {
                     mixer.act(Action::DeviceVolume {
                         kind: d.kind,
@@ -188,7 +200,8 @@ fn stream_rows(ui: &mut Ui, mixer: &Mixer, streams: &[Stream], devices: &[Device
                     }
                 });
                 if !st.channels.is_empty() {
-                    let (volume, mute) = volume_row(ui, &st.label(), st.volume_percent(), st.muted);
+                    let (volume, mute) =
+                        volume_row(ui, &st.label(), st.volume_percent(), st.muted, MAX_PERCENT);
                     if let Some(percent) = volume {
                         mixer.act(Action::StreamVolume {
                             kind: st.kind,
@@ -296,7 +309,8 @@ pub fn show(
             if rescan {
                 page.devices = None;
             }
-            let (vol, mute) = volume_row(ui, "this player", volume as f64, muted);
+            // (the player's own volume goes to 100 %: above, the system's)
+            let (vol, mute) = volume_row(ui, "this player", volume as f64, muted, 100.0);
             if let Some(v) = vol {
                 changes.push(PlayerChange::Volume(v.min(100.0) as u32));
             }

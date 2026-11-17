@@ -813,13 +813,29 @@ pub struct MixerView {
 enum Job {
     Refresh,
     Act(Action),
+    /// The newest volume asked for this device or stream (in `Volumes`).
+    Volume(String),
     Quit,
+}
+
+/// Volumes asked for and not yet set, by what they are for: a slider
+/// dragged asks many times a second, pactl sets only the newest.
+type Volumes = Arc<Mutex<std::collections::HashMap<String, Action>>>;
+
+/// What a volume action is for ("sink:name", "sink-input#7"); None for others.
+fn volume_target(action: &Action) -> Option<String> {
+    match action {
+        Action::DeviceVolume { kind, name, .. } => Some(format!("{}:{name}", kind.key())),
+        Action::StreamVolume { kind, index, .. } => Some(format!("{}#{index}", kind.key())),
+        _ => None,
+    }
 }
 
 /// The mixer: a worker thread runs pactl, a second follows `pactl subscribe`.
 pub struct Mixer {
     view: Arc<Mutex<MixerView>>,
     jobs: crossbeam_channel::Sender<Job>,
+    volumes: Volumes,
 }
 
 impl Mixer {
@@ -835,12 +851,18 @@ impl Mixer {
         let worker_view = view.clone();
         let worker_wake = wake.clone();
         let subscribe_jobs = jobs.clone();
+        let volumes: Volumes = Arc::default();
+        let worker_volumes = volumes.clone();
         thread::Builder::new()
             .name("amp-mixer".into())
-            .spawn(move || worker(rx, worker_view, worker_wake, subscribe_jobs))
+            .spawn(move || worker(rx, worker_view, worker_wake, subscribe_jobs, worker_volumes))
             .expect("the mixer thread starts");
         let _ = jobs.send(Job::Refresh);
-        Mixer { view, jobs }
+        Mixer {
+            view,
+            jobs,
+            volumes,
+        }
     }
 
     pub fn view(&self) -> MixerView {
@@ -850,7 +872,20 @@ impl Mixer {
             .unwrap_or_else(|p| p.into_inner().clone())
     }
 
+    /// Do `action` (on the worker; a volume asked again before the last one
+    /// was set replaces it).
     pub fn act(&self, action: Action) {
+        if let Some(target) = volume_target(&action) {
+            let waiting = self
+                .volumes
+                .lock()
+                .map(|mut v| v.insert(target.clone(), action).is_some())
+                .unwrap_or(false);
+            if !waiting {
+                let _ = self.jobs.send(Job::Volume(target));
+            }
+            return;
+        }
         let _ = self.jobs.send(Job::Act(action));
     }
 
@@ -870,7 +905,9 @@ fn worker(
     view: Arc<Mutex<MixerView>>,
     wake: Arc<dyn Fn() + Send + Sync>,
     jobs: crossbeam_channel::Sender<Job>,
+    volumes: Volumes,
 ) {
+    let newest = |target: &str| volumes.lock().ok().and_then(|mut v| v.remove(target));
     let set = |f: &dyn Fn(&mut MixerView)| {
         if let Ok(mut v) = view.lock() {
             f(&mut v);
@@ -903,11 +940,18 @@ fn worker(
             Job::Refresh => {
                 // a burst of refreshes is one
                 while let Ok(next) = rx.try_recv() {
-                    if let Job::Act(a) = next {
-                        act(&a, &set);
-                    } else if let Job::Quit = next {
-                        subscriber.stop();
-                        return;
+                    match next {
+                        Job::Act(a) => act(&a, &set),
+                        Job::Volume(target) => {
+                            if let Some(a) = newest(&target) {
+                                act(&a, &set);
+                            }
+                        }
+                        Job::Quit => {
+                            subscriber.stop();
+                            return;
+                        }
+                        Job::Refresh => {}
                     }
                 }
                 let result = refresh();
@@ -923,6 +967,12 @@ fn worker(
             Job::Act(action) => {
                 act(&action, &set);
                 let _ = jobs.send(Job::Refresh);
+            }
+            Job::Volume(target) => {
+                if let Some(action) = newest(&target) {
+                    act(&action, &set);
+                    let _ = jobs.send(Job::Refresh);
+                }
             }
         }
     }

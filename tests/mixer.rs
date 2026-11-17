@@ -135,6 +135,33 @@ fn lists_commands_live_updates_and_failures_against_the_fake_pactl() {
     });
     let volume = view.snapshot.sinks.iter().find(|d| d.index == 56).unwrap();
     assert_eq!(volume.channels[1].percent, 50.0, "the balance is kept");
+
+    // a slider dragged: thirty volumes a moment, pactl sets the newest few
+    let sets = |log: &Path| {
+        calls(log)
+            .iter()
+            .filter(|c| c.get(1).map(String::as_str) == Some("set-sink-volume"))
+            .count()
+    };
+    let set_before = sets(&log);
+    let before = mixer.view().refreshes;
+    for step in 0..30 {
+        mixer.act(Action::DeviceVolume {
+            kind: Kind::Sink,
+            name: builtin.name.clone(),
+            channels: volume.channels.clone(),
+            percent: 70.0 - step as f64,
+        });
+    }
+    wait_for(&mixer, "the dragged volume", |v| {
+        v.refreshes > before
+            && v.snapshot
+                .sinks
+                .iter()
+                .any(|d| d.index == 56 && d.volume_percent() == 41.0)
+    });
+    let made = sets(&log) - set_before;
+    assert!((1..=5).contains(&made), "{made} pactl calls for 30 volumes");
     for action in [
         Action::DeviceMute {
             kind: Kind::Sink,

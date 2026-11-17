@@ -92,4 +92,39 @@ fn the_mixer_tab_shows_the_sound_server_and_acts() {
         "{calls}"
     );
     assert!(calls.contains("set-default-sink"), "{calls}");
+
+    // a volume slider sets the volume while it is dragged, not only when let go
+    let rect = harness
+        .get_by_label("Volume of output Built-in Audio Analog Stereo")
+        .rect();
+    let at = |x: f32| egui::pos2(rect.left() + rect.width() * x, rect.center().y);
+    harness.hover_at(at(0.2));
+    harness.run_steps(1);
+    harness.event(egui::Event::PointerButton {
+        pos: at(0.2),
+        button: egui::PointerButton::Primary,
+        pressed: true,
+        modifiers: Default::default(),
+    });
+    harness.run_steps(1);
+    let before = calls.matches("set-sink-volume").count();
+    let mut live = false;
+    for step in 0..100 {
+        harness.event(egui::Event::PointerMoved(at(0.2 + 0.004 * step as f32)));
+        harness.run_steps(1);
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        let now = std::fs::read_to_string(&log).unwrap_or_default();
+        if now.matches("set-sink-volume").count() > before {
+            live = true;
+            break;
+        }
+    }
+    assert!(live, "no volume set while the slider was held");
+    harness.event(egui::Event::PointerButton {
+        pos: at(0.6),
+        button: egui::PointerButton::Primary,
+        pressed: false,
+        modifiers: Default::default(),
+    });
+    harness.run_steps(1);
 }
