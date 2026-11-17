@@ -102,6 +102,91 @@ pub struct App {
     /// The mouse wheel's movement not yet a notch; a row to scroll to.
     wheel: f32,
     scroll_to: Option<usize>,
+    /// Files and folders being added (walked on threads of their own), in
+    /// the order they were given.
+    adding: std::collections::VecDeque<Adding>,
+    /// Reads titles and lengths of the tracks in the background.
+    scanner: Scanner,
+    /// The playlist's filter, and the rows it lets through (for its
+    /// words and the playlist's version).
+    filter: String,
+    focus_filter: bool,
+    visible: Vec<usize>,
+    visible_for: (String, u64),
+    ctx: egui::Context,
+}
+
+/// Files and folders on their way into the playlist.
+struct Adding {
+    rx: crossbeam_channel::Receiver<AddMessage>,
+    then: Then,
+    found: usize,
+}
+
+/// What follows when added files are in.
+#[derive(Clone, Copy, PartialEq)]
+enum Then {
+    Nothing,
+    /// The first of them plays, unless something plays by then.
+    PlayIfIdle,
+    Play,
+}
+
+enum AddMessage {
+    Found(usize),
+    Done(playlist::Collected),
+}
+
+/// What the scanner read of a track: its title ("" none) and length (ms,
+/// 0 unknown), or why it cannot be read.
+type Scanned = Result<(String, u64), String>;
+
+/// A thread that reads tracks' tags and lengths: paths in, (path, title,
+/// length in ms, or why it cannot be read) out.
+struct Scanner {
+    tx: crossbeam_channel::Sender<String>,
+    rx: crossbeam_channel::Receiver<(String, Scanned)>,
+}
+
+impl Scanner {
+    fn start(wake: impl Fn() + Send + 'static) -> Scanner {
+        let (tx, paths) = crossbeam_channel::unbounded::<String>();
+        let (out, rx) = crossbeam_channel::unbounded();
+        let _ = std::thread::Builder::new()
+            .name("amp-scan".into())
+            .spawn(move || {
+                let mut sent = 0usize;
+                while let Ok(path) = paths.recv() {
+                    let result = crate::engine::probe(&path).map(|info| {
+                        let title = match (info.artist.is_empty(), info.title.is_empty()) {
+                            (_, true) => String::new(),
+                            (true, false) => info.title.clone(),
+                            (false, false) => format!("{} – {}", info.artist, info.title),
+                        };
+                        let ms = info.duration.map(|d| (d * 1000.0) as u64).unwrap_or(0);
+                        (title, ms)
+                    });
+                    if out.send((path, result)).is_err() {
+                        return;
+                    }
+                    sent += 1;
+                    // (the window is woken now and then, not for every file)
+                    if sent.is_multiple_of(25) || paths.is_empty() {
+                        wake();
+                    }
+                }
+            });
+        Scanner { tx, rx }
+    }
+
+    /// Read what these tracks lack (local files without a title or length).
+    fn scan(&self, tracks: &[Track]) {
+        for t in tracks {
+            if !playlist::is_stream(&t.path) && (t.title.is_empty() || t.duration_ms == 0) {
+                let _ = self.tx.send(t.path.clone());
+            }
+        }
+    }
 }
 
 /// Where the app keeps its state and what it connects to (tests use a
@@ -232,6 +317,16 @@ impl App {
             gate: KeyGate::default(),
             wheel: 0.0,
             scroll_to: None,
+            adding: Default::default(),
+            scanner: {
+                let ctx = cc.egui_ctx.clone();
+                Scanner::start(move || ctx.request_repaint())
+            },
+            filter: String::new(),
+            focus_filter: false,
+            visible: Vec::new(),
+            visible_for: (String::new(), u64::MAX),
+            ctx: cc.egui_ctx.clone(),
         };
         #[cfg(target_os = "linux")]
         if setup.desktop {
@@ -242,12 +337,9 @@ impl App {
                 move || ctx.request_repaint(),
             ));
         }
+        app.scanner.scan(&app.playlist.tracks);
         if !args.is_empty() {
-            let first = app.playlist.tracks.len();
-            app.add(&args);
-            if app.playlist.tracks.len() > first {
-                app.play_index(first, 0, true);
-            }
+            app.add(&args, Then::Play);
         } else if saved.current >= 0 {
             app.play_index(saved.current as usize, saved.position_ms, false);
         }
@@ -359,15 +451,123 @@ impl App {
 
     // -- the player ------------------------------------------------------------------------
 
-    fn add(&mut self, args: &[String]) {
-        let (tracks, skipped) = playlist::collect(args);
-        let count = self.playlist.add_tracks(tracks);
-        self.status = match (count, skipped.len()) {
-            (0, 0) => String::new(),
+    /// Add files, folders, playlists and URLs (found on a thread of their
+    /// own: a big folder on a network share does not hold the window).
+    fn add(&mut self, args: &[String], then: Then) {
+        let (tx, rx) = crossbeam_channel::unbounded();
+        let args = args.to_vec();
+        let ctx = self.ctx.clone();
+        let spawned = std::thread::Builder::new()
+            .name("amp-add".into())
+            .spawn(move || {
+                let collected = playlist::collect_with(&args, &mut |n| {
+                    let _ = tx.send(AddMessage::Found(n));
+                    ctx.request_repaint();
+                });
+                let _ = tx.send(AddMessage::Done(collected));
+                ctx.request_repaint();
+            });
+        if let Err(e) = spawned {
+            self.status = format!("Cannot add: {e}");
+            return;
+        }
+        self.adding.push_back(Adding { rx, then, found: 0 });
+    }
+
+    /// What the adding threads found: into the playlist, in their order.
+    fn poll_adding(&mut self) {
+        while let Some(job) = self.adding.front_mut() {
+            let mut done = None;
+            loop {
+                match job.rx.try_recv() {
+                    Ok(AddMessage::Found(n)) => job.found = n,
+                    Ok(AddMessage::Done(c)) => {
+                        done = Some(c);
+                        break;
+                    }
+                    Err(crossbeam_channel::TryRecvError::Empty) => break,
+                    Err(crossbeam_channel::TryRecvError::Disconnected) => {
+                        done = Some(playlist::Collected::default());
+                        break;
+                    }
+                }
+            }
+            let Some(collected) = done else {
+                self.status = format!("Adding… {} tracks found", job.found);
+                return;
+            };
+            let then = job.then;
+            self.adding.pop_front();
+            self.take_added(collected, then);
+        }
+    }
+
+    fn take_added(&mut self, collected: playlist::Collected, then: Then) {
+        let first = self.playlist.tracks.len();
+        let offered = collected.tracks.len();
+        let count = self.playlist.add_tracks(collected.tracks);
+        self.scanner.scan(&self.playlist.tracks[first..]);
+        let mut status = match (count, collected.skipped.len()) {
+            (0, 0) if offered == 0 => "Nothing to add.".to_owned(),
             (n, 0) => format!("{n} added"),
             (n, s) => format!("{n} added, {s} skipped (not audio)"),
         };
+        if collected.truncated || count < offered {
+            status.push_str(&format!(
+                "; the playlist holds at most {} tracks - the rest was left out",
+                crate::state::MAX_TRACKS
+            ));
+        }
+        self.status = status;
         self.dirty = true;
+        let play = match then {
+            Then::Nothing => false,
+            Then::PlayIfIdle => !self.playing(),
+            Then::Play => true,
+        };
+        if play && count > 0 {
+            self.play_index(first, 0, true);
+        }
+    }
+
+    /// Titles and lengths the scanner read: into the tracks that lack them.
+    fn poll_scanner(&mut self) {
+        let found: std::collections::HashMap<String, Scanned> =
+            self.scanner.rx.try_iter().collect();
+        if found.is_empty() {
+            return;
+        }
+        for track in &mut self.playlist.tracks {
+            match found.get(&track.path) {
+                Some(Ok((title, ms))) => {
+                    if track.title.is_empty() && !title.is_empty() {
+                        track.title = title.clone();
+                    }
+                    if track.duration_ms == 0 {
+                        track.duration_ms = *ms;
+                    }
+                }
+                Some(Err(why)) => {
+                    self.broken.insert(track.path.clone(), why.clone());
+                }
+                None => {}
+            }
+        }
+        self.playlist.version += 1;
+        self.dirty = true;
+    }
+
+    /// The rows the filter lets through (all without one).
+    fn visible_rows(&mut self) -> &[usize] {
+        let key = (self.filter.clone(), self.playlist.version);
+        if self.visible_for != key {
+            let words = playlist::words(&self.filter);
+            self.visible = (0..self.playlist.tracks.len())
+                .filter(|i| playlist::matches(&self.playlist.tracks[*i], &words))
+                .collect();
+            self.visible_for = key;
+        }
+        &self.visible
     }
 
     fn play_index(&mut self, index: usize, start_ms: u64, play: bool) {
@@ -469,8 +669,12 @@ impl App {
             self.art_url = crate::mpris::write_cover(bytes).unwrap_or_default();
         }
         self.info = info;
-        // (a note about a track skipped on the way stays)
-        if !(self.automatic && self.status.ends_with("skipped.")) {
+        // what was said about opening it is over (a note about a track
+        // skipped on the way, or about what was added, stays)
+        let skipped = self.automatic && self.status.ends_with("skipped.");
+        if !skipped
+            && (self.status.starts_with("Connecting to ") || self.status.starts_with("Cannot play"))
+        {
             self.status.clear();
         }
         self.dirty = true;
@@ -735,6 +939,25 @@ impl App {
     /// / previous, V the next face; in the playlist Ctrl+↑/↓ choose a
     /// track, Alt+↑/↓ move it, Enter plays it, Delete removes it.
     fn keys(&mut self, ui: &Ui) {
+        // Ctrl+F: the playlist's filter (also from another text field)
+        if self.tab == Tab::Player
+            && !matches!(self.dialog.state(), egui_file_dialog::DialogState::Open)
+            && ui.input(|i| i.modifiers.command && i.key_pressed(Key::F))
+        {
+            self.focus_filter = true;
+            if !self.playlist_open {
+                self.playlist_open = true;
+                let id = ui.make_persistent_id("playlist");
+                let mut state = egui::collapsing_header::CollapsingState::load_with_default_open(
+                    ui.ctx(),
+                    id,
+                    true,
+                );
+                state.set_open(true);
+                state.store(ui.ctx());
+            }
+            return;
+        }
         if !self.gate.any {
             return;
         }
@@ -805,24 +1028,27 @@ impl App {
 
     /// The selection one row up or down (shown).
     fn select_step(&mut self, up: bool) {
-        let count = self.playlist.tracks.len();
-        if count == 0 {
+        let rows = self.visible_rows().to_vec();
+        if rows.is_empty() {
             return;
         }
-        let at = self.selected.or(self.playlist.current);
+        let at = self
+            .selected
+            .or(self.playlist.current)
+            .and_then(|i| rows.iter().position(|r| *r == i));
         let next = match (at, up) {
             (None, _) => 0,
-            (Some(i), true) => i.saturating_sub(1),
-            (Some(i), false) => (i + 1).min(count - 1),
+            (Some(r), true) => r.saturating_sub(1),
+            (Some(r), false) => (r + 1).min(rows.len() - 1),
         };
-        self.selected = Some(next);
-        self.scroll_to = Some(next);
+        self.selected = Some(rows[next]);
+        self.scroll_to = Some(rows[next]);
     }
 
     /// The selected track one place up or down in the list.
     fn move_selected(&mut self, up: bool) {
-        let Some(i) = self.selected else {
-            return;
+        let Some(i) = self.selected.filter(|_| self.filter.trim().is_empty()) else {
+            return; // (nothing chosen, or a filtered view: no reordering)
         };
         let to = if up {
             i.checked_sub(1)
@@ -1118,14 +1344,10 @@ impl App {
                 }
                 Request::OpenUri(uri) => {
                     let target = match uri.strip_prefix("file://") {
-                        Some(path) => percent_decode(path),
+                        Some(path) => playlist::percent_decode(path),
                         None => uri,
                     };
-                    let first = self.playlist.tracks.len();
-                    self.add(&[target]);
-                    if self.playlist.tracks.len() > first {
-                        self.play_index(first, 0, true);
-                    }
+                    self.add(&[target], Then::Play);
                 }
                 Request::Raise => {
                     ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
@@ -1528,7 +1750,51 @@ impl App {
         let open = state.is_open();
         state.body(|ui| {
             let row = 24.0;
-            let count = self.playlist.tracks.len();
+            ui.horizontal(|ui| {
+                let edit = egui::TextEdit::singleline(&mut self.filter)
+                    .id_salt("playlist-filter")
+                    .hint_text("🔍 Filter (Ctrl+F)")
+                    .desired_width((ui.available_width() - 90.0).max(120.0));
+                let response = ui.add(edit).accessible_name("Filter the playlist");
+                if std::mem::take(&mut self.focus_filter) {
+                    response.request_focus();
+                }
+                // (the field lets go of the focus on Escape itself)
+                if (response.has_focus() || response.lost_focus())
+                    && ui.input(|i| i.key_pressed(Key::Escape))
+                {
+                    self.filter.clear();
+                    response.surrender_focus();
+                }
+                ui.menu_button("Sort ▾", |ui| {
+                    for (key, name) in playlist::SortKey::ALL {
+                        if ui.button(name).clicked() {
+                            self.playlist.sort(key);
+                            self.selected = self.playlist.current;
+                            self.scroll_to = self.playlist.current;
+                            self.dirty = true;
+                            ui.close();
+                        }
+                    }
+                })
+                .response
+                .on_hover_text("Sort the playlist");
+            });
+            let rows = self.visible_rows().to_vec();
+            let filtered = !self.filter.trim().is_empty();
+            if filtered {
+                self.dragging = None; // (no reordering in a filtered view)
+                ui.label(
+                    RichText::new(format!(
+                        "{} of {} shown",
+                        rows.len(),
+                        self.playlist.tracks.len()
+                    ))
+                    .small()
+                    .color(MUTED),
+                );
+            }
+            let count = rows.len();
             let mut play: Option<usize> = None;
             let mut remove: Option<usize> = None;
             let mut moved: Option<(usize, usize)> = None;
@@ -1537,7 +1803,11 @@ impl App {
                 .id_salt("playlist-rows")
                 .auto_shrink([false, false])
                 .max_height(height);
-            if let Some(target) = self.scroll_to.take() {
+            if let Some(target) = self
+                .scroll_to
+                .take()
+                .and_then(|t| rows.iter().position(|r| *r == t))
+            {
                 // (the row chosen by a key comes into view)
                 let id = ui.make_persistent_id("playlist-rows");
                 let offset = egui::scroll_area::State::load(ui.ctx(), id)
@@ -1555,7 +1825,7 @@ impl App {
                 area = area.vertical_scroll_offset(wanted.max(0.0));
             }
             area.show_rows(ui, row, count, |ui, range| {
-                for i in range {
+                for i in range.map(|r| rows[r]) {
                     let track = &self.playlist.tracks[i];
                     let current = self.playlist.current == Some(i);
                     let title = if track.title.is_empty() {
@@ -1709,11 +1979,13 @@ impl App {
             .resizable(false)
             .show(ctx, |ui| {
                 ui.label("An internet radio or an audio file on a web server (http / https):");
-                let edit = ui.add(
-                    egui::TextEdit::singleline(&mut self.url)
-                        .hint_text("https://…")
-                        .desired_width(360.0),
-                );
+                let edit = ui
+                    .add(
+                        egui::TextEdit::singleline(&mut self.url)
+                            .hint_text("https://…")
+                            .desired_width(360.0),
+                    )
+                    .accessible_name("Stream URL");
                 edit.request_focus();
                 let valid = playlist::is_stream(self.url.trim());
                 if ui
@@ -1748,26 +2020,26 @@ impl App {
                         .iter()
                         .map(|p| p.to_string_lossy().into_owned())
                         .collect();
-                    self.add(&args);
+                    self.add(&args, Then::Nothing);
                     self.picking = Picking::Nothing;
                 }
             }
             Picking::Folder => {
                 if let Some(path) = self.dialog.take_picked() {
-                    self.add(&[path.to_string_lossy().into_owned()]);
+                    self.add(&[path.to_string_lossy().into_owned()], Then::Nothing);
                     self.picking = Picking::Nothing;
                 }
             }
             Picking::SavePlaylist => {
                 if let Some(mut path) = self.dialog.take_picked() {
                     if path.extension().is_none() {
-                        path.set_extension("m3u");
+                        path.set_extension("m3u8"); // (UTF-8, as axross saves it)
                     }
-                    self.status =
-                        match std::fs::write(&path, playlist::to_m3u(&self.playlist.tracks)) {
-                            Ok(()) => format!("Saved {}", path.display()),
-                            Err(e) => format!("Cannot save {}: {e}", path.display()),
-                        };
+                    let text = playlist::to_m3u(&self.playlist.tracks, path.parent());
+                    self.status = match playlist::write_atomically(&path, text.as_bytes()) {
+                        Ok(()) => format!("Saved {}", path.display()),
+                        Err(e) => format!("Cannot save the playlist: {e}"),
+                    };
                     self.picking = Picking::Nothing;
                 }
             }
@@ -1780,6 +2052,8 @@ impl eframe::App for App {
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         self.handle_events(&ctx);
+        self.poll_adding();
+        self.poll_scanner();
         #[cfg(target_os = "linux")]
         self.desktop(&ctx);
         self.sync_queue();
@@ -1796,11 +2070,7 @@ impl eframe::App for App {
                 .collect()
         });
         if !dropped.is_empty() {
-            let first = self.playlist.tracks.len();
-            self.add(&dropped);
-            if !self.playing() && self.playlist.tracks.len() > first {
-                self.play_index(first, 0, true);
-            }
+            self.add(&dropped, Then::PlayIfIdle);
         }
         egui::Panel::top("top")
             .frame(
@@ -1951,28 +2221,6 @@ fn file_url(path: &str) -> String {
     out
 }
 
-/// %XX sequences back to their bytes (a file:// URL's path).
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-fn percent_decode(text: &str) -> String {
-    let bytes = text.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'%'
-            && let Some(v) = text
-                .get(i + 1..i + 3)
-                .and_then(|h| u8::from_str_radix(h, 16).ok())
-        {
-            out.push(v);
-            i += 3;
-            continue;
-        }
-        out.push(bytes[i]);
-        i += 1;
-    }
-    String::from_utf8_lossy(&out).into_owned()
-}
-
 /// The host of an http(s) URL (for "Connecting to …").
 fn host_of(url: &str) -> String {
     let rest = url.split_once("://").map(|(_, r)| r).unwrap_or(url);
@@ -2045,7 +2293,7 @@ mod tests {
             url,
             "file:///m/Bob%20%26%20Alice/01%20%E2%80%93%20%C3%87a%20va%3F.flac"
         );
-        assert_eq!(percent_decode(&url["file://".len()..]), path);
+        assert_eq!(playlist::percent_decode(&url["file://".len()..]), path);
     }
 
     #[test]

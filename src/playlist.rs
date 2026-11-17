@@ -96,6 +96,8 @@ pub struct Playlist {
     /// Where the current track was when it was removed (it plays on; the
     /// one after it follows).
     resume_at: Option<usize>,
+    /// Counts the changes of `tracks` (a view of them knows when to look again).
+    pub version: u64,
 }
 
 /// How many tracks Previous can go back through.
@@ -113,6 +115,7 @@ impl Default for Playlist {
             history: Vec::new(),
             going_back: None,
             resume_at: None,
+            version: 0,
         }
     }
 }
@@ -169,6 +172,7 @@ impl Playlist {
     /// Every index kept (current, history, the place of a removed track)
     /// through `map`: None drops it.
     fn remap(&mut self, map: impl Fn(usize) -> Option<usize>) {
+        self.version += 1;
         self.current = self.current.and_then(&map);
         self.history = self.history.iter().filter_map(|i| map(*i)).collect();
         self.history.dedup();
@@ -187,6 +191,7 @@ impl Playlist {
         let added = tracks.len().min(room);
         self.tracks.extend(tracks.into_iter().take(room));
         self.order = None;
+        self.version += 1;
         added
     }
 
@@ -210,6 +215,7 @@ impl Playlist {
     }
 
     pub fn clear(&mut self) {
+        self.version += 1;
         self.tracks.clear();
         self.current = None;
         self.order = None;
@@ -238,6 +244,52 @@ impl Playlist {
         };
         self.resume_at = None;
         self.remap(|i| Some(moved(i)));
+    }
+
+    /// Sort the list (the current track stays current, the history follows).
+    pub fn sort(&mut self, key: SortKey) {
+        let mut order: Vec<usize> = (0..self.tracks.len()).collect();
+        let title = |t: &Track| {
+            if t.title.is_empty() {
+                default_title(&t.path)
+            } else {
+                t.title.clone()
+            }
+            .to_lowercase()
+        };
+        let name = |t: &Track| {
+            Path::new(&t.path)
+                .file_name()
+                .map(|n| n.to_string_lossy().to_lowercase())
+                .unwrap_or_else(|| t.path.to_lowercase())
+        };
+        let tracks = &self.tracks;
+        match key {
+            SortKey::Title => order.sort_by_cached_key(|i| title(&tracks[*i])),
+            SortKey::FileName => order.sort_by_cached_key(|i| name(&tracks[*i])),
+            SortKey::Path => order.sort_by_cached_key(|i| {
+                let p = Path::new(&tracks[*i].path);
+                let folder = p
+                    .parent()
+                    .map(|d| d.to_string_lossy().to_lowercase())
+                    .unwrap_or_default();
+                (folder, name(&tracks[*i]))
+            }),
+            // (unknown lengths last)
+            SortKey::Duration => order.sort_by_key(|i| {
+                let d = tracks[*i].duration_ms;
+                (d == 0, d)
+            }),
+            SortKey::Reverse => order.reverse(),
+        }
+        let mut place = vec![0; order.len()];
+        for (new, old) in order.iter().enumerate() {
+            place[*old] = new;
+        }
+        let mut sorted: Vec<Track> = order.iter().map(|i| self.tracks[*i].clone()).collect();
+        std::mem::swap(&mut self.tracks, &mut sorted);
+        self.resume_at = None;
+        self.remap(|i| place.get(i).copied());
     }
 
     /// The track after the current one at the end of a track (`ended`) or
@@ -329,14 +381,30 @@ impl Playlist {
     }
 }
 
+/// What [`collect`] found.
+#[derive(Debug, Default)]
+pub struct Collected {
+    pub tracks: Vec<Track>,
+    /// What was not taken, and why where there is a why.
+    pub skipped: Vec<String>,
+    /// There were more than [`MAX_TRACKS`]: the rest was left out.
+    pub truncated: bool,
+}
+
 /// The tracks of `args`: audio files, folders (walked, sorted), playlists
 /// and stream URLs, in their order; with what was skipped.
-pub fn collect(args: &[String]) -> (Vec<Track>, Vec<String>) {
+pub fn collect(args: &[String]) -> Collected {
+    collect_with(args, &mut |_| {})
+}
+
+/// [`collect`], telling `progress` how many tracks it found so far (a
+/// folder on a network share takes its time).
+pub fn collect_with(args: &[String], progress: &mut dyn FnMut(usize)) -> Collected {
     let mut tracks = Vec::new();
     let mut skipped = Vec::new();
     let mut seen = HashSet::new();
     for arg in args {
-        if tracks.len() >= MAX_TRACKS {
+        if tracks.len() > MAX_TRACKS {
             break;
         }
         if is_stream(arg) {
@@ -349,7 +417,7 @@ pub fn collect(args: &[String]) -> (Vec<Track>, Vec<String>) {
         }
         let path = PathBuf::from(arg);
         if path.is_dir() {
-            walk(&path, 0, &mut tracks, &mut seen);
+            walk(&path, 0, &mut tracks, &mut seen, progress);
         } else if PLAYLIST_EXTENSIONS.contains(&extension(&path).as_str()) {
             match read_playlist(&path) {
                 Ok(found) => tracks.extend(found),
@@ -364,9 +432,15 @@ pub fn collect(args: &[String]) -> (Vec<Track>, Vec<String>) {
         } else {
             skipped.push(arg.clone());
         }
+        progress(tracks.len());
     }
+    let truncated = tracks.len() > MAX_TRACKS;
     tracks.truncate(MAX_TRACKS);
-    (tracks, skipped)
+    Collected {
+        tracks,
+        skipped,
+        truncated,
+    }
 }
 
 fn absolute(path: &Path) -> String {
@@ -378,8 +452,15 @@ fn absolute(path: &Path) -> String {
 
 /// Audio files below `dir`, sorted by name; symbolic links to folders are
 /// not followed (a loop), each real folder walked once.
-fn walk(dir: &Path, depth: usize, out: &mut Vec<Track>, seen: &mut HashSet<PathBuf>) {
-    if depth > MAX_DEPTH || out.len() >= MAX_TRACKS {
+fn walk(
+    dir: &Path,
+    depth: usize,
+    out: &mut Vec<Track>,
+    seen: &mut HashSet<PathBuf>,
+    progress: &mut dyn FnMut(usize),
+) {
+    // (one past the limit: whether there was more is known)
+    if depth > MAX_DEPTH || out.len() > MAX_TRACKS {
         return;
     }
     let Ok(real) = fs::canonicalize(dir) else {
@@ -399,15 +480,18 @@ fn walk(dir: &Path, depth: usize, out: &mut Vec<Track>, seen: &mut HashSet<PathB
         };
         let path = entry.path();
         if kind.is_dir() {
-            walk(&path, depth + 1, out, seen);
+            walk(&path, depth + 1, out, seen, progress);
         } else if (kind.is_file() || kind.is_symlink()) && is_audio(&path) && path.is_file() {
             out.push(Track {
                 path: absolute(&path),
                 title: String::new(),
                 duration_ms: 0,
             });
+            if out.len().is_multiple_of(100) {
+                progress(out.len());
+            }
         }
-        if out.len() >= MAX_TRACKS {
+        if out.len() > MAX_TRACKS {
             return;
         }
     }
@@ -424,7 +508,14 @@ pub fn read_playlist(path: &Path) -> Result<Vec<Track>, String> {
         return Err("too big".into());
     }
     let bytes = fs::read(path).map_err(|e| e.to_string())?;
-    let text = String::from_utf8_lossy(&bytes);
+    if bytes.contains(&0) {
+        return Err("not a text file".into());
+    }
+    // UTF-8 (a BOM allowed), else Windows' Latin-1 (axross's fallbacks)
+    let text = match String::from_utf8(bytes) {
+        Ok(text) => text,
+        Err(e) => e.into_bytes().iter().map(|b| *b as char).collect(),
+    };
     let base = path.parent().unwrap_or(Path::new("."));
     let pls = extension(path) == "pls";
     let mut tracks = Vec::new();
@@ -470,10 +561,24 @@ pub fn read_playlist(path: &Path) -> Result<Vec<Track>, String> {
             }
             line.to_owned()
         };
+        let entry = match entry.strip_prefix("file://") {
+            // a file: URL of this computer
+            Some(rest) => match rest.strip_prefix("localhost").unwrap_or(rest) {
+                local if local.starts_with('/') => percent_decode(local),
+                _ => continue,
+            },
+            None => entry,
+        };
+        // a Windows playlist's backslashes (on a system that has none in paths)
+        let entry = if cfg!(not(windows)) && entry.contains('\\') && !entry.contains('/') {
+            entry.replace('\\', "/")
+        } else {
+            entry
+        };
         let resolved = if is_stream(&entry) {
             entry
         } else if entry.contains("://") {
-            continue; // (no other scheme: file://, smb:// ... are axross's own business)
+            continue; // (no other scheme: smb://, sftp:// ... are axross's own business)
         } else {
             let p = Path::new(&entry);
             let full = if p.is_absolute() {
@@ -498,27 +603,123 @@ pub fn read_playlist(path: &Path) -> Result<Vec<Track>, String> {
     Ok(tracks)
 }
 
-/// The playlist as an extended M3U.
-pub fn to_m3u(tracks: &[Track]) -> String {
+/// The playlist as an extended M3U (UTF-8): paths below `base` (the
+/// playlist's folder) relative to it, so the folder can move with it.
+pub fn to_m3u(tracks: &[Track], base: Option<&Path>) -> String {
     let mut out = String::from("#EXTM3U\n");
     for t in tracks {
-        let secs = if t.duration_ms > 0 {
-            (t.duration_ms / 1000) as i64
-        } else {
-            -1
-        };
         let title = if t.title.is_empty() {
             default_title(&t.path)
         } else {
             t.title.clone()
         };
+        let secs = if t.duration_ms > 0 {
+            (t.duration_ms / 1000) as i64
+        } else {
+            -1
+        };
+        let path = base
+            .filter(|_| !is_stream(&t.path))
+            .and_then(|b| Path::new(&t.path).strip_prefix(b).ok())
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_else(|| t.path.clone());
+        let flat = |s: &str| s.replace(['\r', '\n'], " ");
         out.push_str(&format!(
             "#EXTINF:{secs},{}\n{}\n",
-            title.replace('\n', " "),
-            t.path
+            flat(&title),
+            flat(&path)
         ));
     }
     out
+}
+
+/// `bytes` into `path` through a temporary file renamed over it (a crash
+/// leaves the old file whole); an existing file's mode is kept.
+pub fn write_atomically(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let tmp = path.with_file_name(format!(
+        ".{}.tmp-{}",
+        path.file_name()
+            .map(|n| n.to_string_lossy())
+            .unwrap_or_default(),
+        std::process::id()
+    ));
+    let mut file = fs::File::create(&tmp)?;
+    let result = file
+        .write_all(bytes)
+        .and_then(|_| file.sync_all())
+        .and_then(|_| {
+            if let Ok(meta) = fs::metadata(path) {
+                fs::set_permissions(&tmp, meta.permissions())?;
+            }
+            fs::rename(&tmp, path)
+        });
+    if result.is_err() {
+        let _ = fs::remove_file(&tmp);
+    }
+    result
+}
+
+/// %XX sequences back to their bytes (a file: URL's path).
+pub fn percent_decode(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%'
+            && let Some(v) = text
+                .get(i + 1..i + 3)
+                .and_then(|h| u8::from_str_radix(h, 16).ok())
+        {
+            out.push(v);
+            i += 3;
+            continue;
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// How the playlist can be sorted.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SortKey {
+    Title,
+    FileName,
+    /// By folder, then file name: an album's tracks together, in order.
+    Path,
+    Duration,
+    Reverse,
+}
+
+impl SortKey {
+    pub const ALL: [(SortKey, &'static str); 5] = [
+        (SortKey::Title, "By title"),
+        (SortKey::FileName, "By file name"),
+        (SortKey::Path, "By folder"),
+        (SortKey::Duration, "By length"),
+        (SortKey::Reverse, "Reverse the order"),
+    ];
+}
+
+/// Does the track match every word of `query` (in its title or path, case
+/// not counted)?
+pub fn matches(track: &Track, words: &[String]) -> bool {
+    if words.is_empty() {
+        return true;
+    }
+    let title = if track.title.is_empty() {
+        default_title(&track.path)
+    } else {
+        track.title.clone()
+    };
+    let hay = format!("{} {}", title, track.path).to_lowercase();
+    words.iter().all(|w| hay.contains(w.as_str()))
+}
+
+/// A filter's words (lower case).
+pub fn words(query: &str) -> Vec<String> {
+    query.split_whitespace().map(str::to_lowercase).collect()
 }
 
 #[cfg(test)]
@@ -661,6 +862,62 @@ mod tests {
     }
 
     #[test]
+    fn playlists_of_other_systems_read() {
+        let dir = std::env::temp_dir().join(format!("amp-pl2-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("Ça va")).unwrap();
+        // Latin-1 text, a file: URL, Windows' backslashes
+        let mut text = b"#EXTM3U\n#EXTINF:5,Caf\xe9\n".to_vec();
+        text.extend_from_slice(b"Ca va\\x.mp3\n");
+        text.extend_from_slice(
+            format!("file://{}/%C3%87a%20va/y.flac\n", dir.display()).as_bytes(),
+        );
+        text.extend_from_slice(b"file://otherhost/z.mp3\n");
+        fs::write(dir.join("list.m3u"), text).unwrap();
+        let t = read_playlist(&dir.join("list.m3u")).unwrap();
+        assert_eq!(t.len(), 2, "{t:?}");
+        assert_eq!(t[0].title, "Café");
+        assert!(t[0].path.ends_with("/Ca va/x.mp3"), "{}", t[0].path);
+        assert!(t[1].path.ends_with("/Ça va/y.flac"), "{}", t[1].path);
+        fs::write(dir.join("bin.m3u"), b"a.mp3\0").unwrap();
+        assert!(read_playlist(&dir.join("bin.m3u")).is_err());
+    }
+
+    #[test]
+    fn sorting_keeps_the_current_track_and_the_history() {
+        let mut p = Playlist::default();
+        for (name, title, secs) in [
+            ("/z/b.mp3", "Gamma", 30),
+            ("/a/c.mp3", "alpha", 0),
+            ("/a/a.mp3", "Beta", 10),
+        ] {
+            p.add_tracks(vec![Track {
+                path: name.into(),
+                title: title.into(),
+                duration_ms: secs * 1000,
+            }]);
+        }
+        p.play(0);
+        p.play(2);
+        let names = |p: &Playlist| p.tracks.iter().map(|t| t.title.clone()).collect::<Vec<_>>();
+        p.sort(SortKey::Title);
+        assert_eq!(names(&p), ["alpha", "Beta", "Gamma"]);
+        assert_eq!(p.tracks[p.current.unwrap()].title, "Beta");
+        p.sort(SortKey::Path);
+        assert_eq!(names(&p), ["Beta", "alpha", "Gamma"]);
+        p.sort(SortKey::Duration);
+        assert_eq!(names(&p), ["Beta", "Gamma", "alpha"]);
+        p.sort(SortKey::Reverse);
+        assert_eq!(names(&p), ["alpha", "Gamma", "Beta"]);
+        p.shuffle = true;
+        // Previous goes back to Gamma (played before Beta), wherever it is now
+        let back = p.previous().unwrap();
+        assert_eq!(p.tracks[back].title, "Gamma");
+        let words = words("GAM  /z/");
+        assert!(matches(&p.tracks[1], &words) && !matches(&p.tracks[0], &words));
+    }
+
+    #[test]
     fn playlists_resolve_relative_paths_and_streams() {
         let dir = std::env::temp_dir().join(format!("amp-pl-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
@@ -687,10 +944,13 @@ mod tests {
             (pls[0].path.as_str(), pls[0].title.as_str()),
             ("http://r.example/s", "Radio")
         );
-        let (found, skipped) = collect(&[dir.to_string_lossy().into_owned(), "nope.xyz".into()]);
-        assert_eq!(found.len(), 2); // b.flac, sub/a.mp3 (playlists are not walked into)
-        assert_eq!(skipped, vec!["nope.xyz".to_string()]);
-        assert!(to_m3u(&m3u).contains("#EXTINF:123,Song A"));
+        let found = collect(&[dir.to_string_lossy().into_owned(), "nope.xyz".into()]);
+        assert_eq!(found.tracks.len(), 2); // b.flac, sub/a.mp3 (playlists are not walked into)
+        assert_eq!(found.skipped, vec!["nope.xyz".to_string()]);
+        assert!(!found.truncated);
+        let saved = to_m3u(&m3u, Some(&dir));
+        assert!(saved.contains("#EXTINF:123,Song A\nsub/a.mp3\n"), "{saved}");
+        assert!(saved.contains("https://radio.example/live"));
         for name in ["x.opus", "x.webm", "x.OGG"] {
             assert!(is_audio(Path::new(name)), "{name}");
         }

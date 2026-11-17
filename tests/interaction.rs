@@ -200,7 +200,7 @@ fn buttons_keys_equalizer_playlist_url_and_dropped_files() {
     settle(&mut harness, 2);
     harness.get_by_label("Add and play").click_accesskit(); // (disabled until a URL is typed)
     settle(&mut harness, 1);
-    let edit = harness.get_by_role(egui::accesskit::Role::TextInput);
+    let edit = harness.get_by_role_and_label(egui::accesskit::Role::TextInput, "Stream URL");
     edit.type_text("https://radio.example/stream.mp3");
     settle(&mut harness, 2);
     harness.get_by_label("Add and play").click();

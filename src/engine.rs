@@ -1228,6 +1228,12 @@ fn to_stereo(
     downmix(scratch, matrix, stereo);
 }
 
+/// The tags and length of a local file, without playing it (the playlist
+/// learns titles and lengths in the background).
+pub fn probe(path: &str) -> Result<TrackInfo, String> {
+    open(path, 48_000, 0, Loudness::default()).map(|(_, info)| info)
+}
+
 /// Decode all of `path` as the player would (stereo at `rate`): the
 /// frames made and the track's info. For tests and measurements.
 pub fn decode_file(path: &str, rate: u32) -> Result<(usize, TrackInfo), String> {
