@@ -21,6 +21,8 @@ const ACCENT: Color32 = Color32::from_rgb(0x4c, 0x9a, 0xff);
 const MUTED: Color32 = Color32::from_rgb(0x8b, 0x94, 0x9e);
 const PANEL: Color32 = Color32::from_rgb(0x16, 0x1b, 0x22);
 const SAVE_EVERY: Duration = Duration::from_secs(3);
+/// How long a message stays in the status line.
+const STATUS_FOR: Duration = Duration::from_secs(8);
 const POSITION_EVERY: Duration = Duration::from_secs(30);
 /// The equalizer is written this long after its last change (axross's 250 ms).
 const EQ_SETTLE: Duration = Duration::from_millis(250);
@@ -40,6 +42,9 @@ pub struct App {
     playlist: Playlist,
     info: TrackInfo,
     cover: Option<TextureHandle>,
+    /// The accent: from the cover (its strongest colour, readable on the
+    /// window), else the window's blue.
+    accent: Color32,
     analyzer: Analyzer,
     /// Loudness, beat, notes, key: on their own thread, every sample heard.
     meters: crate::meters::Meters,
@@ -53,6 +58,8 @@ pub struct App {
     muted: bool,
     eq: EqSettings,
     eq_open: bool,
+    /// The lower part shows the equalizer (else the playlist).
+    eq_page: bool,
     playlist_open: bool,
     big_visual: bool,
     /// The current track's waveform, read for the overview face: its
@@ -91,6 +98,9 @@ pub struct App {
     seek_drag: Option<f64>,
     output: String,
     status: String,
+    /// The status line as it was last seen and since when (a message goes
+    /// after a while).
+    status_seen: (String, Instant),
     url: String,
     url_open: bool,
     dialog: FileDialog,
@@ -352,6 +362,7 @@ impl App {
             playlist,
             info: TrackInfo::default(),
             cover: None,
+            accent: ACCENT,
             analyzer: Analyzer::new(),
             meters,
             viz_state,
@@ -364,6 +375,7 @@ impl App {
             muted: saved.muted,
             eq: eq_settings,
             eq_open: saved.equalizer_open,
+            eq_page: false,
             playlist_open: saved.playlist_open,
             big_visual: false,
             overview: None,
@@ -388,6 +400,7 @@ impl App {
             seek_drag: None,
             output: String::new(),
             status: String::new(),
+            status_seen: (String::new(), Instant::now()),
             url: String::new(),
             url_open: false,
             dialog: FileDialog::new()
@@ -566,7 +579,7 @@ impl App {
                 ui.horizontal(|ui| {
                     ui.add(
                         egui::Label::new(
-                            RichText::new(format!("⚠ No sound: {why}"))
+                            RichText::new(format!("⚠ No sound – {why}"))
                                 .color(Color32::from_rgb(0xe3, 0xb3, 0x41)),
                         )
                         .wrap(),
@@ -864,6 +877,11 @@ impl App {
             self.playlist.version += 1;
         }
         self.cover = info.art.as_deref().map(|art| cover_texture(ctx, art));
+        let accent = info.art.as_deref().and_then(accent_of).unwrap_or(ACCENT);
+        if accent != self.accent {
+            self.accent = accent;
+            accent_style(ctx, accent);
+        }
         self.art_url.clear();
         #[cfg(target_os = "linux")]
         if self.mpris.is_some() {
@@ -1728,7 +1746,7 @@ impl App {
             ui.label(
                 RichText::new("🎵 axross-amp")
                     .strong()
-                    .color(ACCENT)
+                    .color(self.accent)
                     .size(16.0),
             );
             ui.add_space(8.0);
@@ -1900,39 +1918,50 @@ impl App {
     }
 
     fn now_playing(&mut self, ui: &mut Ui) {
+        // a card tinted with the cover's colour
+        let tint = viz::mix(PANEL, self.accent, 0.14);
         egui::Frame::new()
-            .fill(PANEL)
-            .corner_radius(CornerRadius::same(10))
+            .fill(tint)
+            .corner_radius(CornerRadius::same(12))
             .inner_margin(10.0)
             .show(ui, |ui| {
                 ui.set_min_width(ui.available_width());
                 ui.horizontal(|ui| {
-                    let size = vec2(72.0, 72.0);
+                    let size = vec2(84.0, 84.0);
                     if let Some(texture) = &self.cover {
                         ui.add(
                             egui::Image::new(texture)
                                 .fit_to_exact_size(size)
-                                .corner_radius(CornerRadius::same(6)),
+                                .corner_radius(CornerRadius::same(8)),
                         );
                     } else {
                         let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
                         ui.painter()
-                            .rect_filled(rect, 6.0, Color32::from_rgb(0x22, 0x2a, 0x35));
+                            .rect_filled(rect, 8.0, viz::mix(PANEL, self.accent, 0.3));
                         ui.painter().text(
                             rect.center(),
                             egui::Align2::CENTER_CENTER,
                             "♫",
-                            egui::FontId::proportional(32.0),
-                            MUTED,
+                            egui::FontId::proportional(36.0),
+                            viz::mix(MUTED, Color32::WHITE, 0.4),
                         );
                     }
                     ui.vertical(|ui| {
                         let (title, by) = self.now_playing_text();
                         ui.add(
-                            egui::Label::new(RichText::new(title).size(18.0).strong()).truncate(),
+                            egui::Label::new(RichText::new(title).size(20.0).strong()).truncate(),
                         );
                         if !by.is_empty() {
-                            ui.add(egui::Label::new(RichText::new(by).color(MUTED)).truncate());
+                            ui.add(
+                                egui::Label::new(RichText::new(by).size(14.0).color(self.accent))
+                                    .truncate(),
+                            );
+                        }
+                        if !self.info.album.is_empty() {
+                            ui.add(
+                                egui::Label::new(RichText::new(&self.info.album).color(MUTED))
+                                    .truncate(),
+                            );
                         }
                         if self.info.rate > 0 {
                             ui.label(
@@ -1947,6 +1976,27 @@ impl App {
                     });
                 });
             });
+    }
+
+    /// One line of what plays (the large picture's): its cover and title.
+    fn title_line(&mut self, ui: &mut Ui) {
+        ui.horizontal(|ui| {
+            if let Some(texture) = &self.cover {
+                ui.add(
+                    egui::Image::new(texture)
+                        .fit_to_exact_size(vec2(28.0, 28.0))
+                        .corner_radius(CornerRadius::same(4)),
+                );
+            }
+            let (title, by) = self.now_playing_text();
+            let line = if by.is_empty() {
+                title
+            } else {
+                format!("{title} – {by}")
+            };
+            ui.add(egui::Label::new(RichText::new(line).size(16.0).strong()).truncate());
+        });
+        ui.add_space(4.0);
     }
 
     /// What plays now: (the title, who / where from).
@@ -2135,6 +2185,13 @@ impl App {
             .unwrap_or(0.0)
     }
 
+    /// Paused in a track: the picture holds still (stopped, it falls to rest).
+    fn frozen(&self) -> bool {
+        !self.playing()
+            && self.loaded == Some(self.generation)
+            && self.engine.shared.position() > 0.05
+    }
+
     /// What the meters say (tests; the loudness of what was heard).
     pub fn meter_readings(&self) -> crate::meters::Readings {
         self.meters.read()
@@ -2214,8 +2271,10 @@ impl App {
             .shared
             .device_rate
             .load(std::sync::atomic::Ordering::Relaxed);
-        // (off: no analysis, no frames for it)
-        if self.mode != "off" {
+        // (off: no analysis, no frames for it; paused: the picture stands
+        // as it was, not emptied)
+        let frozen = self.frozen();
+        if self.mode != "off" && !frozen {
             self.analyzer.set_readings(self.meters.read());
             self.analyzer.update(
                 &self.tap,
@@ -2246,7 +2305,7 @@ impl App {
             rect,
             a: &self.analyzer,
             s: &scheme,
-            dt,
+            dt: if frozen { 0.0 } else { dt },
             title,
             overview: overview.as_deref(),
             position: self.engine.shared.position() as f32,
@@ -2382,14 +2441,15 @@ impl App {
                 self.previous();
             }
             let play = if self.playing() { "⏸" } else { "▶" };
-            let button = egui::Button::new(RichText::new(play).size(22.0).color(Color32::WHITE))
-                .fill(ACCENT)
-                .min_size(if narrow {
-                    vec2(48.0, 36.0)
-                } else {
-                    vec2(58.0, 38.0)
-                })
-                .corner_radius(CornerRadius::same(19));
+            let button =
+                egui::Button::new(RichText::new(play).size(22.0).color(ink_on(self.accent)))
+                    .fill(self.accent)
+                    .min_size(if narrow {
+                        vec2(48.0, 36.0)
+                    } else {
+                        vec2(58.0, 38.0)
+                    })
+                    .corner_radius(CornerRadius::same(19));
             if ui
                 .add(button)
                 .accessible_name(if self.playing() { "Pause" } else { "Play" })
@@ -2419,7 +2479,7 @@ impl App {
             if ui
                 .add(
                     egui::Button::new(RichText::new("🔀").size(16.0).color(if shuffle {
-                        ACCENT
+                        self.accent
                     } else {
                         MUTED
                     }))
@@ -2450,7 +2510,7 @@ impl App {
             if ui
                 .add(
                     egui::Button::new(RichText::new(icon).size(16.0).color(if on {
-                        ACCENT
+                        self.accent
                     } else {
                         MUTED
                     }))
@@ -2500,25 +2560,57 @@ impl App {
                     .accessible_name("More")
                     .on_hover_text("Sleep timer, ReplayGain, track details, mixer");
                 if let Some(label) = self.sleep_label() {
-                    ui.label(RichText::new(label).small().color(ACCENT));
+                    ui.label(RichText::new(label).small().color(self.accent));
                 }
             });
         });
     }
 
-    fn equalizer(&mut self, ui: &mut Ui) {
-        let header = egui::collapsing_header::CollapsingState::load_with_default_open(
-            ui.ctx(),
-            ui.make_persistent_id("eq"),
-            self.eq_open,
-        );
-        let open_before = header.is_open();
-        let state = header.show_header(ui, |ui| {
-            ui.label(RichText::new("Equalizer").strong());
+    /// The lower part's switch: the playlist or the equalizer (and what
+    /// the playlist's page offers beside it).
+    fn lower_switch(&mut self, ui: &mut Ui) {
+        let total: u64 = self.playlist.tracks.iter().map(|t| t.duration_ms).sum();
+        ui.horizontal(|ui| {
+            let n = self.playlist.tracks.len();
+            let list = format!("Playlist  {} · {}", n, clock(total as f64 / 1000.0));
+            if ui
+                .selectable_label(self.playlist_open && !self.eq_page, list)
+                .on_hover_text("The playlist")
+                .clicked()
+            {
+                self.eq_page = false;
+                if !self.playlist_open {
+                    self.show_playlist(ui.ctx(), true);
+                }
+            }
+            let eq = if self.eq.enabled {
+                "Equalizer"
+            } else {
+                "Equalizer (off)"
+            };
+            if ui
+                .selectable_label(self.eq_page, eq)
+                .on_hover_text("The ten-band equalizer")
+                .clicked()
+            {
+                self.eq_page = !self.eq_page;
+            }
+            if !self.eq_page && self.playlist_open {
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    self.playlist_actions(ui);
+                });
+            }
+        });
+    }
+
+    /// The equalizer: on or off, a preset, ten bands on a dB scale with
+    /// the 0 dB line across them and each band's value.
+    fn equalizer_page(&mut self, ui: &mut Ui) {
+        ui.horizontal(|ui| {
             let mut enabled = self.eq.enabled;
             if ui
-                .checkbox(&mut enabled, "")
-                .on_hover_text("On / off")
+                .checkbox(&mut enabled, "On")
+                .on_hover_text("The equalizer on or off")
                 .changed()
             {
                 self.eq.enabled = enabled;
@@ -2539,105 +2631,131 @@ impl App {
             {
                 self.set_eq(gains, Some(&preset));
             }
+            if ui
+                .small_button("Flat")
+                .on_hover_text("Every band to 0 dB")
+                .clicked()
+            {
+                self.set_eq([0.0; 10], Some("Flat"));
+            }
         });
-        let open = state.is_open();
-        state.body(|ui| {
-            ui.add_enabled_ui(self.eq.enabled, |ui| {
-                ui.horizontal(|ui| {
-                    let mut gains = self.eq.gains;
-                    let mut changed = false;
-                    let width = ((ui.available_width() - 9.0 * ui.spacing().item_spacing.x) / 10.0)
-                        .max(28.0);
-                    for (i, band) in eq::BANDS.iter().enumerate() {
-                        ui.allocate_ui(vec2(width, 150.0), |ui| {
-                            ui.vertical_centered(|ui| {
-                                ui.spacing_mut().slider_width = 110.0;
-                                changed |= ui
-                                    .add(
-                                        egui::Slider::new(
-                                            &mut gains[i],
-                                            -eq::MAX_GAIN_DB..=eq::MAX_GAIN_DB,
-                                        )
-                                        .vertical()
-                                        .show_value(false)
-                                        .trailing_fill(true),
+        ui.add_space(4.0);
+        let height = (ui.available_height() - 40.0).clamp(90.0, 220.0);
+        ui.add_enabled_ui(self.eq.enabled, |ui| {
+            ui.horizontal_top(|ui| {
+                // the scale: +12 at the top, 0, -12 at the bottom
+                let (scale, _) = ui.allocate_exact_size(vec2(34.0, height), Sense::hover());
+                let mut gains = self.eq.gains;
+                let mut changed = false;
+                let width =
+                    ((ui.available_width() - 9.0 * ui.spacing().item_spacing.x) / 10.0).max(26.0);
+                let mut rails: Option<egui::Rect> = None;
+                for (i, band) in eq::BANDS.iter().enumerate() {
+                    ui.allocate_ui(vec2(width, height + 30.0), |ui| {
+                        ui.vertical_centered(|ui| {
+                            ui.spacing_mut().slider_width = height;
+                            let response = ui
+                                .add(
+                                    egui::Slider::new(
+                                        &mut gains[i],
+                                        -eq::MAX_GAIN_DB..=eq::MAX_GAIN_DB,
                                     )
-                                    .accessible_name(format!("Equalizer {}", band_name(*band)))
-                                    .on_hover_text(format!(
-                                        "{} {:+.1} dB",
-                                        band_name(*band),
-                                        gains[i]
-                                    ))
-                                    .changed();
-                                ui.label(RichText::new(band_name(*band)).small().color(MUTED));
+                                    .vertical()
+                                    .show_value(false)
+                                    .trailing_fill(true),
+                                )
+                                .accessible_name(format!("Equalizer {}", band_name(*band)))
+                                .on_hover_text(format!("{} {:+.1} dB", band_name(*band), gains[i]));
+                            changed |= response.changed();
+                            rails = Some(match rails {
+                                Some(r) => r.union(response.rect),
+                                None => response.rect,
                             });
+                            ui.label(RichText::new(band_name(*band)).small().color(MUTED));
+                            ui.label(
+                                RichText::new(format!("{:+.0}", gains[i]))
+                                    .small()
+                                    .monospace()
+                                    .color(if gains[i].abs() < 0.05 {
+                                        MUTED
+                                    } else {
+                                        Color32::from_rgb(0xc9, 0xd1, 0xd9)
+                                    }),
+                            );
                         });
+                    });
+                }
+                if let Some(rails) = rails {
+                    // (the handle's travel: the rail less half a handle each end)
+                    let inset = ui.spacing().interact_size.y / 2.0;
+                    let top = rails.top() + inset;
+                    let bottom = rails.bottom() - inset;
+                    let y_of = |db: f32| {
+                        top + (eq::MAX_GAIN_DB - db) / (2.0 * eq::MAX_GAIN_DB) * (bottom - top)
+                    };
+                    let painter = ui.painter();
+                    let zero = y_of(0.0);
+                    painter.line_segment(
+                        [
+                            egui::pos2(rails.left() - 4.0, zero),
+                            egui::pos2(rails.right() + 4.0, zero),
+                        ],
+                        Stroke::new(1.0, MUTED.gamma_multiply(0.6)),
+                    );
+                    let step = eq::MAX_GAIN_DB / 2.0;
+                    for k in -2..=2 {
+                        let db = k as f32 * step;
+                        painter.text(
+                            egui::pos2(scale.right() - 4.0, y_of(db)),
+                            egui::Align2::RIGHT_CENTER,
+                            if db == 0.0 {
+                                "0 dB".to_owned()
+                            } else {
+                                format!("{db:+.0}")
+                            },
+                            egui::FontId::proportional(10.5),
+                            MUTED,
+                        );
                     }
-                    if changed {
-                        self.set_eq(gains, None);
-                    }
-                });
+                }
+                if changed {
+                    self.set_eq(gains, None);
+                }
             });
         });
-        if open != open_before || open != self.eq_open {
-            self.eq_open = open;
+    }
+
+    /// Save, Undo, Clear: beside the playlist's switch.
+    fn playlist_actions(&mut self, ui: &mut Ui) {
+        if ui.small_button("Clear").clicked() && !self.playlist.tracks.is_empty() {
+            self.remember_for_undo();
+            let n = self.playlist.tracks.len();
+            self.playlist.clear();
+            self.select(None);
             self.dirty = true;
+            self.status = format!("{n} tracks removed - Ctrl+Z brings them back.");
+        }
+        if !self.undo.is_empty()
+            && ui
+                .small_button("↶ Undo")
+                .on_hover_text("Bring back what was removed (Ctrl+Z)")
+                .clicked()
+        {
+            self.undo();
+        }
+        if ui
+            .small_button("Save…")
+            .on_hover_text("Save as an M3U playlist")
+            .clicked()
+        {
+            self.picking = Picking::SavePlaylist;
+            self.dialog.save_file();
         }
     }
 
     fn playlist_view(&mut self, ui: &mut Ui) {
-        let total: u64 = self.playlist.tracks.iter().map(|t| t.duration_ms).sum();
-        let header = egui::collapsing_header::CollapsingState::load_with_default_open(
-            ui.ctx(),
-            playlist_header_id(),
-            self.playlist_open,
-        );
-        let state = header.show_header(ui, |ui| {
-            ui.label(RichText::new("Playlist").strong());
-            ui.label(
-                RichText::new(format!(
-                    "{} {} · {}",
-                    self.playlist.tracks.len(),
-                    if self.playlist.tracks.len() == 1 {
-                        "track"
-                    } else {
-                        "tracks"
-                    },
-                    clock(total as f64 / 1000.0)
-                ))
-                .color(MUTED)
-                .small(),
-            );
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if ui.small_button("Clear").clicked() && !self.playlist.tracks.is_empty() {
-                    self.remember_for_undo();
-                    let n = self.playlist.tracks.len();
-                    self.playlist.clear();
-                    self.select(None);
-                    self.dirty = true;
-                    self.status = format!("{n} tracks removed - Ctrl+Z brings them back.");
-                }
-                if !self.undo.is_empty()
-                    && ui
-                        .small_button("↶ Undo")
-                        .on_hover_text("Bring back what was removed (Ctrl+Z)")
-                        .clicked()
-                {
-                    self.undo();
-                }
-                if ui
-                    .small_button("Save…")
-                    .on_hover_text("Save as an M3U playlist")
-                    .clicked()
-                {
-                    self.picking = Picking::SavePlaylist;
-                    self.dialog.save_file();
-                }
-            });
-        });
-        let open = state.is_open();
-        state.body(|ui| {
-            let row = 24.0;
+        {
+            let row = 40.0;
             ui.horizontal(|ui| {
                 let edit = egui::TextEdit::singleline(&mut self.filter)
                     .id_salt("playlist-filter")
@@ -2740,7 +2858,7 @@ impl App {
                     });
                     if current || selected || response.hovered() {
                         let fill = if current {
-                            ACCENT.gamma_multiply(0.25)
+                            self.accent.gamma_multiply(0.25)
                         } else if selected {
                             Color32::from_rgb(0x24, 0x2c, 0x38)
                         } else {
@@ -2756,22 +2874,65 @@ impl App {
                     } else {
                         Color32::from_rgb(0xc9, 0xd1, 0xd9)
                     };
-                    let font = egui::FontId::proportional(14.0);
-                    ui.painter().text(
-                        rect.left_center() + vec2(8.0, 0.0),
-                        egui::Align2::LEFT_CENTER,
-                        format!("{:>3}", i + 1),
-                        egui::FontId::monospace(12.0),
-                        MUTED,
+                    let painter = ui.painter();
+                    // the left: the cover and a playing mark for the track
+                    // that plays, else its number
+                    let thumb = egui::Rect::from_min_size(
+                        rect.left_top() + vec2(6.0, 5.0),
+                        vec2(30.0, 30.0),
                     );
+                    if current {
+                        if let Some(texture) = &self.cover {
+                            painter.image(
+                                texture.id(),
+                                thumb,
+                                egui::Rect::from_min_max(
+                                    egui::pos2(0.0, 0.0),
+                                    egui::pos2(1.0, 1.0),
+                                ),
+                                Color32::WHITE,
+                            );
+                        } else {
+                            painter.rect_filled(thumb, 4.0, self.accent.gamma_multiply(0.5));
+                        }
+                        // three bars that move with the sound (still: paused)
+                        let playing = self.playing();
+                        for k in 0..3 {
+                            let level = if playing {
+                                let n = self.analyzer.bars.len().max(1);
+                                let b = self.analyzer.bars[(k * n / 4 + n / 8).min(n - 1)];
+                                0.25 + 0.75 * b
+                            } else {
+                                0.3
+                            };
+                            let x = thumb.left() + 7.0 + k as f32 * 6.0;
+                            let h = 18.0 * level;
+                            painter.rect_filled(
+                                egui::Rect::from_min_max(
+                                    egui::pos2(x, thumb.bottom() - 6.0 - h),
+                                    egui::pos2(x + 4.0, thumb.bottom() - 6.0),
+                                ),
+                                1.0,
+                                ink_on(self.accent),
+                            );
+                        }
+                    } else {
+                        painter.text(
+                            thumb.center(),
+                            egui::Align2::CENTER_CENTER,
+                            format!("{}", i + 1),
+                            egui::FontId::monospace(12.0),
+                            MUTED,
+                        );
+                    }
                     if let Some(n) = self.playlist.up_next_place(i) {
                         // (to play next: its place in that queue)
-                        ui.painter().text(
-                            rect.right_center() - vec2(72.0, 0.0),
+                        painter.text(
+                            rect.right_bottom() + vec2(-8.0, -9.0),
                             egui::Align2::RIGHT_CENTER,
                             format!("next {n}"),
                             egui::FontId::proportional(11.0),
-                            ACCENT,
+                            self.accent,
                         );
                     }
                     let duration = if track.duration_ms > 0 {
@@ -2781,24 +2942,36 @@ impl App {
                     } else {
                         String::new()
                     };
-                    ui.painter().text(
-                        rect.right_center() - vec2(8.0, 0.0),
+                    painter.text(
+                        rect.right_top() + vec2(-8.0, 13.0),
                         egui::Align2::RIGHT_CENTER,
                         duration,
                         egui::FontId::monospace(12.0),
                         MUTED,
                     );
+                    // the title, and under it who and from which album
                     let clip = egui::Rect::from_min_max(
-                        rect.left_top() + vec2(44.0, 0.0),
+                        rect.left_top() + vec2(46.0, 0.0),
                         rect.right_bottom() - vec2(64.0, 0.0),
                     );
-                    ui.painter().with_clip_rect(clip).text(
-                        clip.left_center(),
+                    let clipped = painter.with_clip_rect(clip);
+                    let (line, by) = row_text(track, &title);
+                    clipped.text(
+                        clip.left_top() + vec2(0.0, 13.0),
                         egui::Align2::LEFT_CENTER,
-                        title,
-                        font,
+                        line,
+                        egui::FontId::proportional(14.0),
                         colour,
                     );
+                    if !by.is_empty() {
+                        clipped.text(
+                            clip.left_top() + vec2(0.0, 29.0),
+                            egui::Align2::LEFT_CENTER,
+                            by,
+                            egui::FontId::proportional(11.5),
+                            MUTED,
+                        );
+                    }
                     // the path, and why it could not be played (axross's tooltip)
                     let tip = match broken {
                         Some(why) => format!("{}\nCannot play: {why}", track.path),
@@ -2889,10 +3062,6 @@ impl App {
             {
                 self.play_index(i, 0, true);
             }
-        });
-        if open != self.playlist_open {
-            self.playlist_open = open;
-            self.dirty = true;
         }
     }
 
@@ -3043,13 +3212,30 @@ impl eframe::App for App {
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     let line = if self.notice.is_empty() {
-                        &self.status
+                        self.status.clone()
                     } else {
-                        &self.notice
+                        self.notice.clone()
+                    };
+                    // a message says its piece for a while, then goes
+                    if line != self.status_seen.0 {
+                        self.status_seen = (line.clone(), Instant::now());
+                    }
+                    let age = self.status_seen.1.elapsed();
+                    let line = if age < STATUS_FOR || !self.adding.is_empty() {
+                        ui.ctx()
+                            .request_repaint_after(STATUS_FOR.saturating_sub(age));
+                        line
+                    } else {
+                        String::new()
                     };
                     ui.add(egui::Label::new(RichText::new(line).small().color(MUTED)).truncate());
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        ui.label(RichText::new(&self.output).small().color(MUTED));
+                        // (said the same way as the banner says it)
+                        let output = match self.output.strip_prefix("no sound: ") {
+                            Some(why) => format!("No sound – {why}"),
+                            None => self.output.clone(),
+                        };
+                        ui.label(RichText::new(output).small().color(MUTED));
                     });
                 });
             });
@@ -3085,7 +3271,9 @@ impl eframe::App for App {
                 }
                 self.no_sound_banner(ui);
                 if self.big_visual {
-                    let h = ui.available_height() - 90.0;
+                    // the picture large, what plays above it
+                    self.title_line(ui);
+                    let h = ui.available_height() - 92.0;
                     self.visual(ui, h.max(120.0));
                     ui.add_space(6.0);
                     self.position(ui);
@@ -3094,15 +3282,26 @@ impl eframe::App for App {
                 }
                 self.now_playing(ui);
                 ui.add_space(8.0);
-                self.visual(ui, 190.0);
+                // the picture large: half of what the controls leave, the
+                // rest for the playlist (all of it when the list is folded)
+                let lower = self.playlist_open || self.eq_page;
+                let room = ui.available_height() - 100.0;
+                let picture = if lower {
+                    (room * 0.5).clamp(140.0, 520.0)
+                } else {
+                    (room - 36.0).max(140.0)
+                };
+                self.visual(ui, picture);
                 ui.add_space(6.0);
                 self.position(ui);
                 self.transport(ui);
-                ui.add_space(4.0);
-                ui.separator();
-                self.equalizer(ui);
-                ui.separator();
-                self.playlist_view(ui);
+                ui.add_space(6.0);
+                self.lower_switch(ui);
+                if self.eq_page {
+                    self.equalizer_page(ui);
+                } else if self.playlist_open {
+                    self.playlist_view(ui);
+                }
             });
         self.url_window(&ctx);
         self.details_window(&ctx);
@@ -3115,7 +3314,9 @@ impl eframe::App for App {
             if self.playing() {
                 ctx.request_repaint_after(Duration::from_secs(1));
             }
-        } else if self.playing() || self.analyzer.bars.iter().any(|b| *b > 0.001) {
+        } else if self.playing()
+            || (!self.frozen() && self.analyzer.bars.iter().any(|b| *b > 0.001))
+        {
             ctx.request_repaint_after(Duration::from_secs_f32(1.0 / fps));
         }
     }
@@ -3181,6 +3382,27 @@ fn file_url(path: &str) -> String {
 }
 
 /// The playlist's folding header (opened from a menu and Ctrl+F too).
+/// A row's two lines: its title (without the artist the title begins
+/// with, when the second line names it) and "artist · album".
+fn row_text(track: &crate::state::Track, title: &str) -> (String, String) {
+    let mut by = Vec::new();
+    if !track.artist.is_empty() {
+        by.push(track.artist.as_str());
+    }
+    if !track.album.is_empty() {
+        by.push(track.album.as_str());
+    }
+    let line = if !track.artist.is_empty() {
+        title
+            .strip_prefix(&format!("{} – ", track.artist))
+            .unwrap_or(title)
+            .to_owned()
+    } else {
+        title.to_owned()
+    };
+    (line, by.join(" · "))
+}
+
 fn playlist_header_id() -> egui::Id {
     egui::Id::NULL.with("amp-playlist")
 }
@@ -3226,6 +3448,8 @@ fn style(ctx: &egui::Context) {
     visuals.selection.bg_fill = ACCENT.gamma_multiply(0.6);
     visuals.selection.stroke = Stroke::new(1.0, ACCENT);
     visuals.hyperlink_color = ACCENT;
+    // (no lines down the side of what folds open)
+    visuals.indent_has_left_vline = false;
     for w in [
         &mut visuals.widgets.inactive,
         &mut visuals.widgets.hovered,
@@ -3253,6 +3477,81 @@ fn style(ctx: &egui::Context) {
     });
 }
 
+/// The window's colours of selection and links in `accent`.
+fn accent_style(ctx: &egui::Context, accent: Color32) {
+    let mut visuals = ctx.global_style().visuals.clone();
+    visuals.selection.bg_fill = accent.gamma_multiply(0.6);
+    visuals.selection.stroke = Stroke::new(1.0, accent);
+    visuals.hyperlink_color = accent;
+    ctx.set_visuals(visuals);
+}
+
+/// The cover's accent: the strongest of its colourful hues (weighed by how
+/// colourful and how bright), made readable on the window as text (WCAG AA,
+/// 4.5:1); none for a grey cover.
+pub fn accent_of(art: &crate::engine::Art) -> Option<Color32> {
+    const BUCKETS: usize = 24;
+    let mut weight = [0.0f64; BUCKETS];
+    let mut sum = [[0.0f64; 3]; BUCKETS];
+    let mut all = 0.0f64;
+    for px in art.rgba.as_chunks::<4>().0.iter().step_by(3) {
+        let (r, g, b) = (
+            px[0] as f64 / 255.0,
+            px[1] as f64 / 255.0,
+            px[2] as f64 / 255.0,
+        );
+        let max = r.max(g).max(b);
+        let min = r.min(g).min(b);
+        all += 1.0;
+        let s = if max > 0.0 { (max - min) / max } else { 0.0 };
+        if s < 0.25 || max < 0.2 {
+            continue;
+        }
+        let d = max - min;
+        let h = if max == r {
+            ((g - b) / d).rem_euclid(6.0)
+        } else if max == g {
+            (b - r) / d + 2.0
+        } else {
+            (r - g) / d + 4.0
+        } / 6.0;
+        let k = ((h * BUCKETS as f64) as usize).min(BUCKETS - 1);
+        let w = s * max;
+        weight[k] += w;
+        for (c, v) in sum[k].iter_mut().zip([r, g, b]) {
+            *c += v * w;
+        }
+    }
+    let (k, w) = weight
+        .iter()
+        .enumerate()
+        .max_by(|a, b| a.1.total_cmp(b.1))?;
+    // (a few colourful pixels in a grey cover are no accent)
+    if *w < all * 0.02 {
+        return None;
+    }
+    let to = |v: f64| (v / w * 255.0).round().clamp(0.0, 255.0) as u8;
+    let mut c = Color32::from_rgb(to(sum[k][0]), to(sum[k][1]), to(sum[k][2]));
+    let ground = Color32::from_rgb(0x0d, 0x11, 0x17);
+    for _ in 0..20 {
+        if viz::contrast(c, ground) >= 4.5 {
+            break;
+        }
+        c = viz::mix(c, Color32::WHITE, 0.12);
+    }
+    Some(c)
+}
+
+/// White or near-black, whichever reads better on `fill`.
+fn ink_on(fill: Color32) -> Color32 {
+    let dark = Color32::from_rgb(0x0d, 0x11, 0x17);
+    if viz::contrast(Color32::WHITE, fill) >= viz::contrast(dark, fill) {
+        Color32::WHITE
+    } else {
+        dark
+    }
+}
+
 /// The faces in their groups, to choose one (the mode box).
 fn faces_list(ui: &mut Ui, mode: &mut &'static str) {
     let mut last = None;
@@ -3270,6 +3569,39 @@ fn faces_list(ui: &mut Ui, mode: &mut &'static str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_accent_comes_from_the_cover_and_reads_on_the_window() {
+        let art = |rgb: [u8; 3], share: usize| {
+            // `share` of 10 pixels in the colour, the rest grey
+            let rgba: Vec<u8> = (0..64 * 64)
+                .flat_map(|i| {
+                    if i % 10 < share {
+                        [rgb[0], rgb[1], rgb[2], 255]
+                    } else {
+                        [90, 90, 90, 255]
+                    }
+                })
+                .collect();
+            crate::engine::Art {
+                width: 64,
+                height: 64,
+                rgba,
+                png: Vec::new(),
+            }
+        };
+        let ground = Color32::from_rgb(0x0d, 0x11, 0x17);
+        // a dark red cover: a red accent, lightened until it reads (4.5:1)
+        let red = accent_of(&art([120, 10, 20], 6)).expect("an accent");
+        assert!(red.r() > red.g() && red.r() > red.b(), "{red:?}");
+        assert!(viz::contrast(red, ground) >= 4.5);
+        // a grey cover: none (the window's own)
+        assert_eq!(accent_of(&art([100, 100, 100], 10)), None);
+        // the play button's mark reads on any accent
+        for c in [red, Color32::from_rgb(250, 240, 120), ACCENT] {
+            assert!(viz::contrast(ink_on(c), c) >= 3.0, "{c:?}");
+        }
+    }
 
     #[test]
     fn file_urls_go_both_ways() {

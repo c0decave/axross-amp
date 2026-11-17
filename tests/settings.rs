@@ -106,6 +106,8 @@ fn an_equalizer_slider_dragged_is_one_write_off_the_window() {
     std::thread::sleep(Duration::from_millis(3200));
     settle(&mut h, 5);
     std::thread::sleep(Duration::from_millis(200));
+    h.get_by_label("Equalizer").click();
+    settle(&mut h, 2);
     let before = h.state().files_written();
     for step in 0..20 {
         h.get_by_label("Equalizer 1k")

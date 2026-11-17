@@ -40,7 +40,20 @@ fn the_mixer_tab_shows_the_sound_server_and_acts() {
     let mut harness = Harness::builder()
         .with_size(egui::vec2(620.0, 1100.0))
         .wgpu()
-        .build_eframe(|cc| App::new(cc, vec![]));
+        // (no sound card: the engine headless, nothing for ALSA to complain about)
+        .build_eframe(|cc| {
+            let config = axross_amp::state::config_dir();
+            App::with_setup(
+                cc,
+                vec![],
+                axross_amp::app::Setup {
+                    config_dir: config,
+                    desktop: false,
+                    desktop_bus: None,
+                    headless_audio: true,
+                },
+            )
+        });
     harness.state_mut().set_tab(Tab::Mixer);
     let mut ready = false;
     for _ in 0..300 {
@@ -63,6 +76,9 @@ fn the_mixer_tab_shows_the_sound_server_and_acts() {
     assert!(harness.query_by_label("Device of Firefox").is_some());
     assert!(harness.query_by_label("Profile of WH-1000XM4").is_some());
     harness.run_steps(3);
+    // (the pointer out of the picture)
+    harness.event(egui::Event::PointerGone);
+    harness.run_steps(1);
     let shots = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/screenshots");
     std::fs::create_dir_all(&shots).unwrap();
     harness

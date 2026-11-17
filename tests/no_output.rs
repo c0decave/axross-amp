@@ -21,7 +21,7 @@ fn without_an_output_nothing_pretends_to_play() {
     settle(&mut h, 3);
     assert!(!h.state().playing(), "playing without an output");
     assert!(
-        h.query_by_label_contains("No sound").is_some(),
+        h.query_all_by_label_contains("No sound").next().is_some(),
         "the window does not say there is no sound"
     );
     // Space: still nothing to play on
@@ -34,5 +34,5 @@ fn without_an_output_nothing_pretends_to_play() {
     assert!(until(&mut h, 3.0, |a| !a.output().starts_with("no sound")));
     h.key_press(egui::Key::Space);
     assert!(until(&mut h, 3.0, |a| a.playing()));
-    assert!(h.query_by_label_contains("No sound").is_none());
+    assert!(h.query_all_by_label_contains("No sound").next().is_none());
 }

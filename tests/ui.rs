@@ -100,6 +100,8 @@ fn the_window_shows_the_track_and_every_visualization() {
     let mut output = RenderState::default();
     play_for(&mut harness, &mut output, 1.5);
     assert!(harness.state().playing(), "plays");
+    harness.event(egui::Event::PointerGone);
+    harness.run_steps(1);
     let image = harness.render().expect("renders");
     image.save(shots().join("main.png")).unwrap();
 
@@ -184,6 +186,8 @@ fn the_readme_picture() {
         harness.run_steps(1);
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
+    harness.event(egui::Event::PointerGone);
+    harness.run_steps(1);
     let image = harness.render().expect("renders");
     // (without the status line: the test's own output has no device name)
     let image = image::imageops::crop_imm(&image, 0, 0, 620, 834).to_image();

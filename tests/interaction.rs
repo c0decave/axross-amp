@@ -176,6 +176,9 @@ fn buttons_keys_equalizer_playlist_url_and_dropped_files() {
     assert!(!harness.state().big_visual());
 
     // the equalizer preset: set, sent, and written to axross's audio.json
+    // (the equalizer is the lower part's other page)
+    harness.get_by_label("Equalizer").click();
+    settle(&mut harness, 2);
     harness.get_by_label("Equalizer preset").click();
     settle(&mut harness, 2);
     harness.get_by_label("Rock").click();
@@ -195,6 +198,8 @@ fn buttons_keys_equalizer_playlist_url_and_dropped_files() {
         "{audio}"
     );
 
+    harness.get_by_label_contains("Playlist").click();
+    settle(&mut harness, 2);
     // the playlist: Delete removes the selected track
     harness.get_by_label_contains("Shuffle").click(); // (off again: Next is the next one)
     settle(&mut harness, 2);

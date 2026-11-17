@@ -104,7 +104,20 @@ fn the_bluetooth_tab_pairs_connects_and_makes_a_headset_the_output() {
     let mut harness = Harness::builder()
         .with_size(egui::vec2(620.0, 860.0))
         .wgpu()
-        .build_eframe(|cc| App::new(cc, vec![]));
+        // (no sound card: the engine headless, nothing for ALSA to complain about)
+        .build_eframe(|cc| {
+            let config = axross_amp::state::config_dir();
+            App::with_setup(
+                cc,
+                vec![],
+                axross_amp::app::Setup {
+                    config_dir: config,
+                    desktop: false,
+                    desktop_bus: None,
+                    headless_audio: true,
+                },
+            )
+        });
     harness.state_mut().set_tab(Tab::Bluetooth);
     steps_until(&mut harness, "the adapter", |h| {
         h.query_by_label("Powered").is_some()
@@ -132,6 +145,9 @@ fn the_bluetooth_tab_pairs_connects_and_makes_a_headset_the_output() {
             .is_some()
     );
     harness.run_steps(2);
+    // (the pointer out of the picture)
+    harness.event(egui::Event::PointerGone);
+    harness.run_steps(1);
     let shots = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/screenshots");
     std::fs::create_dir_all(&shots).unwrap();
     harness
@@ -191,6 +207,9 @@ fn the_bluetooth_tab_pairs_connects_and_makes_a_headset_the_output() {
     assert!(harness.query_by_label("Keyboard K380").is_none());
     assert!(harness.query_by_label("22:00:00:00:00:03").is_none());
     harness.get_by_label("Audio only").click();
+    // (the pointer out of the picture)
+    harness.event(egui::Event::PointerGone);
+    harness.run_steps(1);
     harness.run_steps(3);
     harness
         .render()
