@@ -353,9 +353,13 @@ impl App {
         let meters = crate::meters::Meters::start(engine.shared.clone());
         let mut viz_state = VizState::default();
         // the pixel faces' shaders, where egui draws with wgpu
+        // (on a software rasterizer the shaders would take a CPU's time as
+        // well: the CPU's own per-pixel drawing does better there;
+        // AMP_GPU_SHADERS=1 uses them anyway)
         if let Some(render_state) = cc.wgpu_render_state.as_ref() {
             viz::gpu::install(render_state);
-            viz_state.set_gpu(true);
+            let forced = std::env::var_os("AMP_GPU_SHADERS").is_some_and(|v| v == "1");
+            viz_state.set_gpu(forced || !viz::gpu::is_software(render_state));
         }
         let mut app = App {
             engine,
@@ -983,6 +987,21 @@ impl App {
             {
                 self.set_sleep(Some(Sleep::EndOfTrack));
                 ui.close();
+            }
+        });
+        ui.menu_button("Loudness target", |ui| {
+            for (target, name) in state::LOUDNESS_TARGETS {
+                if ui
+                    .radio(
+                        self.amp.loudness_target == target,
+                        format!("{target:.0} LUFS - {name}"),
+                    )
+                    .clicked()
+                {
+                    self.amp.loudness_target = target;
+                    self.amp_dirty = true;
+                    ui.close();
+                }
             }
         });
         ui.menu_button("ReplayGain", |ui| {
@@ -2283,7 +2302,7 @@ impl App {
                 &self.options,
                 dt,
                 self.playing(),
-                viz::needs(self.mode),
+                viz::needs_now(self.mode, &self.viz_state),
             );
             self.analyzer_frames += 1;
         }
@@ -2311,6 +2330,9 @@ impl App {
             position: self.engine.shared.position() as f32,
             duration: self.duration.unwrap_or(0.0) as f32,
             hover: response.hover_pos(),
+            opacity: 1.0,
+            second: false,
+            loudness_target: self.amp.loudness_target,
         };
         viz::draw(&frame, self.mode, &mut self.viz_state);
         drop(overview);

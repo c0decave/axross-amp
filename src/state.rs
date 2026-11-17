@@ -155,7 +155,17 @@ pub struct AmpSettings {
     pub preamp_db: f32,
     /// The gain of a track without ReplayGain tags (dB).
     pub untagged_db: f32,
+    /// The loudness meter's target (LUFS): -23 EBU R128, -16 podcasts,
+    /// -14 streaming.
+    pub loudness_target: f32,
 }
+
+/// The loudness targets offered: LUFS and what aims at it.
+pub const LOUDNESS_TARGETS: [(f32, &str); 3] = [
+    (-23.0, "EBU R128 (broadcast)"),
+    (-16.0, "podcasts"),
+    (-14.0, "streaming"),
+];
 
 impl Default for AmpSettings {
     fn default() -> Self {
@@ -164,6 +174,7 @@ impl Default for AmpSettings {
             replay_gain: "off".into(),
             preamp_db: 0.0,
             untagged_db: crate::engine::DEFAULT_UNTAGGED_DB,
+            loudness_target: -23.0,
         }
     }
 }
@@ -197,6 +208,13 @@ pub fn read_amp(path: &Path) -> AmpSettings {
     {
         settings.untagged_db = db.clamp(-15.0, 15.0) as f32;
     }
+    if let Some(lufs) = map.get("loudness_target").and_then(Value::as_f64)
+        && let Some((target, _)) = LOUDNESS_TARGETS
+            .iter()
+            .find(|(t, _)| (*t as f64 - lufs).abs() < 0.05)
+    {
+        settings.loudness_target = *target;
+    }
     settings
 }
 
@@ -215,6 +233,7 @@ pub fn write_amp(path: &Path, settings: &AmpSettings) -> std::io::Result<()> {
         "untagged_db".into(),
         json!((settings.untagged_db as f64 * 10.0).round() / 10.0),
     );
+    map.insert("loudness_target".into(), json!(settings.loudness_target));
     write_object(path, &map)
 }
 
@@ -734,10 +753,12 @@ mod tests {
             replay_gain: "album".into(),
             preamp_db: 99.0,
             untagged_db: -8.0,
+            loudness_target: -14.0,
         };
         write_amp(&path, &settings).unwrap();
         let back = read_amp(&path);
         assert_eq!(back.window, Some([700.0, 900.0]));
+        assert_eq!(back.loudness_target, -14.0);
         assert_eq!(back.replay_gain, "album");
         assert_eq!(back.preamp_db, 15.0);
         let raw: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();

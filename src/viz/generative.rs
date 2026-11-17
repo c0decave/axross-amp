@@ -59,14 +59,10 @@ pub struct State {
     sparks: Vec<[f32; 5]>,
     last_beat: u64,
     since_ring: f32,
-    drops: [[f32; 4]; 8],
-    next_drop: usize,
-    since_drop: f32,
     morph: (usize, usize, f32),
     morph_turn: f32,
     spiro: (f32, f32, f32),
     spiro_turn: f32,
-    arcs: [f32; 24],
     rd_u: Vec<f32>,
     rd_v: Vec<f32>,
     rd_u2: Vec<f32>,
@@ -95,14 +91,10 @@ impl Default for State {
             sparks: Vec::with_capacity(SPARKS),
             last_beat: 0,
             since_ring: 0.0,
-            drops: [[0.0; 4]; 8],
-            next_drop: 0,
-            since_drop: 0.0,
             morph: (3, 4, 1.0),
             morph_turn: 0.0,
             spiro: (0.4, 0.4, 0.6),
             spiro_turn: 0.0,
-            arcs: [0.0; 24],
             rd_u: Vec::new(),
             rd_v: Vec::new(),
             rd_u2: Vec::new(),
@@ -141,13 +133,11 @@ pub fn draw(f: &Frame<'_>, key: &str, state: &mut VizState) {
         "flowfield" => cv.draw(p, |pen| flowfield(f, pen, st, dt)),
         "synthwave" => cv.draw(p, |pen| synthwave(f, pen, st, dt)),
         "galaxy" => cv.draw(p, |pen| galaxy(f, pen, st, dt)),
-        "arcs" => cv.draw(p, |pen| arcs(f, pen, st, dt)),
         "skyline" => cv.draw(p, |pen| skyline(f, pen, st)),
         "isometric" => cv.draw(p, |pen| isometric(f, pen)),
         "helix" => cv.draw(p, |pen| helix(f, pen)),
         "spirograph" => cv.draw(p, |pen| spirograph(f, pen, st, dt)),
         "morph" => cv.draw(p, |pen| morph(f, pen, st, dt)),
-        "mandala" => cv.draw(p, |pen| mandala(f, pen)),
         "beatrings" => {
             cv.draw(p, |pen| beatrings(f, pen, st, dt));
             // the tempo the rings keep
@@ -209,43 +199,32 @@ fn shaded(f: &Frame<'_>, shader: Shader, state: &mut VizState, dt: f32) {
     let st = &mut state.generative;
     let a = f.a;
     let mut picture = false;
+    let mut u = Uniforms::new(shader, a, f.s, 0.0);
     match shader {
-        Shader::Ripples => {
-            // a drop at each beat (and now and then without one)
-            st.since_drop += dt;
-            for d in st.drops.iter_mut() {
-                d[2] += dt;
-                if d[2] > 4.0 {
-                    d[3] = 0.0;
-                }
-            }
-            let beat = a.beat.count != st.last_beat;
-            st.last_beat = a.beat.count;
-            if beat || (st.since_drop > 1.1 && a.energy > 0.05) {
-                st.since_drop = 0.0;
-                let (x, y) = (0.15 + 0.7 * st.random(), 0.15 + 0.7 * st.random());
-                let strength = if beat {
-                    0.6 + 0.6 * a.beat.strength
-                } else {
-                    0.35
-                };
-                st.drops[st.next_drop] = [x, y, 0.0, strength];
-                st.next_drop = (st.next_drop + 1) % st.drops.len();
-            }
-        }
         Shader::Reaction => {
-            reaction(a, st, dt, &state.gpu.picture);
+            reaction(a, st, dt, state.gpu.picture(f.second));
             picture = true;
+        }
+        Shader::Feedback => {
+            // the feedback's motion, a 60th of a second's worth scaled to
+            // this frame's (the same look at any frame rate): a slow turn
+            // that swings, a zoom the bass pulls, a swirl with the middle
+            let t = a.time as f32;
+            let k = (dt * 60.0).clamp(0.0, 4.0);
+            let turn = (0.004 + 0.012 * (t * 0.13).sin() + 0.02 * a.beat.pulse) * k;
+            let zoom = 1.0 - (0.012 + 0.02 * a.bass) * k;
+            let swirl = (0.0015 + 0.004 * third(a, 1)) * k;
+            let decay = (0.955 + 0.03 * a.energy.min(1.0)).powf(k);
+            u = u.with_motion([turn, zoom, swirl, decay]);
         }
         _ => {}
     }
-    let u = Uniforms::new(shader, a, f.s, &st.drops, 0.0);
+    let u = u.with_opacity(f.opacity);
     let clip = f.rect.expand(4.0);
-    let (gpu, painter, rect) = (&state.gpu, f.painter, f.rect);
+    let (gpu, painter, second) = (&mut state.gpu, f.painter, f.second);
     state.canvas.draw(painter, |pen| {
-        gpu::paint(painter, pen, gpu, clip, clip, u, picture)
+        gpu::paint(painter, pen, gpu, clip, clip, u, picture, second)
     });
-    let _ = rect;
 }
 
 /// Gray-Scott reaction-diffusion on a small grid: spots and stripes that
@@ -487,14 +466,16 @@ fn synthwave(f: &Frame<'_>, pen: &mut Pen<'_>, st: &mut State, dt: f32) {
             line_colour,
         );
     }
+    // the rows coming nearer: antialiased lines (rects at a fraction of a
+    // pixel flickered), thicker and brighter as they come, with a glow
     for k in 0..16 {
         let z = k as f32 + 1.0 - st.synth_scroll;
         let y = horizon + (r.bottom() - horizon) * (1.0 / z).min(1.0) * 0.98;
-        let fade = (1.0 / z).sqrt();
-        pen.rect(
-            Rect::from_x_y_ranges(r.x_range(), y - 0.6..=y + 0.6),
-            mix(s.background, s.mid, fade * (0.6 + 0.4 * a.beat.pulse)),
-        );
+        let near = (1.0 / z).sqrt();
+        let colour = mix(s.background, s.mid, near * (0.6 + 0.4 * a.beat.pulse));
+        let (left, right) = (pos2(r.left(), y), pos2(r.right(), y));
+        pen.segment(left, right, 4.0 * near, glow(s.mid, 0.12 * near));
+        pen.segment(left, right, 0.6 + 1.2 * near, colour);
     }
     pen.rect(
         Rect::from_x_y_ranges(r.x_range(), horizon - 1.0..=horizon + 1.0),
@@ -546,55 +527,6 @@ fn galaxy(f: &Frame<'_>, pen: &mut Pen<'_>, st: &mut State, dt: f32) {
         let d = 1.0 + 1.6 * level * bright;
         pen.rect(Rect::from_center_size(p, vec2(d, d)), glow(colour, k));
     }
-}
-
-// -- arcs ----------------------------------------------------------------------------
-
-fn arcs(f: &Frame<'_>, pen: &mut Pen<'_>, st: &mut State, dt: f32) {
-    let (a, s, r) = (f.a, f.s, f.rect);
-    let c = r.center();
-    let outer = r.width().min(r.height()) / 2.0 - 4.0;
-    let count = st.arcs.len();
-    let spacing = outer * 0.85 / count as f32;
-    for k in 0..count {
-        let dir = if k % 2 == 0 { 1.0 } else { -1.0 };
-        st.arcs[k] += dt * dir * (0.25 + 0.04 * k as f32) * (1.0 + 2.0 * a.energy + a.beat.pulse);
-        let level = band(a, k as f32 / (count - 1) as f32);
-        let radius = outer * 0.15 + spacing * k as f32;
-        let sweep = (0.08 + 0.85 * level) * TAU * 0.8;
-        let start = st.arcs[k];
-        let width = spacing * 0.62;
-        let colour = s.at(level);
-        let steps = ((sweep * radius / 5.0) as usize).clamp(4, 160);
-        // the track, faint
-        pen.ring(c, radius, width * 0.3, mix(s.background, s.low, 0.12));
-        for i in 0..steps {
-            let t0 = start + sweep * i as f32 / steps as f32;
-            let t1 = start + sweep * (i + 1) as f32 / steps as f32;
-            let (u0, u1) = (vec2(t0.cos(), t0.sin()), vec2(t1.cos(), t1.sin()));
-            // brighter towards its head
-            let k0 = 0.35 + 0.65 * i as f32 / steps as f32;
-            let k1 = 0.35 + 0.65 * (i + 1) as f32 / steps as f32;
-            let (c0, c1) = (mix(s.background, colour, k0), mix(s.background, colour, k1));
-            pen.quad(
-                [
-                    c + u0 * (radius - width / 2.0),
-                    c + u1 * (radius - width / 2.0),
-                    c + u1 * (radius + width / 2.0),
-                    c + u0 * (radius + width / 2.0),
-                ],
-                [c0, c1, c1, c0],
-            );
-        }
-        let end = start + sweep;
-        pen.circle(c + vec2(end.cos(), end.sin()) * radius, width * 0.5, colour);
-        pen.circle(
-            c + vec2(end.cos(), end.sin()) * radius,
-            width * 0.22,
-            s.peak,
-        );
-    }
-    pen.circle(c, outer * 0.08 * (1.0 + a.beat.pulse), s.at(a.energy));
 }
 
 // -- the skyline ---------------------------------------------------------------------
@@ -709,10 +641,6 @@ fn skyline(f: &Frame<'_>, pen: &mut Pen<'_>, st: &mut State) {
         y += 4.0 + 3.0 * hash(k, 7);
         k += 1;
     }
-    pen.rect(
-        Rect::from_x_y_ranges(r.x_range(), water - 0.5..=water + 0.5),
-        mix(s.background, s.mid, 0.6),
-    );
 }
 
 // -- isometric bars ------------------------------------------------------------------
@@ -722,14 +650,16 @@ fn isometric(f: &Frame<'_>, pen: &mut Pen<'_>) {
     const COLS: usize = 16;
     const ROWS: usize = 14;
     let n = a.bars.len().max(1);
-    let cell =
-        (r.width() / (COLS + ROWS) as f32 * 1.9).min(r.height() / (COLS + ROWS) as f32 * 3.6);
-    let (cw, ch) = (cell * 0.5, cell * 0.28);
+    // the whole of it within the picture: the floor's width, and its depth
+    // with the tallest box on it
+    let tall = r.height() * 0.34;
+    let span = (COLS + ROWS) as f32;
+    let cell = (r.width() * 0.94 / (span * 0.5)).min((r.height() * 0.94 - tall) / (span * 0.2));
+    let (cw, ch) = (cell * 0.5, cell * 0.2);
     let origin = pos2(
-        r.center().x + (COLS as f32 - ROWS as f32) * cw * 0.5 * 0.0,
-        r.bottom() - (COLS + ROWS) as f32 * ch - 4.0,
+        r.center().x - (COLS as f32 - ROWS as f32) * cw * 0.5,
+        r.bottom() - 4.0 - span * ch,
     );
-    let tall = r.height() * 0.45;
     // back (far, old) to front: each box over those behind it
     for sum in 0..COLS + ROWS - 1 {
         for i in 0..COLS {
@@ -775,65 +705,95 @@ fn isometric(f: &Frame<'_>, pen: &mut Pen<'_>) {
 fn helix(f: &Frame<'_>, pen: &mut Pen<'_>) {
     let (a, s, r) = (f.a, f.s, f.rect);
     let t = a.time as f32;
-    const POINTS: usize = 90;
-    let amp = r.height() * 0.3 * (0.85 + 0.25 * a.bass + 0.1 * a.beat.pulse);
+    const POINTS: usize = 140;
+    let amp = r.height() * 0.36 * (0.85 + 0.2 * a.bass + 0.1 * a.beat.pulse);
     let cy = r.center().y;
-    let spin = t * (0.6 + 1.5 * a.energy);
+    let spin = t * (0.5 + 1.4 * a.energy);
+    // dust drifting behind, lit by the treble
+    let treble = third(a, 2);
+    for k in 0..90u32 {
+        let x = r.left() + fract(hash(k, 41) + t * 0.01 * (0.5 + hash(k, 43))) * r.width();
+        let y = r.top() + hash(k, 47) * r.height();
+        let size = 0.8 + 1.8 * hash(k, 53);
+        pen.circle(
+            pos2(x, y),
+            size,
+            glow(s.low, 0.15 + 0.4 * treble * hash(k, 59)),
+        );
+    }
     let at = |k: usize, strand: f32| {
         let u = k as f32 / (POINTS - 1) as f32;
-        let theta = u * TAU * 2.2 + spin + strand * PI;
-        let wobble = (u * 7.0 + t * 0.7).sin() * r.height() * 0.03;
+        let theta = u * TAU * 2.4 + spin + strand * PI;
+        // (a slow sway along it, as if seen from a turning camera)
+        let wobble = (u * 5.0 + t * 0.5).sin() * r.height() * 0.04;
         (
             pos2(r.left() + u * r.width(), cy + theta.sin() * amp + wobble),
             theta.cos(),
         )
     };
-    // the far halves first, then the rungs, then the near halves
+    // far parts first; each part of a strand a glowing tube, lit in front
     for near in [false, true] {
         for k in 0..POINTS - 1 {
+            if k % 4 == 0 {
+                let (p, z) = at(k, 0.0);
+                let (q, _) = at(k, 1.0);
+                if (z > 0.0) == near {
+                    // the base pair: two halves, each its band's colour
+                    let level = band(a, k as f32 / (POINTS - 1) as f32);
+                    let depth = 0.35 + 0.65 * (0.5 + 0.5 * z.abs());
+                    let mid = p + (q - p) * 0.5;
+                    let w = 2.0 + 4.0 * level;
+                    let (c1, c2) = (s.at(0.3 + 0.7 * level), s.at(1.0 - 0.6 * level));
+                    pen.segment(p, mid, w * 2.5, glow(c1, 0.12 * depth));
+                    pen.segment(mid, q, w * 2.5, glow(c2, 0.12 * depth));
+                    pen.segment(p, mid, w, mix(s.background, c1, depth));
+                    pen.segment(mid, q, w, mix(s.background, c2, depth));
+                }
+            }
             for strand in [0.0, 1.0] {
                 let (p, z) = at(k, strand);
                 let (q, z2) = at(k + 1, strand);
                 if (z + z2 > 0.0) != near {
                     continue;
                 }
-                let depth = 0.5 + 0.5 * (z + z2) / 2.0;
-                let colour = mix(
-                    s.background,
-                    if strand == 0.0 { s.mid } else { s.high },
-                    0.3 + 0.7 * depth,
-                );
-                pen.segment(p, q, 2.0 + 3.0 * depth, colour);
-            }
-            if !near && k % 3 == 0 {
-                let (p, z) = at(k, 0.0);
-                let (q, _) = at(k, 1.0);
-                let level = band(a, k as f32 / (POINTS - 1) as f32);
-                let depth = 0.5 + 0.5 * z.abs();
-                let mid = p + (q - p) * 0.5;
-                pen.segment(
-                    p,
-                    mid,
-                    1.0 + 3.0 * level,
-                    mix(s.background, s.at(level), 0.4 + 0.6 * depth),
-                );
-                pen.segment(
-                    mid,
-                    q,
-                    1.0 + 3.0 * level,
-                    mix(s.background, s.at(1.0 - level * 0.5), 0.4 + 0.6 * depth),
-                );
+                let depth = 0.5 + 0.25 * (z + z2);
+                let hue = if strand == 0.0 { s.mid } else { s.high };
+                let width = 3.0 + 6.0 * depth;
+                pen.segment(p, q, width * 2.6, glow(hue, 0.1 * depth));
+                pen.segment(p, q, width, mix(s.background, hue, 0.25 + 0.75 * depth));
+                pen.segment(p, q, width * 0.3, mix(hue, s.peak, 0.55 * depth));
             }
         }
     }
-    for k in (0..POINTS).step_by(3) {
+    // the bases at the strands, in front
+    for k in (0..POINTS).step_by(4) {
         for strand in [0.0, 1.0] {
             let (p, z) = at(k, strand);
             if z > 0.0 {
-                pen.circle(p, 2.0 + 3.0 * z, mix(s.background, s.peak, 0.5 + 0.5 * z));
+                let level = band(a, k as f32 / (POINTS - 1) as f32);
+                pen.radial(
+                    p,
+                    6.0 + 10.0 * level * z,
+                    glow(s.peak, 0.35 * z),
+                    Color32::TRANSPARENT,
+                );
+                pen.circle(p, 2.0 + 3.0 * z, mix(s.at(level), s.peak, 0.5 * z));
             }
         }
     }
+}
+
+/// The fractional part.
+fn fract(x: f32) -> f32 {
+    x - x.floor()
+}
+
+/// The line in `pen.points` with a glow round it: wide and faint, less wide,
+/// then the line itself.
+fn glowing_line(pen: &mut Pen<'_>, width: f32, colour: Color32, strength: f32) {
+    pen.line(width * 6.0, glow(colour, 0.08 * strength));
+    pen.line(width * 2.5, glow(colour, 0.22 * strength));
+    pen.line(width, colour);
 }
 
 // -- the spirograph ------------------------------------------------------------------
@@ -862,16 +822,25 @@ fn spirograph(f: &Frame<'_>, pen: &mut Pen<'_>, st: &mut State, dt: f32) {
     st.spiro.2 += ((0.45 + 0.5 * a.energy) - st.spiro.2) * follow;
     st.spiro_turn += dt * (0.1 + 0.4 * a.energy);
     let c = r.center();
-    let size = r.width().min(r.height()) / 2.0 - 6.0;
-    for layer in 0..3 {
-        let ratio = st.spiro.0 * (1.0 + 0.07 * layer as f32);
-        let d = st.spiro.2 * (1.0 - 0.15 * layer as f32);
-        let scale = size / (1.0 - ratio + d).max(0.1);
+    // as large as the picture: the curves and, behind, two larger copies
+    // that run off its sides
+    let size = r.height() / 2.0 - 4.0;
+    for layer in 0..5usize {
+        let big = match layer {
+            0 => 2.4,
+            1 => 1.7,
+            _ => 1.0,
+        };
+        let inner = layer.saturating_sub(2);
+        let ratio = st.spiro.0 * (1.0 + 0.07 * inner as f32);
+        let d = st.spiro.2 * (1.0 - 0.15 * inner as f32);
+        let scale = size * big / (1.0 - ratio + d).max(0.1);
         let turn =
-            st.spiro_turn * (1.0 + 0.3 * layer as f32) * if layer % 2 == 0 { 1.0 } else { -1.0 };
+            st.spiro_turn * (1.0 + 0.3 * inner as f32) * if layer % 2 == 0 { 1.0 } else { -1.0 };
         const STEPS: usize = 1400;
         let laps = 14.0;
         let chunks = 28;
+        let faint = if layer < 2 { 0.35 } else { 1.0 };
         for chunk in 0..chunks {
             pen.points.clear();
             for i in chunk * STEPS / chunks..=((chunk + 1) * STEPS / chunks).min(STEPS - 1) {
@@ -887,9 +856,14 @@ fn spirograph(f: &Frame<'_>, pen: &mut Pen<'_>, st: &mut State, dt: f32) {
             let colour = mix(
                 s.background,
                 s.at(0.2 + 0.8 * level),
-                0.35 + 0.25 * (2 - layer) as f32 + 0.3 * a.beat.pulse,
+                (0.45 + 0.2 * (4 - layer) as f32 / 4.0 + 0.35 * a.beat.pulse) * faint,
             );
-            pen.line(1.0 + 0.6 * (2 - layer) as f32, colour);
+            glowing_line(
+                pen,
+                1.0 + 0.5 * inner as f32,
+                colour,
+                faint * (0.6 + 0.8 * level),
+            );
         }
     }
 }
@@ -926,12 +900,13 @@ fn morph(f: &Frame<'_>, pen: &mut Pen<'_>, st: &mut State, dt: f32) {
     let ease = |t: f32| t * t * (3.0 - 2.0 * t);
     let t = ease(st.morph.2);
     let c = r.center();
-    let size = r.width().min(r.height()) / 2.0 - 6.0;
-    const COPIES: usize = 16;
+    let size = r.height() / 2.0 - 4.0;
+    const COPIES: usize = 24;
     const POINTS: usize = 120;
+    // copies from the middle out past the picture's sides (k < 0: outside)
     for copy in (0..COPIES).rev() {
-        let k = copy as f32 / COPIES as f32;
-        let scale = size * (1.0 - k * 0.92) * (1.0 + 0.06 * a.beat.pulse * (1.0 - k));
+        let k = copy as f32 / 16.0 - 0.5;
+        let scale = size * (1.0 - k * 0.92) * (1.0 + 0.06 * a.beat.pulse * (1.0 - k.abs()));
         let turn = st.morph_turn - k * (0.6 + 1.2 * a.energy);
         pen.points.clear();
         for i in 0..POINTS {
@@ -943,99 +918,17 @@ fn morph(f: &Frame<'_>, pen: &mut Pen<'_>, st: &mut State, dt: f32) {
             let angle = theta + turn - PI / 2.0;
             pen.points.push(c + vec2(angle.cos(), angle.sin()) * rr);
         }
-        let colour = mix(s.background, s.at(1.0 - k), 0.25 + 0.75 * (1.0 - k));
-        pen.outline(1.2 + 1.5 * (1.0 - k), colour);
-    }
-}
-
-// -- the mandala ---------------------------------------------------------------------
-
-fn mandala(f: &Frame<'_>, pen: &mut Pen<'_>) {
-    let (a, s, r) = (f.a, f.s, f.rect);
-    let c = r.center();
-    let size = r.width().min(r.height()) / 2.0 - 4.0;
-    let t = a.time as f32;
-    let (bass, middle, treble) = (third(a, 0), third(a, 1), third(a, 2));
-    const FOLD: usize = 12;
-    let petal =
-        |pen: &mut Pen<'_>, angle: f32, inner: f32, outer: f32, width: f32, colour: Color32| {
-            pen.points.clear();
-            let steps = 10;
-            for i in 0..=steps {
-                let u = i as f32 / steps as f32;
-                let rr = inner + (outer - inner) * u;
-                let wdt = width * (PI * u).sin();
-                pen.points
-                    .push(c + Vec2::angled(angle + wdt / rr.max(1.0)) * rr);
-            }
-            for i in (1..steps).rev() {
-                let u = i as f32 / steps as f32;
-                let rr = inner + (outer - inner) * u;
-                let wdt = width * (PI * u).sin();
-                pen.points
-                    .push(c + Vec2::angled(angle - wdt / rr.max(1.0)) * rr);
-            }
-            let mid = c + Vec2::angled(angle) * (inner + outer) / 2.0;
-            pen.fan(mid, colour, colour);
-        };
-    // outer petals (treble), turning one way
-    for k in 0..FOLD * 2 {
-        let angle = k as f32 / (FOLD * 2) as f32 * TAU + t * 0.05;
-        let level = band(a, 0.6 + 0.4 * (k % FOLD) as f32 / FOLD as f32);
-        petal(
-            pen,
-            angle,
-            size * 0.62,
-            size * (0.75 + 0.25 * treble.max(level)),
-            size * 0.06,
-            mix(s.background, s.high, 0.3 + 0.6 * level),
+        let kk = k.clamp(0.0, 1.0);
+        let colour = mix(
+            s.background,
+            s.at(1.0 - kk),
+            (0.25 + 0.75 * (1.0 - k.abs())).clamp(0.1, 1.0),
         );
+        let width = 1.0 + 1.6 * (1.0 - k.abs()).max(0.0);
+        pen.outline(width * 6.0, glow(colour, 0.06));
+        pen.outline(width * 2.5, glow(colour, 0.18));
+        pen.outline(width, colour);
     }
-    // a ring of dots
-    for k in 0..FOLD * 3 {
-        let angle = k as f32 / (FOLD * 3) as f32 * TAU - t * 0.12;
-        pen.circle(
-            c + Vec2::angled(angle) * size * 0.58,
-            size * (0.012 + 0.02 * middle),
-            s.peak.gamma_multiply(0.8),
-        );
-    }
-    // middle petals (the middle), the other way
-    for k in 0..FOLD {
-        let angle = k as f32 / FOLD as f32 * TAU - t * 0.08;
-        let level = band(a, 0.3 + 0.3 * k as f32 / FOLD as f32);
-        petal(
-            pen,
-            angle,
-            size * 0.25,
-            size * (0.45 + 0.15 * level + 0.1 * middle),
-            size * 0.1,
-            mix(s.background, s.mid, 0.4 + 0.6 * level),
-        );
-        petal(
-            pen,
-            angle + PI / FOLD as f32,
-            size * 0.3,
-            size * (0.4 + 0.12 * level),
-            size * 0.05,
-            mix(s.background, s.low, 0.6 + 0.4 * level),
-        );
-    }
-    // the centre (the bass, the beat)
-    for k in 0..6 {
-        let angle = k as f32 / 6.0 * TAU + t * 0.2;
-        petal(
-            pen,
-            angle,
-            size * 0.02,
-            size * (0.16 + 0.12 * bass + 0.06 * a.beat.pulse),
-            size * 0.07,
-            s.at(0.5 + 0.5 * bass),
-        );
-    }
-    pen.circle(c, size * (0.04 + 0.03 * a.beat.pulse), s.peak);
-    pen.ring(c, size * 0.6, 1.0, mix(s.background, s.peak, 0.3));
-    pen.ring(c, size * 0.22, 1.0, mix(s.background, s.peak, 0.3));
 }
 
 // -- rings on the beat ---------------------------------------------------------------
@@ -1169,63 +1062,54 @@ fn typography(f: &Frame<'_>, pen: &mut Pen<'_>, st: &mut State, dt: f32) {
     let uv = vec2(1.0 / atlas[0].max(1) as f32, 1.0 / atlas[1].max(1) as f32);
     let c = r.center();
     let t = a.time as f32;
-    let treble = third(a, 2);
-    // an echo of the word behind, large and faint
+    let fit = |g: &egui::Galley| {
+        (r.width() * 0.84 / g.size().x.max(1.0)).min(r.height() * 0.5 / g.size().y.max(1.0))
+    };
+    // the word before goes up and out as the new one comes up from below:
+    // each a word's height apart, never over each other
+    let travel = (st.word_age / 0.28).min(1.0);
+    let ease = travel * travel * (3.0 - 2.0 * travel);
     let word = &st.words[st.word];
     let galley = f
         .painter
         .layout_no_wrap(word.clone(), font.clone(), Color32::WHITE);
-    let fit = (r.width() * 0.82 / galley.size().x.max(1.0))
-        .min(r.height() * 0.6 / galley.size().y.max(1.0));
-    put_text(
-        pen,
-        &galley,
-        uv,
-        c,
-        fit * 1.9,
-        t * 0.05,
-        mix(s.background, s.low, 0.12),
-        0.0,
-        0,
-    );
-    if st.previous_word != usize::MAX && st.word_age < 0.5 {
+    let scale = fit(&galley) * (1.0 + 0.08 * a.beat.pulse + 0.04 * a.bass);
+    let height = galley.size().y * scale;
+    if st.previous_word != usize::MAX && travel < 1.0 {
         let old = f.painter.layout_no_wrap(
             st.words[st.previous_word].clone(),
             font.clone(),
             Color32::WHITE,
         );
-        let k = st.word_age / 0.5;
-        let fit_old = (r.width() * 0.82 / old.size().x.max(1.0))
-            .min(r.height() * 0.6 / old.size().y.max(1.0));
-        put_text(
-            pen,
-            &old,
-            uv,
-            c + vec2(0.0, -k * r.height() * 0.2),
-            fit_old * (1.0 + 1.5 * k),
-            -0.2 * k,
-            mix(s.background, s.mid, (1.0 - k) * 0.7),
-            0.0,
-            1,
-        );
+        let at = c - vec2(0.0, ease * height * 1.1);
+        let colour = mix(s.background, s.mid, 1.0 - ease);
+        put_text(pen, &old, uv, at, fit(&old), 0.0, colour, 0.0, 1);
     }
-    // the word: it comes in large, settles, swells with the beat; its
-    // letters shake with the treble
-    let arrive = (st.word_age / 0.22).min(1.0);
-    let scale =
-        fit * (0.7 + 0.3 * arrive * (2.0 - arrive)) * (1.0 + 0.12 * a.beat.pulse + 0.06 * a.bass);
-    let tilt = (t * 0.7).sin() * 0.04 + (1.0 - arrive) * 0.15;
-    let colour = mix(s.mid, s.peak, a.beat.pulse * 0.8);
+    let at = c + vec2(0.0, (1.0 - ease) * height * 1.1);
+    let tilt = (t * 0.6).sin() * 0.025;
+    // a glow behind, the word in the scheme's loud colour, its peak on the beat
     put_text(
         pen,
         &galley,
         uv,
-        c,
+        at,
+        scale * 1.02,
+        tilt,
+        glow(s.mid, 0.35 * ease),
+        0.0,
+        2,
+    );
+    let colour = mix(mix(s.high, s.peak, 0.35), s.peak, a.beat.pulse * 0.8);
+    put_text(
+        pen,
+        &galley,
+        uv,
+        at,
         scale,
         tilt,
-        colour,
-        treble * base * 0.04,
-        2,
+        mix(s.background, colour, ease),
+        0.0,
+        3,
     );
     // the spectrum as a line under it
     let y = r.bottom() - 6.0;

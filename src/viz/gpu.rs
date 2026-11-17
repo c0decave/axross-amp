@@ -1,47 +1,67 @@
 //! The faces drawn pixel by pixel: one WGSL module (`shaders/faces.wgsl`)
 //! run through egui's wgpu renderer as a paint callback - the face, the
 //! time and the analysis in a uniform buffer, a texture for the faces that
-//! keep a picture (the mel spectrogram, the reaction-diffusion). Where
-//! there is no wgpu (another renderer, a test harness without a GPU) the
-//! same functions are worked out here on the CPU on a coarse grid of
-//! vertices, their colours blended in between: the face is there, softer.
+//! keep a picture (the mel spectrogram, the reaction-diffusion, the
+//! goniometer's phosphor), and for the feedback face two textures of its
+//! own it draws into in turn (each frame its last one, warped, under a new
+//! layer).
+//!
+//! Where shaders do not run on a GPU of their own - no wgpu, or wgpu on a
+//! software rasterizer (llvmpipe, lavapipe), which takes a CPU's time as
+//! well - the same functions are worked out per pixel by a thread of the
+//! face's own, at the resolution it manages within a frame, and shown as a
+//! picture.
 
 use super::{Pen, Scheme};
 use eframe::egui_wgpu::{self, CallbackResources, CallbackTrait, ScreenDescriptor, wgpu};
-use egui::{Color32, Rect, pos2};
+use egui::{Color32, ColorImage, Rect, TextureHandle, TextureOptions, pos2};
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 /// The faces the shader draws (its `u.face.x`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Shader {
     Mel = 0,
-    Plasma = 1,
+    Liquid = 1,
     Fire = 2,
     Metaballs = 3,
     Aurora = 4,
     Tunnel = 5,
     Julia = 6,
     Reaction = 7,
-    Ripples = 8,
+    Feedback = 8,
     Moire = 9,
     Smoke = 10,
+    Flyover = 11,
+    Crystals = 12,
+    Phosphor = 13,
+}
+
+impl State {
+    /// The picture of the face shown (`second`: the one faded from).
+    pub fn picture(&self, second: bool) -> &Mutex<Picture> {
+        &self.pictures[usize::from(second)]
+    }
 }
 
 impl Shader {
     pub fn of(key: &str) -> Option<Shader> {
         Some(match key {
             "mel" => Shader::Mel,
-            "plasma" => Shader::Plasma,
+            "plasma" => Shader::Liquid,
             "fire" => Shader::Fire,
             "metaballs" => Shader::Metaballs,
             "aurora" => Shader::Aurora,
             "tunnel" => Shader::Tunnel,
             "julia" => Shader::Julia,
             "reaction" => Shader::Reaction,
-            "ripples" => Shader::Ripples,
+            "milkdrop" => Shader::Feedback,
             "moire" => Shader::Moire,
             "smoke" => Shader::Smoke,
+            "flyover" => Shader::Flyover,
+            "crystals" => Shader::Crystals,
             _ => return None,
         })
     }
@@ -49,9 +69,11 @@ impl Shader {
 
 /// vec4s of the uniform block (faces.wgsl's `U`).
 const VEC4S: usize = 26;
-/// Uniform slots: each picture its own (a window, a test's harness).
-const SLOTS: usize = 8;
-static NEXT_SLOT: AtomicUsize = AtomicUsize::new(0);
+/// Uniform slots, two to a picture (a face, and the one it fades from).
+const SLOTS: usize = 16;
+static NEXT_PAIR: AtomicUsize = AtomicUsize::new(0);
+/// The feedback face's own pictures: this share of its size.
+const FEEDBACK_SCALE: f32 = 0.6;
 
 /// What the shader is told: faces.wgsl's `U`.
 #[derive(Clone, Copy, Debug)]
@@ -92,7 +114,10 @@ impl Uniforms {
     pub fn scroll(&self) -> f32 {
         self.v[4][2]
     }
-    pub fn colour(&self, i: usize) -> [f32; 3] {
+    pub fn face(&self) -> u32 {
+        self.v[4][0] as u32
+    }
+    pub fn colour(&self, i: usize) -> V3 {
         let c = self.v[5 + i];
         [c[0], c[1], c[2]]
     }
@@ -103,20 +128,12 @@ impl Uniforms {
         let at = |k: usize| self.v[10 + k / 4][k % 4];
         at(i) + (at(j) - at(i)) * (f - i as f32)
     }
-    pub fn drop(&self, k: usize) -> [f32; 4] {
+    pub fn extra(&self, k: usize) -> [f32; 4] {
         self.v[18 + k]
     }
 
-    /// Everything but the place: the face, the clock, the analysis, the
-    /// scheme.
-    #[allow(clippy::too_many_arguments)]
-    pub fn new(
-        shader: Shader,
-        a: &crate::analyzer::Analyzer,
-        s: &Scheme,
-        drops: &[[f32; 4]; 8],
-        scroll: f32,
-    ) -> Uniforms {
+    /// The face, the clock, the analysis, the scheme; opaque.
+    pub fn new(shader: Shader, a: &crate::analyzer::Analyzer, s: &Scheme, scroll: f32) -> Uniforms {
         let mut u = Uniforms::default();
         let n = a.bars.len().max(1);
         let third = |k: usize| {
@@ -125,7 +142,7 @@ impl Uniforms {
         };
         u.v[2] = [(a.time % 3600.0) as f32, a.beat.pulse, a.energy, a.bass];
         u.v[3] = [a.phase, third(1), third(2), 0.0];
-        u.v[4] = [shader as u32 as f32, 0.0, scroll, a.beat.count as f32];
+        u.v[4] = [shader as u32 as f32, 0.0, scroll, 1.0];
         for (i, c) in [s.background, s.low, s.mid, s.high, s.peak]
             .iter()
             .enumerate()
@@ -143,8 +160,18 @@ impl Uniforms {
             let j = (i + 1).min(n - 1);
             u.v[10 + k / 4][k % 4] = a.bars[i] + (a.bars[j] - a.bars[i]) * (x - i as f32);
         }
-        u.v[18..26].copy_from_slice(drops);
         u
+    }
+
+    /// The feedback face's motion this frame: turn, zoom, swirl, decay.
+    pub fn with_motion(mut self, motion: [f32; 4]) -> Uniforms {
+        self.v[18] = motion;
+        self
+    }
+
+    pub fn with_opacity(mut self, opacity: f32) -> Uniforms {
+        self.v[4][3] = opacity.clamp(0.0, 1.0);
+        self
     }
 }
 
@@ -159,7 +186,7 @@ pub struct Picture {
 
 impl Picture {
     pub fn at(&self, x: f32, y: f32) -> f32 {
-        if self.width == 0 || self.height == 0 {
+        if self.width == 0 || self.height == 0 || self.data.is_empty() {
             return 0.0;
         }
         // bilinear, clamped at the edges (as the sampler)
@@ -180,20 +207,39 @@ impl Picture {
 }
 
 pub struct State {
-    /// Whether the shaders run (wgpu is there and they were set up).
+    /// Whether the shaders run on a GPU (else the CPU's thread draws them).
     pub on: bool,
-    pub picture: Arc<Mutex<Picture>>,
-    slot: usize,
+    /// The pictures the faces keep (the face shown's, the faded one's).
+    pub pictures: [Arc<Mutex<Picture>>; 2],
+    /// Two uniform slots (the face shown, the one it fades from).
+    pair: usize,
+    cpu: Option<Cpu>,
+    /// Tests: the CPU's picture made in the same frame (not one behind).
+    pub sync: bool,
+    /// Tests: the CPU's resolution fixed at this share of the face's.
+    pub cpu_scale: Option<f32>,
 }
 
 impl Default for State {
     fn default() -> Self {
         State {
             on: false,
-            picture: Arc::default(),
-            slot: NEXT_SLOT.fetch_add(1, Ordering::Relaxed) % SLOTS,
+            pictures: [Arc::default(), Arc::default()],
+            pair: NEXT_PAIR.fetch_add(1, Ordering::Relaxed) % (SLOTS / 2),
+            cpu: None,
+            sync: false,
+            cpu_scale: None,
         }
     }
+}
+
+struct Feedback {
+    textures: [wgpu::Texture; 2],
+    /// The groups that read texture k (with this slot's uniforms).
+    groups: [wgpu::BindGroup; 2],
+    size: (u32, u32),
+    /// Which texture holds the last frame.
+    last: usize,
 }
 
 struct Slot {
@@ -202,11 +248,13 @@ struct Slot {
     size: (u32, u32),
     version: u64,
     group: wgpu::BindGroup,
+    feedback: Option<Feedback>,
 }
 
-/// The pipeline and its slots, among egui's callback resources.
+/// The pipelines and their slots, among egui's callback resources.
 struct Faces {
     pipeline: wgpu::RenderPipeline,
+    feedback: wgpu::RenderPipeline,
     layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
     linear: bool,
@@ -214,7 +262,16 @@ struct Faces {
 }
 
 impl Faces {
-    fn texture(device: &wgpu::Device, size: (u32, u32)) -> wgpu::Texture {
+    fn texture(
+        device: &wgpu::Device,
+        size: (u32, u32),
+        format: wgpu::TextureFormat,
+        target: bool,
+    ) -> wgpu::Texture {
+        let mut usage = wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST;
+        if target {
+            usage |= wgpu::TextureUsages::RENDER_ATTACHMENT;
+        }
         device.create_texture(&wgpu::TextureDescriptor {
             label: Some("axross-amp face picture"),
             size: wgpu::Extent3d {
@@ -225,8 +282,8 @@ impl Faces {
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::R8Unorm,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            format,
+            usage,
             view_formats: &[],
         })
     }
@@ -259,7 +316,14 @@ impl Faces {
     }
 }
 
-/// Set the shaders up for egui's wgpu renderer (once, as the window is made).
+/// Whether the adapter is a software rasterizer (its shading costs a CPU's
+/// time: the CPU's own drawing is cheaper there).
+pub fn is_software(render_state: &egui_wgpu::RenderState) -> bool {
+    render_state.adapter.get_info().device_type == wgpu::DeviceType::Cpu
+}
+
+/// Set the shaders up for egui's wgpu renderer (once, as the window is
+/// made).
 pub fn install(render_state: &egui_wgpu::RenderState) {
     let device = &render_state.device;
     let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -302,31 +366,39 @@ pub fn install(render_state: &egui_wgpu::RenderState) {
         bind_group_layouts: &[Some(&layout)],
         immediate_size: 0,
     });
-    let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-        label: Some("axross-amp faces"),
-        layout: Some(&pipeline_layout),
-        vertex: wgpu::VertexState {
-            module: &module,
-            entry_point: Some("vs_main"),
-            compilation_options: Default::default(),
-            buffers: &[],
-        },
-        primitive: wgpu::PrimitiveState::default(),
-        depth_stencil: None,
-        multisample: wgpu::MultisampleState::default(),
-        fragment: Some(wgpu::FragmentState {
-            module: &module,
-            entry_point: Some("fs_main"),
-            compilation_options: Default::default(),
-            targets: &[Some(wgpu::ColorTargetState {
-                format: render_state.target_format,
-                blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
-                write_mask: wgpu::ColorWrites::ALL,
-            })],
-        }),
-        multiview_mask: None,
-        cache: None,
-    });
+    let pipeline = |entry: &str, format: wgpu::TextureFormat, blend: Option<wgpu::BlendState>| {
+        device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("axross-amp faces"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &module,
+                entry_point: Some("vs_main"),
+                compilation_options: Default::default(),
+                buffers: &[],
+            },
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: &module,
+                entry_point: Some(entry),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    blend,
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            multiview_mask: None,
+            cache: None,
+        })
+    };
+    let main = pipeline(
+        "fs_main",
+        render_state.target_format,
+        Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+    );
+    let feedback = pipeline("fs_feedback", wgpu::TextureFormat::Rgba8Unorm, None);
     let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
         label: Some("axross-amp faces"),
         address_mode_u: wgpu::AddressMode::ClampToEdge,
@@ -336,7 +408,8 @@ pub fn install(render_state: &egui_wgpu::RenderState) {
         ..Default::default()
     });
     let mut faces = Faces {
-        pipeline,
+        pipeline: main,
+        feedback,
         layout,
         sampler,
         linear: render_state.target_format.is_srgb(),
@@ -349,7 +422,7 @@ pub fn install(render_state: &egui_wgpu::RenderState) {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let texture = Faces::texture(device, (1, 1));
+        let texture = Faces::texture(device, (1, 1), wgpu::TextureFormat::R8Unorm, false);
         let group = faces.group(device, &uniforms, &texture);
         faces.slots.push(Slot {
             uniforms,
@@ -357,6 +430,7 @@ pub fn install(render_state: &egui_wgpu::RenderState) {
             size: (1, 1),
             version: u64::MAX,
             group,
+            feedback: None,
         });
     }
     render_state
@@ -370,6 +444,8 @@ struct Paint {
     uniforms: Uniforms,
     picture: Option<Arc<Mutex<Picture>>>,
     slot: usize,
+    /// The face's size in points (the feedback's pictures follow it).
+    size: (f32, f32),
 }
 
 impl CallbackTrait for Paint {
@@ -378,7 +454,7 @@ impl CallbackTrait for Paint {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         screen: &ScreenDescriptor,
-        _encoder: &mut wgpu::CommandEncoder,
+        encoder: &mut wgpu::CommandEncoder,
         resources: &mut CallbackResources,
     ) -> Vec<wgpu::CommandBuffer> {
         let Some(faces) = resources.get_mut::<Faces>() else {
@@ -399,6 +475,60 @@ impl CallbackTrait for Paint {
         }
         let slot = self.slot % SLOTS;
         queue.write_buffer(&faces.slots[slot].uniforms, 0, &bytes);
+        if u.face() == Shader::Feedback as u32 {
+            // the next frame from the last, into the other picture
+            let want = (
+                ((self.size.0 * ppp * FEEDBACK_SCALE) as u32).clamp(16, 2048),
+                ((self.size.1 * ppp * FEEDBACK_SCALE) as u32).clamp(16, 2048),
+            );
+            if faces.slots[slot]
+                .feedback
+                .as_ref()
+                .is_none_or(|f| f.size != want)
+            {
+                let make = || Faces::texture(device, want, wgpu::TextureFormat::Rgba8Unorm, true);
+                let textures = [make(), make()];
+                let uniforms = &faces.slots[slot].uniforms;
+                let groups = [
+                    faces.group(device, uniforms, &textures[0]),
+                    faces.group(device, uniforms, &textures[1]),
+                ];
+                faces.slots[slot].feedback = Some(Feedback {
+                    textures,
+                    groups,
+                    size: want,
+                    last: 0,
+                });
+            }
+            let pipeline = &faces.feedback;
+            if let Some(f) = faces.slots[slot].feedback.as_mut() {
+                let next = 1 - f.last;
+                let view = f.textures[next].create_view(&wgpu::TextureViewDescriptor::default());
+                {
+                    let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                        label: Some("axross-amp feedback"),
+                        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                            view: &view,
+                            depth_slice: None,
+                            resolve_target: None,
+                            ops: wgpu::Operations {
+                                load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                                store: wgpu::StoreOp::Store,
+                            },
+                        })],
+                        depth_stencil_attachment: None,
+                        timestamp_writes: None,
+                        occlusion_query_set: None,
+                        multiview_mask: None,
+                    });
+                    pass.set_pipeline(pipeline);
+                    pass.set_bind_group(0, &f.groups[f.last], &[]);
+                    pass.draw(0..3, 0..1);
+                }
+                f.last = next;
+            }
+            return Vec::new();
+        }
         if let Some(picture) = &self.picture
             && let Ok(picture) = picture.lock()
             && picture.width > 0
@@ -406,7 +536,7 @@ impl CallbackTrait for Paint {
         {
             let size = (picture.width, picture.height);
             if faces.slots[slot].size != size {
-                let texture = Faces::texture(device, size);
+                let texture = Faces::texture(device, size, wgpu::TextureFormat::R8Unorm, false);
                 let group = faces.group(device, &faces.slots[slot].uniforms, &texture);
                 let s = &mut faces.slots[slot];
                 s.texture = texture;
@@ -450,22 +580,33 @@ impl CallbackTrait for Paint {
         let Some(faces) = resources.get::<Faces>() else {
             return;
         };
+        let slot = &faces.slots[self.slot % SLOTS];
         pass.set_pipeline(&faces.pipeline);
-        pass.set_bind_group(0, &faces.slots[self.slot % SLOTS].group, &[]);
+        let group = match (
+            &slot.feedback,
+            self.uniforms.face() == Shader::Feedback as u32,
+        ) {
+            (Some(f), true) => &f.groups[f.last],
+            _ => &slot.group,
+        };
+        pass.set_bind_group(0, group, &[]);
         pass.draw(0..3, 0..1);
     }
 }
 
-/// Draw `shader` into `rect` (`clip`: the rounded background it lies on):
-/// on the GPU when it is there, else on the CPU into `pen`.
+/// Draw `u`'s face into `rect` (`clip`: the rounded background it lies
+/// on): on the GPU when the shaders run there, else the CPU's picture of
+/// it. `second`: the face being faded from (its own slot).
+#[allow(clippy::too_many_arguments)]
 pub fn paint(
     painter: &egui::Painter,
-    pen: &mut Pen<'_>,
-    state: &State,
+    _pen: &mut Pen<'_>,
+    state: &mut State,
     rect: Rect,
     clip: Rect,
     mut u: Uniforms,
     picture: bool,
+    second: bool,
 ) {
     u.v[0] = [rect.left(), rect.top(), rect.width(), rect.height()];
     u.v[1] = [clip.left(), clip.top(), clip.width(), clip.height()];
@@ -475,60 +616,228 @@ pub fn paint(
             clip,
             Paint {
                 uniforms: u,
-                picture: picture.then(|| state.picture.clone()),
-                slot: state.slot,
+                picture: picture.then(|| state.pictures[usize::from(second)].clone()),
+                slot: state.pair * 2 + usize::from(second),
+                size: (rect.width(), rect.height()),
             },
         ));
-    } else {
-        let guard = state.picture.lock().ok();
-        let picture = if picture { guard.as_deref() } else { None };
-        cpu(pen, rect, &u, picture);
+        return;
+    }
+    let picture = picture.then(|| state.pictures[usize::from(second)].clone());
+    let (sync, scale) = (state.sync, state.cpu_scale);
+    let cpu = state
+        .cpu
+        .get_or_insert_with(|| Cpu::start(painter.ctx().clone()));
+    cpu.frame(painter, rect, clip, u, picture, sync, scale, second);
+}
+
+// -- the CPU's pictures ----------------------------------------------------------
+
+struct Job {
+    u: Uniforms,
+    width: usize,
+    height: usize,
+    picture: Option<Arc<Mutex<Picture>>>,
+    /// Which of the two faces (a crossfade's: each its own feedback).
+    second: bool,
+}
+
+struct Done {
+    pixels: Vec<Color32>,
+    width: usize,
+    height: usize,
+    millis: f32,
+    second: bool,
+}
+
+/// A thread that draws the face per pixel, a frame at a time, at the
+/// resolution it manages in about 12 ms; its pictures shown as textures.
+struct Cpu {
+    jobs: Sender<Job>,
+    done: Receiver<Done>,
+    textures: [Option<TextureHandle>; 2],
+    pending: [bool; 2],
+    /// Pixels a frame (adjusted to the time it takes).
+    budget: f32,
+}
+
+impl Cpu {
+    fn start(ctx: egui::Context) -> Cpu {
+        let (jobs, rx) = channel::<Job>();
+        let (tx, done) = channel::<Done>();
+        let _ = std::thread::Builder::new()
+            .name("amp-face-cpu".into())
+            .spawn(move || {
+                let mut feedback: [Vec<V3>; 2] = [Vec::new(), Vec::new()];
+                let mut sizes = [(0usize, 0usize); 2];
+                while let Ok(job) = rx.recv() {
+                    let started = Instant::now();
+                    let k = usize::from(job.second);
+                    if sizes[k] != (job.width, job.height) {
+                        sizes[k] = (job.width, job.height);
+                        feedback[k] = vec![[0.0; 3]; job.width * job.height];
+                    }
+                    let pixels = draw(&job, &mut feedback[k]);
+                    let millis = started.elapsed().as_secs_f32() * 1000.0;
+                    if tx
+                        .send(Done {
+                            pixels,
+                            width: job.width,
+                            height: job.height,
+                            millis,
+                            second: job.second,
+                        })
+                        .is_err()
+                    {
+                        break;
+                    }
+                    ctx.request_repaint();
+                }
+            });
+        Cpu {
+            jobs,
+            done,
+            textures: [None, None],
+            pending: [false; 2],
+            budget: 160.0 * 90.0,
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn frame(
+        &mut self,
+        painter: &egui::Painter,
+        rect: Rect,
+        clip: Rect,
+        u: Uniforms,
+        picture: Option<Arc<Mutex<Picture>>>,
+        sync: bool,
+        scale: Option<f32>,
+        second: bool,
+    ) {
+        let k = usize::from(second);
+        let ppp = painter.ctx().pixels_per_point();
+        let full = (rect.width() * ppp).max(1.0) * (rect.height() * ppp).max(1.0);
+        let share = match scale {
+            Some(s) => s * s,
+            None => (self.budget / full).min(1.0),
+        };
+        let width = ((rect.width() * ppp * share.sqrt()) as usize).max(16);
+        let height = ((rect.height() * ppp * share.sqrt()) as usize).max(9);
+        if !self.pending[k] {
+            let job = Job {
+                u,
+                width,
+                height,
+                picture,
+                second,
+            };
+            if self.jobs.send(job).is_ok() {
+                self.pending[k] = true;
+            }
+        }
+        // what came back (in the same frame for tests)
+        loop {
+            let result = if sync && self.pending[k] {
+                self.done.recv().ok()
+            } else {
+                self.done.try_recv().ok()
+            };
+            let Some(done) = result else { break };
+            let j = usize::from(done.second);
+            self.pending[j] = false;
+            if scale.is_none() {
+                // towards 12 ms a picture
+                let fit = self.budget * (12.0 / done.millis.max(0.5)).clamp(0.5, 1.6);
+                self.budget = fit.clamp(64.0 * 36.0, 1920.0 * 1080.0);
+            }
+            let image = ColorImage::new([done.width, done.height], done.pixels);
+            match &mut self.textures[j] {
+                Some(t) => t.set(image, TextureOptions::LINEAR),
+                none => {
+                    *none = Some(painter.ctx().load_texture(
+                        "axross-amp face",
+                        image,
+                        TextureOptions::LINEAR,
+                    ))
+                }
+            }
+            if j == k && (sync || !self.pending[k]) {
+                break;
+            }
+        }
+        if let Some(texture) = &self.textures[k] {
+            let tint = Color32::from_white_alpha((u.v[4][3] * 255.0) as u8);
+            painter
+                .with_clip_rect(clip.intersect(painter.clip_rect()))
+                .image(
+                    texture.id(),
+                    rect,
+                    Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)),
+                    tint,
+                );
+        }
     }
 }
 
-/// The face on the CPU: the shader's function at the vertices of a grid
-/// (8 points apart at the finest, as many as the face's cost allows: the
-/// noise faces fewer), blended in between.
-pub fn cpu(pen: &mut Pen<'_>, rect: Rect, u: &Uniforms, picture: Option<&Picture>) {
-    let face = u.v[4][0] as u32;
-    let budget = match face {
-        // fire, aurora, smoke: layers of noise a point
-        2 | 4 | 10 => 1400.0,
-        3 | 6 | 8 | 9 => 4000.0,
-        _ => 9000.0,
-    };
-    let aspect = rect.width() / rect.height().max(1.0);
-    let rows_fit = (budget / aspect).sqrt();
-    let cols = ((rect.width() / 8.0).min(rows_fit * aspect) as usize).max(8);
-    let rows = ((rect.height() / 8.0).min(rows_fit) as usize).max(6);
-    let base = pen.mesh.vertices.len() as u32;
-    for r in 0..=rows {
-        for c in 0..=cols {
-            let uv = [c as f32 / cols as f32, r as f32 / rows as f32];
-            let rgb = shade(face, u, uv, aspect, picture);
-            let to = |v: f32| (v.clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
-            pen.mesh.colored_vertex(
-                pos2(
-                    rect.left() + uv[0] * rect.width(),
-                    rect.top() + uv[1] * rect.height(),
-                ),
-                Color32::from_rgb(to(rgb[0]), to(rgb[1]), to(rgb[2])),
-            );
+/// The job's face, pixel by pixel (on as many threads as there are, up to 4).
+fn draw(job: &Job, feedback: &mut [V3]) -> Vec<Color32> {
+    let (w, h) = (job.width, job.height);
+    let aspect = w as f32 / h as f32;
+    let guard = job.picture.as_ref().and_then(|p| p.lock().ok());
+    let picture = guard.as_deref();
+    let u = &job.u;
+    let face = u.face();
+    let mut pixels = vec![Color32::BLACK; w * h];
+    let to = |v: f32| (v.clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
+    if face == Shader::Feedback as u32 {
+        // (its own last frame: worked out in one go, read as it was)
+        let last = feedback.to_vec();
+        for y in 0..h {
+            for x in 0..w {
+                let uv = [(x as f32 + 0.5) / w as f32, (y as f32 + 0.5) / h as f32];
+                let c = feedback_pixel(u, uv, aspect, &last, w, h);
+                feedback[y * w + x] = c;
+                pixels[y * w + x] = Color32::from_rgb(to(c[0]), to(c[1]), to(c[2]));
+            }
         }
+        return pixels;
     }
-    let w = (cols + 1) as u32;
-    for r in 0..rows as u32 {
-        for c in 0..cols as u32 {
-            let i = base + r * w + c;
-            pen.mesh.add_triangle(i, i + 1, i + w + 1);
-            pen.mesh.add_triangle(i, i + w + 1, i + w);
+    let threads = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1)
+        .clamp(1, 4);
+    let rows = h.div_ceil(threads);
+    let pixel = 2.0 / h as f32;
+    std::thread::scope(|scope| {
+        for (part, chunk) in pixels.chunks_mut(rows * w).enumerate() {
+            scope.spawn(move || {
+                for (i, px) in chunk.iter_mut().enumerate() {
+                    let (x, y) = (i % w, part * rows + i / w);
+                    let uv = [(x as f32 + 0.5) / w as f32, (y as f32 + 0.5) / h as f32];
+                    let c = shade(face, u, uv, aspect, picture, pixel);
+                    *px = if face == Shader::Phosphor as u32 {
+                        // (the phosphor lies over the face's ground)
+                        let a = (picture.map_or(0.0, |p| p.at(uv[0], uv[1])) * 6.0).clamp(0.0, 1.0);
+                        Color32::from_rgba_premultiplied(
+                            to(c[0] * a),
+                            to(c[1] * a),
+                            to(c[2] * a),
+                            to(a),
+                        )
+                    } else {
+                        Color32::from_rgb(to(c[0]), to(c[1]), to(c[2]))
+                    };
+                }
+            });
         }
-    }
+    });
+    pixels
 }
 
 // -- the shader's functions, on the CPU (faces.wgsl, line for line) ------------------
 
-type V3 = [f32; 3];
+pub type V3 = [f32; 3];
 
 fn mix3(a: V3, b: V3, t: f32) -> V3 {
     [
@@ -546,6 +855,10 @@ fn scale(a: V3, k: f32) -> V3 {
     [a[0] * k, a[1] * k, a[2] * k]
 }
 
+fn mul(a: V3, b: V3) -> V3 {
+    [a[0] * b[0], a[1] * b[1], a[2] * b[2]]
+}
+
 fn smoothstep(e0: f32, e1: f32, x: f32) -> f32 {
     let t = ((x - e0) / (e1 - e0)).clamp(0.0, 1.0);
     t * t * (3.0 - 2.0 * t)
@@ -553,6 +866,10 @@ fn smoothstep(e0: f32, e1: f32, x: f32) -> f32 {
 
 fn fract(x: f32) -> f32 {
     x - x.floor()
+}
+
+fn len2(x: f32, y: f32) -> f32 {
+    (x * x + y * y).sqrt()
 }
 
 fn palette(u: &Uniforms, t: f32) -> V3 {
@@ -579,6 +896,29 @@ fn cycle(u: &Uniforms, t: f32) -> V3 {
     } else {
         mix3(c(3), c(1), x - 2.0)
     }
+}
+
+/// Magma (matplotlib's perceptual map), the shader's polynomial.
+pub fn magma(t: f32) -> V3 {
+    let x = t.clamp(0.0, 1.0);
+    const C: [[f32; 3]; 7] = [
+        [-0.002_136_485, -0.000_749_655, -0.005_386_127],
+        [0.251_660_5, 0.677_523_2, 2.494_026],
+        [8.353_717, -3.577_719, 0.314_467_9],
+        [-27.668_74, 14.264_73, -13.649_21],
+        [52.176_14, -27.943_61, 12.944_16],
+        [-50.768_52, 29.046_58, 4.234_15],
+        [18.655_71, -11.489_77, -5.601_962],
+    ];
+    let mut out = [0.0; 3];
+    for (k, o) in out.iter_mut().enumerate() {
+        let mut v = C[6][k];
+        for c in C[..6].iter().rev() {
+            v = c[k] + x * v;
+        }
+        *o = v.clamp(0.0, 1.0);
+    }
+    out
 }
 
 fn hash(p: [f32; 2]) -> f32 {
@@ -614,41 +954,32 @@ fn fbm(p: [f32; 2]) -> f32 {
     v
 }
 
-fn shade(face: u32, u: &Uniforms, uv: [f32; 2], aspect: f32, picture: Option<&Picture>) -> V3 {
+fn rot(p: [f32; 2], a: f32) -> [f32; 2] {
+    let (s, c) = a.sin_cos();
+    [c * p[0] - s * p[1], s * p[0] + c * p[1]]
+}
+
+/// A face's colour at `uv` (0..1 over its area; `pixel`: a pixel in the
+/// faces' units, 2 across the height).
+pub fn shade(
+    face: u32,
+    u: &Uniforms,
+    uv: [f32; 2],
+    aspect: f32,
+    picture: Option<&Picture>,
+    pixel: f32,
+) -> V3 {
     let p = [(uv[0] - 0.5) * aspect * 2.0, (uv[1] - 0.5) * 2.0];
     let t = u.time();
     let c = |i| u.colour(i);
-    match face {
+    let pic = |x: f32, y: f32| picture.map_or(0.0, |pic| pic.at(x, y));
+    let out = match face {
         0 => {
-            let v = picture.map_or(0.0, |pic| {
-                pic.at(uv[0] + u.scroll() / pic.width.max(1) as f32, uv[1])
-            });
-            palette(u, v)
+            let w = picture.map_or(1, |pic| pic.width.max(1)) as f32;
+            magma(pic(uv[0] + u.scroll() / w, uv[1]))
         }
-        1 => {
-            let t = t * (0.35 + 0.8 * u.energy());
-            let mut v = (p[0] * 3.0 + t).sin();
-            v += ((p[1] * 3.0 + t) * 0.7).sin();
-            v += ((p[0] * 2.0 + p[1] * 3.0 + t * 1.3) * (1.0 + u.bass())).sin();
-            let cc = [p[0] + 0.6 * (t * 0.33).sin(), p[1] + 0.6 * (t * 0.5).cos()];
-            v += (((cc[0] * cc[0] + cc[1] * cc[1]) * 18.0 + 1.0).sqrt() - t * 2.0).sin();
-            let shade = 0.55 + 0.45 * (v * 1.6 + u.phase()).sin();
-            add(
-                scale(cycle(u, v * 0.18 + t * 0.05), 0.35 + 0.65 * shade),
-                scale(c(4), u.pulse() * 0.15 * shade),
-            )
-        }
-        2 => {
-            let q = [uv[0] * aspect * 3.0, (1.0 - uv[1]) * 3.0];
-            let rise = t * (1.2 + 1.5 * u.energy());
-            let inner = fbm([q[0] * 0.7, q[1] * 0.7 - rise * 0.5]);
-            let n = fbm([q[0] + inner * 1.3, q[1] - rise]);
-            let height = 0.35 + 0.55 * u.band(uv[0] * 0.6) + 0.3 * u.pulse();
-            let y = 1.0 - uv[1];
-            let flicker = 0.25 * u.treble() * noise([q[0] * 6.0 + t * 8.0, q[1] * 6.0 + t * 8.0]);
-            let heat = (n * 1.4 - y / height.max(0.05) + 0.25 + flicker).clamp(0.0, 1.0);
-            palette(u, heat.powf(0.8))
-        }
+        1 => liquid(u, p),
+        2 => fire(u, uv, aspect),
         3 => {
             let t = t * 0.6;
             let (mut field, mut tint) = (0.0, [0.0; 3]);
@@ -677,6 +1008,10 @@ fn shade(face: u32, u: &Uniforms, uv: [f32; 2], aspect: f32, picture: Option<&Pi
         4 => {
             let t = t * 0.25;
             let mut col = scale(c(0), 0.7 + 0.3 * uv[1]);
+            let star = hash([(uv[0] * aspect * 140.0).floor(), (uv[1] * 140.0).floor()]);
+            if star >= 0.997 {
+                col = add(col, scale(c(4), 0.6));
+            }
             for k in 0..3 {
                 let fk = k as f32;
                 let x = uv[0] * aspect * (1.2 + 0.4 * fk);
@@ -699,107 +1034,18 @@ fn shade(face: u32, u: &Uniforms, uv: [f32; 2], aspect: f32, picture: Option<&Pi
             }
             col
         }
-        5 => {
-            let r = (p[0] * p[0] + p[1] * p[1]).sqrt().max(1e-3);
-            let a = p[1].atan2(p[0]);
-            let depth = 0.35 / r + t * (0.6 + 1.4 * u.bass());
-            let turn = a / std::f32::consts::TAU + 0.15 * (depth * 0.7 + u.phase()).sin();
-            let rings = 0.5 + 0.5 * (depth * 6.0).sin();
-            let stripes = 0.5 + 0.5 * (turn * std::f32::consts::TAU * 8.0 + depth).sin();
-            let level = u.band((2.0 * fract(turn) - 1.0).abs());
-            let light = rings * stripes * (0.4 + 0.8 * level) + 0.25 * u.pulse() * rings;
-            let fog = (r * 2.2).clamp(0.0, 1.0);
-            add(
-                mix3(
-                    c(0),
-                    scale(cycle(u, depth * 0.05 + level * 0.3), 0.3 + light),
-                    fog,
-                ),
-                scale(c(4), (rings * stripes).powi(8) * fog * 0.5),
-            )
-        }
-        6 => {
-            let tt = t * 0.07 + u.phase() * 0.05;
-            let k = 0.985 + 0.012 * u.bass();
-            let cc = [
-                (tt.cos() * 0.5 - (2.0 * tt).cos() * 0.25) * k,
-                (tt.sin() * 0.5 - (2.0 * tt).sin() * 0.25) * k,
-            ];
-            let zoom = 1.35 - 0.15 * u.pulse();
-            let mut z = [p[0] * zoom, p[1] * zoom];
-            // (the CPU's grid is coarse: fewer steps do)
-            let most = 48;
-            let mut i = 0;
-            while i < most {
-                z = [z[0] * z[0] - z[1] * z[1] + cc[0], 2.0 * z[0] * z[1] + cc[1]];
-                if z[0] * z[0] + z[1] * z[1] > 64.0 {
-                    break;
-                }
-                i += 1;
-            }
-            if i >= most {
-                return mix3(c(0), c(1), 0.15 + 0.2 * u.pulse());
-            }
-            let m = z[0] * z[0] + z[1] * z[1];
-            let smooth = (i as f32 - m.log2().log2() + 4.0).max(0.0);
-            let v = (1.0 + smooth).log2() / 97f32.log2();
-            palette(u, (v * (0.9 + 0.25 * u.energy())).clamp(0.0, 1.0))
-        }
+        5 => tunnel(u, p),
+        6 => julia(u, p),
         7 => {
-            let Some(pic) = picture else { return c(0) };
-            let v = pic.at(uv[0], uv[1]);
-            let dx = pic.at(uv[0] + 1.0 / pic.width.max(1) as f32, uv[1]) - v;
-            let dy = pic.at(uv[0], uv[1] + 1.0 / pic.height.max(1) as f32) - v;
+            let Some(pc) = picture else { return c(0) };
+            let v = pc.at(uv[0], uv[1]);
+            let dx = pc.at(uv[0] + 1.0 / pc.width.max(1) as f32, uv[1]) - v;
+            let dy = pc.at(uv[0], uv[1] + 1.0 / pc.height.max(1) as f32) - v;
             let light = (0.6 + 3.0 * (dx - dy)).clamp(0.0, 1.4);
             scale(palette(u, smoothstep(0.05, 0.6, v) * 0.95), light)
         }
-        8 => {
-            let q = [uv[0] * aspect, uv[1]];
-            let (mut h, mut slope) = (0.0, [0.0f32; 2]);
-            for k in 0..8 {
-                let d = u.drop(k);
-                if d[3] <= 0.0 {
-                    continue;
-                }
-                let v = [q[0] - d[0] * aspect, q[1] - d[1]];
-                let r = (v[0] * v[0] + v[1] * v[1]).sqrt();
-                let front = r - d[2] * 0.35;
-                let env = (-front * front * 90.0).exp() * (-d[2] * 1.1).exp() * d[3];
-                h += (front * 60.0).sin() * env;
-                let k2 = (front * 60.0).cos() * env / r.max(1e-3);
-                slope = [slope[0] + v[0] * k2, slope[1] + v[1] * k2];
-            }
-            let ambient = 0.5 + 0.5 * (q[0] * 7.0 + t * 0.7).sin() * (q[1] * 9.0 - t * 0.5).sin();
-            let base = mix3(c(0), c(1), 0.25 + 0.2 * ambient * u.energy());
-            let light = (slope[0] * 0.6 - slope[1] * 0.8).clamp(-1.0, 1.0);
-            let lit = light.max(0.0);
-            let col = add(
-                add(base, scale(cycle(u, t * 0.03 + h * 0.2), lit * 0.9)),
-                scale(c(4), lit.powi(6) * 0.6),
-            );
-            add(col, scale(c(0), -(-light).max(0.0) * 0.4))
-        }
-        9 => {
-            let tt = t * 0.4;
-            let a = [0.35 * tt.sin(), 0.25 * (tt * 0.8).cos()];
-            let b = [0.35 * (tt * 0.7 + 2.0).sin(), 0.25 * (tt * 1.1 + 1.0).cos()];
-            let len = |x: f32, y: f32| (x * x + y * y).sqrt();
-            let f1 = 40.0 + 30.0 * u.bass();
-            let f2 = 42.0 + 30.0 * u.middle();
-            let r1 = 0.5 + 0.5 * (len(p[0] - a[0], p[1] - a[1]) * f1 - t * 2.0).sin();
-            let r2 = 0.5 + 0.5 * (len(p[0] - b[0], p[1] - b[1]) * f2 + t * 1.5).sin();
-            let lines = 0.5
-                + 0.5
-                    * ((p[0] * (tt * 0.3).cos() + p[1] * (tt * 0.3).sin())
-                        * (30.0 + 20.0 * u.treble()))
-                    .sin();
-            let v = r1 * r2 + 0.35 * lines * r1;
-            add(
-                mix3(c(0), cycle(u, v * 0.4 + tt * 0.1), smoothstep(0.15, 0.9, v)),
-                scale(c(4), u.pulse() * 0.2 * v),
-            )
-        }
-        _ => {
+        9 => moire(u, p, pixel),
+        10 => {
             let tt = t * 0.25;
             let q = [uv[0] * aspect * 2.2, uv[1] * 2.2];
             let warp = [
@@ -819,16 +1065,458 @@ fn shade(face: u32, u: &Uniforms, uv: [f32; 2], aspect: f32, picture: Option<&Pi
             let d = fbm([q[0] + 2.5 * warp2[0], q[1] + 2.5 * warp2[1] + tt * 3.0]);
             let density =
                 ((d - 0.25 + 0.35 * u.energy()) * (1.3 + u.pulse() * 0.5)).clamp(0.0, 1.0);
-            let length = (warp2[0] * warp2[0] + warp2[1] * warp2[1])
-                .sqrt()
-                .clamp(0.0, 1.0);
+            let length = len2(warp2[0], warp2[1]).clamp(0.0, 1.0);
             let shade = mix3(c(1), c(3), length);
             add(
                 mix3(c(0), shade, density),
                 scale(c(4), density.powi(4) * 0.3),
             )
         }
+        11 => flyover(u, uv, aspect, 48),
+        12 => crystals(u, p),
+        _ => magma(pic(uv[0], uv[1]).max(0.0).powf(0.6) * 0.95),
+    };
+    [
+        out[0].clamp(0.0, 1.0),
+        out[1].clamp(0.0, 1.0),
+        out[2].clamp(0.0, 1.0),
+    ]
+}
+
+fn liquid(u: &Uniforms, p: [f32; 2]) -> V3 {
+    let t = u.time() * (0.12 + 0.25 * u.energy());
+    let s = [p[0] * 1.1, p[1] * 1.1];
+    let q = [fbm([s[0], s[1] + t]), fbm([s[0] + 5.2, s[1] + 1.3 - t])];
+    let r = [
+        fbm([
+            s[0] + 3.5 * q[0] + 1.7 + 0.6 * t,
+            s[1] + 3.5 * q[1] + 9.2 + 0.6 * t,
+        ]),
+        fbm([
+            s[0] + 3.5 * q[0] + 8.3 - 0.4 * t,
+            s[1] + 3.5 * q[1] + 2.8 - 0.4 * t,
+        ]),
+    ];
+    let k = 3.0 + 1.5 * u.bass();
+    let v = fbm([s[0] + k * r[0], s[1] + k * r[1]]);
+    let base = palette(u, 0.15 + 0.85 * smoothstep(0.2, 0.85, v));
+    let fold = (len2(r[0] - q[0], r[1] - q[1]) * 1.2)
+        .clamp(0.0, 1.0)
+        .powi(3);
+    add(
+        scale(base, 0.55 + 0.6 * v),
+        scale(u.colour(4), fold * (0.25 + 0.4 * u.pulse())),
+    )
+}
+
+fn fire(u: &Uniforms, uv: [f32; 2], aspect: f32) -> V3 {
+    let t = u.time();
+    let y = 1.0 - uv[1];
+    let x = uv[0] * aspect;
+    let turb = fbm([x * 3.0, y * 2.0 - t * (1.6 + 1.2 * u.energy())]);
+    let lick = fbm([x * 7.0 + 3.0, y * 4.0 - t * 3.2]);
+    let height = 0.25 + 0.55 * u.band(uv[0] * 0.7) + 0.2 * u.pulse();
+    let shape = 1.0 - y / height.max(0.05);
+    let heat = (shape * 0.85 + (turb - 0.5) * 1.2 + (lick - 0.5) * 0.6 * (1.0 - y)).clamp(0.0, 1.0);
+    let h = heat.powf(1.4);
+    let mut col = mix3(
+        [0.02, 0.0, 0.0],
+        [0.55, 0.05, 0.0],
+        smoothstep(0.0, 0.35, h),
+    );
+    col = mix3(col, [0.95, 0.35, 0.02], smoothstep(0.3, 0.6, h));
+    col = mix3(col, [1.0, 0.8, 0.25], smoothstep(0.55, 0.85, h));
+    col = mix3(col, [1.0, 0.97, 0.85], smoothstep(0.85, 1.0, h));
+    let tinted = mul(col, add([0.6; 3], scale(u.colour(3), 0.8)));
+    add(
+        mix3(col, tinted, 0.25),
+        scale(u.colour(0), (1.0 - smoothstep(0.0, 0.2, h)) * 0.6),
+    )
+}
+
+fn tunnel(u: &Uniforms, p: [f32; 2]) -> V3 {
+    let t = u.time();
+    let r = len2(p[0], p[1]).max(1e-3);
+    let a = p[1].atan2(p[0]);
+    let depth = 0.4 / r + t * (0.6 + 1.4 * u.bass());
+    let turn = a / std::f32::consts::TAU + 0.12 * (depth * 0.5 + u.phase()).sin();
+    let level = u.band((2.0 * fract(turn) - 1.0).abs());
+    let ring = fract(depth * 1.5);
+    let seg = fract(turn * 12.0);
+    let groove = smoothstep(0.0, 0.08, ring)
+        * smoothstep(1.0, 0.92, ring)
+        * smoothstep(0.0, 0.06, seg)
+        * smoothstep(1.0, 0.94, seg);
+    let tile = cycle(u, (depth * 1.5).floor() * 0.13 + level * 0.35);
+    let lit = 0.35 + 0.65 * level + 0.3 * u.pulse();
+    let fog = (r * 1.9).clamp(0.0, 1.0);
+    let edge = (1.0 - groove) * (0.4 + level);
+    let col = add(scale(tile, groove * lit), scale(u.colour(4), edge * 0.55));
+    add(
+        mix3(u.colour(0), col, fog),
+        scale(u.colour(4), (1.0 - fog).powi(6) * 0.4 * u.pulse()),
+    )
+}
+
+fn julia(u: &Uniforms, p: [f32; 2]) -> V3 {
+    let t = u.time() * 0.07 + u.phase() * 0.05;
+    let k = 0.985 + 0.012 * u.bass();
+    let cc = [
+        (t.cos() * 0.5 - (2.0 * t).cos() * 0.25) * k,
+        (t.sin() * 0.5 - (2.0 * t).sin() * 0.25) * k,
+    ];
+    let zoom = 1.25 - 0.1 * u.pulse();
+    let mut z = [p[0] * zoom, p[1] * zoom];
+    let mut trap = 1e9f32;
+    let trap_at = 0.25 * (u.time() * 0.3).sin();
+    let most = 128;
+    let mut i = 0;
+    while i < most {
+        z = [z[0] * z[0] - z[1] * z[1] + cc[0], 2.0 * z[0] * z[1] + cc[1]];
+        trap = trap.min(len2(z[0] - trap_at, z[1]));
+        if z[0] * z[0] + z[1] * z[1] > 256.0 {
+            break;
+        }
+        i += 1;
     }
+    let trapped = (-trap * 6.0).exp();
+    if i >= most {
+        return mix3(u.colour(0), u.colour(1), 0.2 + 0.5 * trapped);
+    }
+    let m = z[0] * z[0] + z[1] * z[1];
+    let smooth = (i as f32 + 1.0 - (m.log2() * 0.5).log2()).max(0.0);
+    let v = ((smooth / most as f32).sqrt() * (0.95 + 0.25 * u.energy())).clamp(0.0, 1.0);
+    add(
+        palette(u, v),
+        scale(cycle(u, trap * 0.5 + u.time() * 0.02), trapped * 0.6),
+    )
+}
+
+fn wave(phase: f32, per_pixel: f32) -> f32 {
+    let aa = (1.0 - per_pixel / 3.0).clamp(0.0, 1.0);
+    0.5 + 0.5 * phase.sin() * aa
+}
+
+fn moire(u: &Uniforms, p: [f32; 2], pixel: f32) -> V3 {
+    let t = u.time() * 0.4;
+    let a = [0.35 * t.sin(), 0.25 * (t * 0.8).cos()];
+    let b = [0.35 * (t * 0.7 + 2.0).sin(), 0.25 * (t * 1.1 + 1.0).cos()];
+    let f1 = 34.0 + 20.0 * u.bass();
+    let f2 = 36.0 + 20.0 * u.middle();
+    let f3 = 24.0 + 16.0 * u.treble();
+    let r1 = wave(
+        len2(p[0] - a[0], p[1] - a[1]) * f1 - u.time() * 2.0,
+        f1 * pixel,
+    );
+    let r2 = wave(
+        len2(p[0] - b[0], p[1] - b[1]) * f2 + u.time() * 1.5,
+        f2 * pixel,
+    );
+    let lines = wave(
+        (p[0] * (t * 0.3).cos() + p[1] * (t * 0.3).sin()) * f3,
+        f3 * pixel,
+    );
+    let v = r1 * r2 + 0.35 * lines * r1;
+    add(
+        mix3(
+            u.colour(0),
+            cycle(u, v * 0.4 + t * 0.1),
+            smoothstep(0.15, 0.9, v),
+        ),
+        scale(u.colour(4), u.pulse() * 0.2 * v),
+    )
+}
+
+fn terrain_height(u: &Uniforms, x: f32, z: f32) -> f32 {
+    let ridge = u.band((x.abs() * 0.08).clamp(0.0, 1.0));
+    fbm([x * 0.18, z * 0.18]) * 2.2 + ridge * (0.8 + 1.2 * u.bass()) * smoothstep(1.0, 6.0, x.abs())
+}
+
+fn flyover(u: &Uniforms, uv: [f32; 2], aspect: f32, steps: usize) -> V3 {
+    let p = [(uv[0] - 0.5) * aspect, 0.5 - uv[1]];
+    let t = u.time() * (1.5 + 1.5 * u.energy());
+    let origin = [0.0, 2.6, t];
+    let dl = len2(len2(p[0], p[1] - 0.18), 1.0);
+    let dir = [p[0] / dl, (p[1] - 0.18) / dl, 1.0 / dl];
+    let sky = mix3(
+        u.colour(0),
+        mix3(u.colour(2), u.colour(3), 0.5),
+        (0.35 - p[1]).clamp(0.0, 1.0) * 0.6,
+    );
+    let sl = len2(0.12, 1.0);
+    let sun_dir = [0.0, 0.12 / sl, 1.0 / sl];
+    let facing = (dir[0] * sun_dir[0] + dir[1] * sun_dir[1] + dir[2] * sun_dir[2]).max(0.0);
+    let sun = facing.powf(220.0) * (1.0 + 2.0 * u.pulse());
+    let mut d = 0.1f32;
+    let mut hit = false;
+    let mut pos = origin;
+    for _ in 0..steps {
+        pos = [
+            origin[0] + dir[0] * d,
+            origin[1] + dir[1] * d,
+            origin[2] + dir[2] * d,
+        ];
+        let h = terrain_height(u, pos[0], pos[2]);
+        let gap = pos[1] - h;
+        if gap < 0.01 * d {
+            hit = true;
+            break;
+        }
+        d += (gap * 0.45).max(0.02 * d);
+        if d > 40.0 {
+            break;
+        }
+    }
+    if !hit {
+        return add(
+            add(sky, scale(u.colour(4), sun)),
+            scale(u.colour(3), facing.powf(12.0) * 0.25),
+        );
+    }
+    let e = 0.05;
+    let n = [
+        terrain_height(u, pos[0] - e, pos[2]) - terrain_height(u, pos[0] + e, pos[2]),
+        2.0 * e,
+        terrain_height(u, pos[0], pos[2] - e) - terrain_height(u, pos[0], pos[2] + e),
+    ];
+    let nl = len2(len2(n[0], n[1]), n[2]);
+    let ll = len2(len2(0.3, 0.8), 0.6);
+    let light = ((n[0] * 0.3 + n[1] * 0.8 + n[2] * 0.6) / (nl * ll)).clamp(0.0, 1.0);
+    let height = (pos[1] / 3.0).clamp(0.0, 1.0);
+    let contour = smoothstep(0.92, 1.0, fract(pos[1] * 4.0)) * (0.3 + 0.7 * u.pulse());
+    let ground = add(
+        scale(palette(u, 0.2 + 0.7 * height), 0.25 + 0.85 * light),
+        scale(u.colour(4), contour * 0.4),
+    );
+    let fog = 1.0 - (-d * 0.06).exp();
+    mix3(ground, sky, fog)
+}
+
+fn crystals(u: &Uniforms, p: [f32; 2]) -> V3 {
+    let t = u.time() * 0.35;
+    let q = [p[0] * 3.2, p[1] * 3.2];
+    let cell = [q[0].floor(), q[1].floor()];
+    let (mut f1, mut f2) = (9.0f32, 9.0f32);
+    let mut id = [0.0f32; 2];
+    for j in -1..=1 {
+        for i in -1..=1 {
+            let g = [cell[0] + i as f32, cell[1] + j as f32];
+            let o = [hash(g), hash([g[0] + 17.3, g[1] + 17.3])];
+            let at = [
+                g[0] + 0.5 + 0.4 * (t + std::f32::consts::TAU * o[0]).sin(),
+                g[1] + 0.5 + 0.4 * (t + std::f32::consts::TAU * o[1]).sin(),
+            ];
+            let dist = len2(q[0] - at[0], q[1] - at[1]);
+            if dist < f1 {
+                f2 = f1;
+                f1 = dist;
+                id = g;
+            } else if dist < f2 {
+                f2 = dist;
+            }
+        }
+    }
+    let which = hash([id[0] + 3.1, id[1] + 3.1]);
+    let level = u.band(which);
+    let edge = 1.0 - smoothstep(0.0, 0.08 + 0.05 * u.pulse(), f2 - f1);
+    let face = scale(palette(u, 0.2 + 0.75 * level), 0.35 + 0.65 * (1.0 - f1));
+    let dx = q[0] - id[0] - 0.5 + 1e-4;
+    let dy = q[1] - id[1] - 0.5 + 1e-4;
+    let l = len2(dx, dy);
+    let facet = 0.5 + 0.5 * (dx / l * 0.6 - dy / l * 0.8);
+    add(
+        scale(face, 0.7 + 0.3 * facet),
+        scale(u.colour(4), edge * (0.35 + 0.65 * level)),
+    )
+}
+
+/// The feedback face's next pixel from its last frame `last` (w x h).
+fn feedback_pixel(u: &Uniforms, uv: [f32; 2], aspect: f32, last: &[V3], w: usize, h: usize) -> V3 {
+    let t = u.time();
+    let p = [(uv[0] - 0.5) * aspect, uv[1] - 0.5];
+    let motion = u.extra(0);
+    let mut q = rot(p, motion[0]);
+    q = [q[0] * motion[1], q[1] * motion[1]];
+    q = [
+        q[0] + motion[2] * (q[1] * 6.0 + t).sin(),
+        q[1] + motion[2] * (q[0] * 6.0 - t * 0.8).cos(),
+    ];
+    let src = [q[0] / aspect + 0.5, q[1] + 0.5];
+    let mut prev = if (0.0..=1.0).contains(&src[0]) && (0.0..=1.0).contains(&src[1]) {
+        sample(last, w, h, src)
+    } else {
+        [0.0; 3]
+    };
+    prev = scale(prev, motion[3]);
+    prev = [
+        prev[0] * 0.985 + prev[2] * 0.012,
+        prev[1] * 0.99 + prev[0] * 0.008,
+        prev[2] * 0.985 + prev[1] * 0.012,
+    ];
+    let r = len2(p[0], p[1]);
+    let a = p[1].atan2(p[0]);
+    let level = u.band(a.abs() / std::f32::consts::PI);
+    let ring = 0.18 + 0.22 * level + 0.06 * u.bass();
+    let line = (-(r - ring).abs() * (160.0 - 80.0 * u.pulse())).exp() * (0.4 + 0.9 * level);
+    let cell = [
+        (uv[0] * aspect * 90.0).floor() + (t * 8.0).floor(),
+        (uv[1] * 90.0).floor() + (t * 8.0).floor(),
+    ];
+    let spark = smoothstep(0.996 - 0.01 * u.pulse(), 1.0, hash(cell));
+    let layer = add(
+        scale(cycle(u, a / std::f32::consts::TAU + t * 0.07), line),
+        scale(u.colour(4), spark * u.pulse()),
+    );
+    let floor = 1.5 / 255.0;
+    let out = add(
+        [
+            (prev[0] - floor).max(0.0),
+            (prev[1] - floor).max(0.0),
+            (prev[2] - floor).max(0.0),
+        ],
+        layer,
+    );
+    [
+        out[0].clamp(0.0, 1.0),
+        out[1].clamp(0.0, 1.0),
+        out[2].clamp(0.0, 1.0),
+    ]
+}
+
+fn sample(img: &[V3], w: usize, h: usize, uv: [f32; 2]) -> V3 {
+    if img.len() != w * h || w == 0 {
+        return [0.0; 3];
+    }
+    let fx = (uv[0] * w as f32 - 0.5).clamp(0.0, (w - 1) as f32);
+    let fy = (uv[1] * h as f32 - 0.5).clamp(0.0, (h - 1) as f32);
+    let (i, j) = (fx as usize, fy as usize);
+    let (i2, j2) = ((i + 1).min(w - 1), (j + 1).min(h - 1));
+    let (tx, ty) = (fx - i as f32, fy - j as f32);
+    let top = mix3(img[j * w + i], img[j * w + i2], tx);
+    let bottom = mix3(img[j2 * w + i], img[j2 * w + i2], tx);
+    mix3(top, bottom, ty)
+}
+
+/// What the GPU takes for one of its faces at `size` (pixels): rendered
+/// `frames` times into a texture of its own (nothing read back), timed by
+/// the GPU's timestamp queries where the device offers them, else by the
+/// clock round each submission. Milliseconds a frame, and whether the
+/// GPU's own timestamps measured it. (Tests and measurements.)
+#[doc(hidden)]
+pub fn measure(
+    render_state: &egui_wgpu::RenderState,
+    mut u: Uniforms,
+    size: (u32, u32),
+    frames: u32,
+) -> (f64, bool) {
+    let device = &render_state.device;
+    let queue = &render_state.queue;
+    let renderer = render_state.renderer.read();
+    let Some(faces) = renderer.callback_resources.get::<Faces>() else {
+        return (f64::NAN, false);
+    };
+    let target = Faces::texture(device, size, render_state.target_format, true);
+    let view = target.create_view(&wgpu::TextureViewDescriptor::default());
+    u.v[0] = [0.0, 0.0, size.0 as f32, size.1 as f32];
+    u.v[1] = u.v[0];
+    u.v[3][3] = 0.0;
+    u.v[4][1] = if faces.linear { 1.0 } else { 0.0 };
+    let mut bytes = [0u8; VEC4S * 16];
+    for (k, v) in u.v.iter().flatten().enumerate() {
+        bytes[k * 4..k * 4 + 4].copy_from_slice(&v.to_ne_bytes());
+    }
+    let slot = &faces.slots[SLOTS - 1];
+    queue.write_buffer(&slot.uniforms, 0, &bytes);
+    let timestamps = device.features().contains(wgpu::Features::TIMESTAMP_QUERY);
+    let queries = timestamps.then(|| {
+        device.create_query_set(&wgpu::QuerySetDescriptor {
+            label: Some("axross-amp face timing"),
+            ty: wgpu::QueryType::Timestamp,
+            count: 2 * frames,
+        })
+    });
+    let resolve = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("axross-amp face timing"),
+        size: 16 * frames as u64,
+        usage: wgpu::BufferUsages::QUERY_RESOLVE | wgpu::BufferUsages::COPY_SRC,
+        mapped_at_creation: false,
+    });
+    let read = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("axross-amp face timing"),
+        size: 16 * frames as u64,
+        usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    let started = Instant::now();
+    for frame in 0..frames {
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        {
+            let writes = queries.as_ref().map(|q| wgpu::RenderPassTimestampWrites {
+                query_set: q,
+                beginning_of_pass_write_index: Some(2 * frame),
+                end_of_pass_write_index: Some(2 * frame + 1),
+            });
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("axross-amp face timing"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: writes,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            pass.set_pipeline(&faces.pipeline);
+            pass.set_bind_group(0, &slot.group, &[]);
+            pass.draw(0..3, 0..1);
+        }
+        if let Some(q) = &queries
+            && frame + 1 == frames
+        {
+            encoder.resolve_query_set(q, 0..2 * frames, &resolve, 0);
+            encoder.copy_buffer_to_buffer(&resolve, 0, &read, 0, 16 * frames as u64);
+        }
+        queue.submit([encoder.finish()]);
+        let _ = device.poll(wgpu::PollType::Wait {
+            submission_index: None,
+            timeout: None,
+        });
+    }
+    let wall = started.elapsed().as_secs_f64() * 1000.0 / frames as f64;
+    if queries.is_none() {
+        return (wall, false);
+    }
+    let slice = read.slice(..);
+    slice.map_async(wgpu::MapMode::Read, |_| {});
+    let _ = device.poll(wgpu::PollType::Wait {
+        submission_index: None,
+        timeout: None,
+    });
+    let Ok(data) = slice.get_mapped_range() else {
+        return (wall, false);
+    };
+    let ticks: Vec<u64> = data
+        .as_chunks::<8>()
+        .0
+        .iter()
+        .map(|b| u64::from_ne_bytes(*b))
+        .collect();
+    drop(data);
+    read.unmap();
+    let period = queue.get_timestamp_period() as f64;
+    let total: f64 = ticks
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|[a, b]| b.saturating_sub(*a) as f64 * period / 1e6)
+        .sum();
+    (total / frames as f64, true)
 }
 
 #[cfg(test)]
@@ -863,18 +1551,33 @@ mod tests {
             let mut worst = 0.0f32;
             for k in 0..=steps {
                 let a = k as f32 / steps as f32 * std::f32::consts::TAU;
-                // a circle at a third of the height round the middle
+                // a circle at a third of the height round the middle; the
+                // radius where no groove lies across it
                 let uv = [0.5 + a.cos() * 0.3 / (16.0 / 9.0), 0.5 + a.sin() * 0.3];
-                let c = shade(5, &u, uv, 16.0 / 9.0, None);
+                let c = shade(5, &u, uv, 16.0 / 9.0, None, 0.001);
                 if let Some(l) = last {
                     worst = worst.max((0..3).map(|i| (c[i] - l[i]).abs()).fold(0.0, f32::max));
                 }
                 last = Some(c);
             }
+            // (a seam where the bands jump: 0.55; the grooves: 0.05)
             assert!(
-                worst < 0.08,
+                worst < 0.15,
                 "a step of {worst} round the tunnel at {time} s"
             );
+        }
+    }
+
+    #[test]
+    fn magma_runs_from_black_to_light() {
+        let dark = magma(0.0);
+        let light = magma(1.0);
+        assert!(dark.iter().all(|v| *v < 0.05), "{dark:?}");
+        assert!(light[0] > 0.9 && light[1] > 0.9, "{light:?}");
+        // and brighter all the way
+        let lum = |c: V3| 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+        for k in 0..20 {
+            assert!(lum(magma((k + 1) as f32 / 20.0)) > lum(magma(k as f32 / 20.0)));
         }
     }
 }

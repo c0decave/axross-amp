@@ -78,7 +78,10 @@ fn a_frame_allocates_nothing_of_its_own() {
     for face in FACES.iter().filter(|f| f.group != Group::Off) {
         let mut counts = Vec::new();
         for bars in [32, 128] {
+            // (the shaders' faces as on a GPU: a paint callback a frame; the
+            // CPU's pictures where there is none are made anew each frame)
             let mut state = VizState::default();
+            state.set_gpu(true);
             let mut a = Analyzer::new();
             let options = VisualOptions {
                 bars,
@@ -120,6 +123,9 @@ fn a_frame_allocates_nothing_of_its_own() {
                         position: 30.0,
                         duration: 180.0,
                         hover: None,
+                        opacity: 1.0,
+                        second: false,
+                        loudness_target: -23.0,
                     };
                     let ((), n) = counted(|| viz::draw(&frame, face.key, &mut state));
                     if k >= 20 {

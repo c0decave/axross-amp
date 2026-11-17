@@ -50,6 +50,8 @@ pub struct FaceApp {
     pub overview: Option<Overview>,
     pub title: String,
     pub live: bool,
+    /// wgpu's state, when the harness renders with it.
+    pub render_state: Option<eframe::egui_wgpu::RenderState>,
 }
 
 impl FaceApp {
@@ -65,6 +67,7 @@ impl FaceApp {
             overview: None,
             title: "Afterglow – Demo Band".into(),
             live: true,
+            render_state: None,
         }
     }
 
@@ -101,6 +104,9 @@ impl FaceApp {
             position: self.frame as f32 / FPS,
             duration: 180.0,
             hover: None,
+            opacity: 1.0,
+            second: false,
+            loudness_target: -23.0,
         };
         viz::draw(&frame, self.key, &mut self.state);
     }
@@ -126,19 +132,26 @@ pub fn harness(
     builder = builder.wgpu();
     builder.build_eframe(move |cc| {
         let mut app = FaceApp::new(key, seconds);
-        if gpu && let Some(rs) = cc.wgpu_render_state.as_ref() {
+        if let Some(rs) = cc.wgpu_render_state.as_ref() {
             viz::gpu::install(rs);
-            app.state.set_gpu(true);
+            app.render_state = Some(rs.clone());
         }
+        // (by the shaders - on lavapipe here - or as the CPU draws them, in
+        // step with the frame and at half the resolution)
+        app.state.set_gpu(gpu);
+        app.state.gpu.sync = true;
+        app.state.gpu.cpu_scale = Some(0.5);
         app
     })
 }
 
 /// A harness without a renderer (the CPU's cost alone).
 pub fn harness_cpu(key: &'static str, size: egui::Vec2, seconds: f32) -> Harness<'static, FaceApp> {
-    Harness::builder()
-        .with_size(size)
-        .build_eframe(move |_| FaceApp::new(key, seconds))
+    Harness::builder().with_size(size).build_eframe(move |_| {
+        // (the shader faces' CPU pictures made on their own thread, as in
+        // the player: what is counted is the window's own work)
+        FaceApp::new(key, seconds)
+    })
 }
 
 /// One frame: the analysis, then egui's step.

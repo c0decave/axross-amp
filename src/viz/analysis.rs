@@ -12,9 +12,8 @@ use std::f32::consts::{PI, TAU};
 const LOUD_STEPS: usize = 600;
 /// Phase history: 10 s, a value each 30th.
 const PHASE_STEPS: usize = 300;
-/// The goniometer's persistence: the points of the last frames.
-const GONIO_FRAMES: usize = 4;
-const GONIO_POINTS: usize = 2048;
+/// The goniometer's phosphor: its picture's side.
+const PHOSPHOR: usize = 256;
 /// What a stream played: 20 s, a column each 30th.
 const WAVE_STEPS: usize = 600;
 /// The piano roll's keys: C2 .. C7.
@@ -31,8 +30,7 @@ pub struct State {
     phase: Vec<[f32; 2]>,
     phase_at: usize,
     phase_clock: f32,
-    gonio: Vec<[f32; 2]>,
-    gonio_at: usize,
+    phosphor: Vec<f32>,
     gain: f32,
     waves: Vec<[f32; 2]>,
     waves_at: usize,
@@ -54,8 +52,7 @@ impl Default for State {
             phase: vec![[0.0; 2]; PHASE_STEPS],
             phase_at: 0,
             phase_clock: 0.0,
-            gonio: vec![[0.0; 2]; GONIO_FRAMES * GONIO_POINTS],
-            gonio_at: 0,
+            phosphor: Vec::new(),
             gain: 1.0,
             waves: vec![[0.0; 2]; WAVE_STEPS],
             waves_at: 0,
@@ -87,7 +84,7 @@ pub fn draw(f: &Frame<'_>, key: &str, state: &mut VizState) {
     match key {
         "loudness" => loudness(f, cv, st),
         "phase" => phase(f, cv, st),
-        "goniometer" => goniometer(f, cv, st),
+        "goniometer" => goniometer(f, state),
         "overview" => overview(f, cv, st),
         "chroma" => chroma(f, cv, st, dt),
         "pianoroll" => pianoroll(f, cv),
@@ -220,22 +217,24 @@ fn analyzer(f: &Frame<'_>, cv: &mut Canvas) {
                 );
             }
         }
-        // the spectrum: the loudest bin under each pair of pixels
+        // the spectrum: the loudest bin under each step (two pixels, at
+        // most 640 steps across: a 4K picture is no dearer than full HD)
+        let step = (plot.width() / 640.0).max(2.0);
         pen.points.clear();
         let mut x = plot.left();
         while x <= plot.right() {
-            let db = fine.db_span(hz_of(x), hz_of(x + 2.0), false);
+            let db = fine.db_span(hz_of(x), hz_of(x + step), false);
             pen.points.push(pos2(x, y_of(db)));
-            x += 2.0;
+            x += step;
         }
         under_gradient(pen, s, plot.bottom(), plot.bottom(), plot.top());
         pen.line(1.4, s.trace());
         pen.points.clear();
         let mut x = plot.left();
         while x <= plot.right() {
-            let db = fine.db_span(hz_of(x), hz_of(x + 2.0), true);
+            let db = fine.db_span(hz_of(x), hz_of(x + step), true);
             pen.points.push(pos2(x, y_of(db)));
-            x += 2.0;
+            x += step;
         }
         pen.line(1.0, s.peak.gamma_multiply(0.65));
         if fine.peak_db > -80.0 && fine.peak_hz > 20.0 {
@@ -425,7 +424,7 @@ fn loudness(f: &Frame<'_>, cv: &mut Canvas, st: &State) {
             }
         }
         // EBU R128's target
-        let y = y_of(-23.0);
+        let y = y_of(f.loudness_target);
         pen.rect(
             Rect::from_x_y_ranges(
                 meters.left() - 6.0..=meters.right() + 4.0,
@@ -439,7 +438,7 @@ fn loudness(f: &Frame<'_>, cv: &mut Canvas, st: &State) {
             let gy = |l: f32| {
                 graph.bottom() - (((l - LOUD_LOW) / -LOUD_LOW).clamp(0.0, 1.0)) * graph.height()
             };
-            let t = gy(-23.0);
+            let t = gy(f.loudness_target);
             pen.rect(
                 Rect::from_x_y_ranges(graph.x_range(), t - 0.5..=t + 0.5),
                 s.peak.gamma_multiply(0.5),
@@ -464,6 +463,32 @@ fn loudness(f: &Frame<'_>, cv: &mut Canvas, st: &State) {
             }
         }
     });
+    // the target, named
+    let target_name = crate::state::LOUDNESS_TARGETS
+        .iter()
+        .find(|(t, _)| *t == f.loudness_target)
+        .map(|(_, n)| *n)
+        .unwrap_or("target");
+    if graph.height() > 20.0 {
+        let gy = graph.bottom()
+            - (((f.loudness_target - LOUD_LOW) / -LOUD_LOW).clamp(0.0, 1.0)) * graph.height();
+        label(
+            p,
+            pos2(graph.left() + 4.0, gy - 2.0),
+            Align2::LEFT_BOTTOM,
+            format!("target {:.0} LUFS - {target_name}", f.loudness_target),
+            10.0,
+            s.peak,
+        );
+        label(
+            p,
+            pos2(graph.right() - 4.0, graph.top() + 2.0),
+            Align2::RIGHT_TOP,
+            "short-term, the last minute",
+            10.0,
+            s.text(),
+        );
+    }
     for (k, (name, _, _)) in values.iter().enumerate() {
         label(
             p,
@@ -516,7 +541,7 @@ fn loudness(f: &Frame<'_>, cv: &mut Canvas, st: &State) {
             s.text(),
         ),
         (
-            format!("LRA {} LU   {} s", db(m.range), m.seconds as u32),
+            format!("LRA {} LU · measured {}", db(m.range), clock(m.seconds)),
             s.text(),
         ),
         (format!("True peak {} dBTP", db(m.true_peak)), tp_colour),
@@ -675,8 +700,9 @@ fn phase(f: &Frame<'_>, cv: &mut Canvas, st: &State) {
 
 // -- the goniometer ------------------------------------------------------------------
 
-fn goniometer(f: &Frame<'_>, cv: &mut Canvas, st: &mut State) {
+fn goniometer(f: &Frame<'_>, state: &mut VizState) {
     let (a, s, p) = (f.a, f.s, f.painter);
+    let st = &mut state.analysis;
     let c = f.rect.center();
     let reach = (f.rect.width().min(f.rect.height()) / 2.0 - 16.0).max(10.0);
     // a gentle automatic gain: quiet music fills the screen too
@@ -687,23 +713,55 @@ fn goniometer(f: &Frame<'_>, cv: &mut Canvas, st: &mut State) {
     let want = (0.7 / loudest.max(0.02)).clamp(1.0, 8.0);
     let follow = 1.0 - (-f.dt * 3.0).exp();
     st.gain += (want - st.gain) * if want < st.gain { 1.0 } else { follow };
-    st.gonio_at = (st.gonio_at + 1) % GONIO_FRAMES;
-    let base = st.gonio_at * GONIO_POINTS;
-    let root = std::f32::consts::FRAC_1_SQRT_2;
-    let count = a.stereo.len().min(GONIO_POINTS);
-    for k in 0..GONIO_POINTS {
-        st.gonio[base + k] = if k < count {
-            let [l, r] = a.stereo[a.stereo.len() - count + k];
-            [
-                ((r - l) * root * st.gain).clamp(-1.0, 1.0),
-                ((l + r) * root * st.gain).clamp(-1.0, 1.0),
-            ]
-        } else {
-            [f32::NAN; 2]
-        };
+    // the phosphor: what the beam drew fades (a tenth of a second or so),
+    // each sample lights where it falls (spread over four pixels)
+    if st.phosphor.len() != PHOSPHOR * PHOSPHOR {
+        st.phosphor = vec![0.0; PHOSPHOR * PHOSPHOR];
     }
-    let gonio = &st.gonio;
-    let at = st.gonio_at;
+    let fade = (-f.dt * 9.0).exp();
+    for v in st.phosphor.iter_mut() {
+        *v *= fade;
+    }
+    let root = std::f32::consts::FRAC_1_SQRT_2;
+    let size = PHOSPHOR as f32;
+    for [l, r] in &a.stereo {
+        let x = ((r - l) * root * st.gain).clamp(-1.0, 1.0);
+        let y = ((l + r) * root * st.gain).clamp(-1.0, 1.0);
+        let (fx, fy) = (
+            (x * 0.5 + 0.5) * (size - 1.0),
+            (0.5 - y * 0.5) * (size - 1.0),
+        );
+        let (i, j) = (fx as usize, fy as usize);
+        let (tx, ty) = (fx - i as f32, fy - j as f32);
+        for (di, dj, w) in [
+            (0, 0, (1.0 - tx) * (1.0 - ty)),
+            (1, 0, tx * (1.0 - ty)),
+            (0, 1, (1.0 - tx) * ty),
+            (1, 1, tx * ty),
+        ] {
+            let (ii, jj) = ((i + di).min(PHOSPHOR - 1), (j + dj).min(PHOSPHOR - 1));
+            let v = &mut st.phosphor[jj * PHOSPHOR + ii];
+            *v = (*v + 0.18 * w).min(1.0);
+        }
+    }
+    if let Ok(mut picture) = state.gpu.picture(f.second).lock() {
+        if picture.data.len() != PHOSPHOR * PHOSPHOR {
+            picture.data.clear();
+            picture.data.resize(PHOSPHOR * PHOSPHOR, 0);
+            picture.width = PHOSPHOR as u32;
+            picture.height = PHOSPHOR as u32;
+        }
+        for (d, v) in picture.data.iter_mut().zip(&st.phosphor) {
+            *d = (v * 255.0) as u8;
+        }
+        picture.version = picture.version.wrapping_add(1);
+    }
+    let square = Rect::from_center_size(c, vec2(reach * 2.0, reach * 2.0));
+    let u = gpu::Uniforms::new(gpu::Shader::Phosphor, a, s, 0.0).with_opacity(f.opacity);
+    let (gpu, second, cv) = (&mut state.gpu, f.second, &mut state.canvas);
+    cv.draw(p, |pen| {
+        gpu::paint(p, pen, gpu, square, square, u, true, second);
+    });
     cv.draw(p, |pen| {
         pen.ring(c, reach, 1.0, s.grid());
         let d = reach * root;
@@ -711,24 +769,6 @@ fn goniometer(f: &Frame<'_>, cv: &mut Canvas, st: &mut State) {
         pen.segment(c - vec2(0.0, reach), c + vec2(0.0, reach), 1.0, s.grid());
         pen.segment(c + vec2(-d, -d), c + vec2(d, d), 1.0, s.grid());
         pen.segment(c + vec2(d, -d), c + vec2(-d, d), 1.0, s.grid());
-        // the oldest frame first, dimmest
-        for age in (0..GONIO_FRAMES).rev() {
-            let frame = (at + GONIO_FRAMES - age) % GONIO_FRAMES;
-            let colour = mix(
-                s.background,
-                s.trace(),
-                0.25 + 0.75 * (1.0 - age as f32 / GONIO_FRAMES as f32),
-            );
-            for [x, y] in &gonio[frame * GONIO_POINTS..(frame + 1) * GONIO_POINTS] {
-                if x.is_nan() {
-                    continue;
-                }
-                pen.rect(
-                    Rect::from_center_size(c + vec2(*x, -*y) * reach, vec2(1.6, 1.6)),
-                    colour,
-                );
-            }
-        }
         // the correlation beside it
         let bar = Rect::from_min_size(
             pos2(f.rect.right() - 12.0, c.y - reach),
@@ -742,6 +782,7 @@ fn goniometer(f: &Frame<'_>, cv: &mut Canvas, st: &mut State) {
             colour,
         );
     });
+    let st = &state.analysis;
     let d = reach * root;
     for (text, at, align) in [
         ("L", c + vec2(-d - 4.0, -d - 4.0), Align2::RIGHT_BOTTOM),
@@ -1216,7 +1257,7 @@ fn mel(f: &Frame<'_>, state: &mut VizState) {
     let st = &mut state.analysis;
     // the picture: a column a step, the newest at the right, high bands on top
     let steps = (a.time * 30.0) as u64;
-    if let Ok(mut picture) = state.gpu.picture.lock() {
+    if let Ok(mut picture) = state.gpu.picture(f.second).lock() {
         let (w, h) = (fine::STEPS, fine::MELS);
         if picture.data.len() != w * h {
             picture.data.clear();
@@ -1238,10 +1279,12 @@ fn mel(f: &Frame<'_>, state: &mut VizState) {
     }
     let r = f.rect;
     let plot = Rect::from_min_max(pos2(r.left() + 40.0, r.top()), r.max);
-    let u = gpu::Uniforms::new(gpu::Shader::Mel, a, s, &[[0.0; 4]; 8], fine.step_fraction());
+    let u =
+        gpu::Uniforms::new(gpu::Shader::Mel, a, s, fine.step_fraction()).with_opacity(f.opacity);
     let clip = f.rect.expand(4.0);
+    let (gpu, second) = (&mut state.gpu, f.second);
     state.canvas.draw(p, |pen| {
-        gpu::paint(p, pen, &state.gpu, plot, clip, u, true);
+        gpu::paint(p, pen, gpu, plot, clip, u, true, second);
     });
     // the frequencies of some bands
     let mel_of = |hz: f32| 2595.0 * (1.0 + hz / 700.0).log10();

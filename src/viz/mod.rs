@@ -101,7 +101,7 @@ pub const FACES: &[Face] = &[
     fine(face("chroma", "Chromagram", A)),
     fine(face("pianoroll", "Piano roll", A)),
     shader(fine(face("mel", "Mel spectrogram", A))),
-    shader(face("plasma", "Plasma", G)),
+    shader(face("plasma", "Liquid", G)),
     shader(face("fire", "Fire", G)),
     shader(face("metaballs", "Metaballs", G)),
     shader(face("aurora", "Aurora", G)),
@@ -111,14 +111,14 @@ pub const FACES: &[Face] = &[
     face("galaxy", "Galaxy", G),
     shader(face("julia", "Julia set", G)),
     shader(face("reaction", "Reaction-diffusion", G)),
-    face("arcs", "Arcs", G),
-    shader(face("ripples", "Ripples", G)),
+    shader(face("milkdrop", "Feedback (MilkDrop)", G)),
+    shader(face("flyover", "Flyover", G)),
     face("skyline", "Skyline", G),
     face("isometric", "Isometric bars", G),
     face("helix", "DNA helix", G),
     face("spirograph", "Spirograph", G),
     face("morph", "Polygon morph", G),
-    face("mandala", "Mandala", G),
+    shader(face("crystals", "Crystals", G)),
     shader(face("moire", "Moiré", G)),
     face("beatrings", "Beat rings", G),
     shader(face("smoke", "Smoke", G)),
@@ -619,9 +619,22 @@ impl Pen<'_> {
         for w in 1..self.points.len() {
             let (p, q) = (self.points[w - 1], self.points[w]);
             let strip = [p, q, pos2(q.x, base), pos2(p.x, base)];
+            let (high, low) = (p.y.min(q.y), p.y.max(q.y));
             for k in 1..n {
                 let (ya, yb) = (cuts[k - 1], cuts[k]);
-                if yb - ya < 1e-4 {
+                if yb - ya < 1e-4 || yb <= high {
+                    continue;
+                }
+                if ya >= low {
+                    // (wholly under the line: a plain band)
+                    let i0 = self.mesh.vertices.len() as u32;
+                    let (top, bottom) = (colour(ya), colour(yb));
+                    self.mesh.colored_vertex(pos2(p.x, ya), top);
+                    self.mesh.colored_vertex(pos2(q.x, ya), top);
+                    self.mesh.colored_vertex(pos2(q.x, yb), bottom);
+                    self.mesh.colored_vertex(pos2(p.x, yb), bottom);
+                    self.mesh.add_triangle(i0, i0 + 1, i0 + 2);
+                    self.mesh.add_triangle(i0, i0 + 2, i0 + 3);
                     continue;
                 }
                 let mut poly = [Pos2::ZERO; 8];
@@ -698,7 +711,13 @@ pub struct VizState {
     pub generative: generative::State,
     pub gpu: gpu::State,
     seed: u32,
+    /// The face shown, and the one it is fading from (and how far, 0..1).
+    shown: &'static str,
+    fading: Option<(&'static str, f32)>,
 }
+
+/// Seconds a face takes to fade into the next.
+pub const CROSSFADE: f32 = 0.6;
 
 impl VizState {
     /// A random number 0..1 (an LCG: the same field each time for tests).
@@ -741,9 +760,16 @@ pub struct Frame<'a> {
     pub duration: f32,
     /// The pointer over the picture, if it is.
     pub hover: Option<Pos2>,
+    /// How opaque the face is (a crossfade), and whether it is the one
+    /// being faded from (its shader has a slot of its own).
+    pub opacity: f32,
+    pub second: bool,
+    /// The loudness meter's target (LUFS).
+    pub loudness_target: f32,
 }
 
-/// One frame of face `key`.
+/// One frame of face `key`: a change of face fades over CROSSFADE seconds
+/// from the one before.
 pub fn draw(f: &Frame<'_>, key: &str, state: &mut VizState) {
     let ppp = f.painter.pixels_per_point();
     state.canvas.begin(ppp);
@@ -751,17 +777,49 @@ pub fn draw(f: &Frame<'_>, key: &str, state: &mut VizState) {
     if f.rect.width() < 8.0 || f.rect.height() < 8.0 {
         return;
     }
+    let face = find(key).unwrap_or(&FACES[0]);
+    if state.shown != face.key {
+        if !state.shown.is_empty() && state.shown != "off" && face.key != "off" {
+            state.fading = Some((state.shown, 0.0));
+        }
+        state.shown = face.key;
+    }
+    // (paused: no time passes, the fade completes at once)
+    if let Some((_, t)) = state.fading.as_mut() {
+        *t += if f.dt > 0.0 { f.dt / CROSSFADE } else { 1.0 };
+    }
+    if state.fading.is_some_and(|(_, t)| t >= 1.0) {
+        state.fading = None;
+    }
+    if let Some((old, t)) = state.fading {
+        one(f, old, state, 1.0 - t, true);
+        one(f, face.key, state, t, false);
+        f.painter.ctx().request_repaint();
+    } else {
+        one(f, face.key, state, 1.0, false);
+    }
+}
+
+/// The faces fading: which is (tests).
+pub fn fading(state: &VizState) -> Option<&'static str> {
+    state.fading.map(|(k, _)| k)
+}
+
+fn one(f: &Frame<'_>, key: &'static str, state: &mut VizState, opacity: f32, second: bool) {
+    let Some(face) = find(key) else { return };
     // (a little room within the rounded corners; nothing drawn outside)
     let inner = f.rect.shrink(4.0);
-    let clipped = f
+    let mut clipped = f
         .painter
         .with_clip_rect(f.rect.intersect(f.painter.clip_rect()));
+    clipped.multiply_opacity(opacity);
     let frame = Frame {
         rect: inner,
         painter: &clipped,
+        opacity,
+        second,
         ..*f
     };
-    let face = find(key).unwrap_or(&FACES[0]);
     match face.group {
         Group::Classic => classic::draw(&frame, face.key, state),
         Group::Analysis => analysis::draw(&frame, face.key, state),
@@ -778,6 +836,15 @@ pub fn draw(f: &Frame<'_>, key: &str, state: &mut VizState) {
     }
 }
 
+/// What the analysis must work out for face `key` and the one it fades from.
+pub fn needs_now(key: &str, state: &VizState) -> Needs {
+    let mut n = needs(key);
+    if let Some((old, _)) = state.fading {
+        n.fine |= needs(old).fine;
+    }
+    n
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -787,6 +854,8 @@ mod tests {
         assert_eq!(next("spectrum"), "mirror");
         assert_eq!(next("starfield"), "analyzer");
         assert_eq!(next("typography"), "spectrum", "off is never stepped into");
+        // (the faces that went: their saved keys show the spectrum)
+        assert_eq!(known("ripples"), "spectrum");
         assert_eq!(previous("spectrum"), "typography");
         assert_eq!(previous("mirror"), "spectrum");
         // every face of axross's player is drawn here, under its key

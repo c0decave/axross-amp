@@ -29,7 +29,6 @@ struct Stats {
     coverage: f32,
     colours: usize,
     motion: f32,
-    mean: [f32; 3],
 }
 
 fn stats(
@@ -41,13 +40,9 @@ fn stats(
     let (x0, y0, x1, y1) = (6, 6, image.width() - 6, image.height() - 6);
     let (mut drawn, mut moved) = (0usize, 0usize);
     let mut colours = std::collections::HashSet::new();
-    let mut mean = [0.0f64; 3];
     for y in y0..y1 {
         for x in x0..x1 {
             let p = image.get_pixel(x, y);
-            for c in 0..3 {
-                mean[c] += p[c] as f64;
-            }
             if far(p, &background) {
                 drawn += 1;
                 colours.insert([p[0] / 32, p[1] / 32, p[2] / 32]);
@@ -62,7 +57,6 @@ fn stats(
         coverage: drawn as f32 / total,
         colours: colours.len(),
         motion: moved as f32 / total,
-        mean: mean.map(|m| (m / total as f64) as f32),
     }
 }
 
@@ -103,14 +97,21 @@ fn every_face_draws_moves_and_is_kept_as_a_picture() {
             let o = overview_of(&h.state().sound);
             h.state_mut().overview = Some(o);
         }
-        // 2.5 s, as axross's faces get in docs/axross_faces.py
+        // 2.5 s, as axross's faces get in docs/axross_faces.py (the
+        // feedback face rendered each frame: it draws on its last picture)
         for _ in 0..75 {
             faces::frame(&mut h);
+            if face.key == "milkdrop" {
+                h.render().unwrap();
+            }
         }
         let first = h.render().expect("renders");
         // a third of a second on
         for _ in 0..10 {
             faces::frame(&mut h);
+            if face.key == "milkdrop" {
+                h.render().unwrap();
+            }
         }
         let second = h.render().expect("renders");
         second
@@ -134,25 +135,85 @@ fn every_face_draws_moves_and_is_kept_as_a_picture() {
     assert!(failures.is_empty(), "{failures:#?}");
 }
 
+/// Luma of an image, averaged over 2x2 blocks.
+fn luma(image: &image::RgbaImage) -> (Vec<f32>, usize, usize) {
+    let (w, h) = (image.width() as usize / 2, image.height() as usize / 2);
+    let mut out = vec![0.0f32; w * h];
+    for y in 0..h {
+        for x in 0..w {
+            let mut sum = 0.0;
+            for (dx, dy) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
+                let p = image.get_pixel((2 * x + dx) as u32, (2 * y + dy) as u32);
+                sum += 0.2126 * p[0] as f32 + 0.7152 * p[1] as f32 + 0.0722 * p[2] as f32;
+            }
+            out[y * w + x] = sum / 4.0;
+        }
+    }
+    (out, w, h)
+}
+
+/// The structural similarity (SSIM, 8 x 8 windows) of two images' luma.
+fn ssim(a: &image::RgbaImage, b: &image::RgbaImage) -> f32 {
+    let ((la, w, h), (lb, _, _)) = (luma(a), luma(b));
+    let (c1, c2) = ((0.01f32 * 255.0).powi(2), (0.03f32 * 255.0).powi(2));
+    let mut total = 0.0;
+    let mut windows = 0;
+    for y in (0..h.saturating_sub(8)).step_by(4) {
+        for x in (0..w.saturating_sub(8)).step_by(4) {
+            let (mut ma, mut mb) = (0.0f32, 0.0f32);
+            for j in 0..8 {
+                for i in 0..8 {
+                    ma += la[(y + j) * w + x + i];
+                    mb += lb[(y + j) * w + x + i];
+                }
+            }
+            ma /= 64.0;
+            mb /= 64.0;
+            let (mut va, mut vb, mut cov) = (0.0f32, 0.0f32, 0.0f32);
+            for j in 0..8 {
+                for i in 0..8 {
+                    let (da, db) = (la[(y + j) * w + x + i] - ma, lb[(y + j) * w + x + i] - mb);
+                    va += da * da;
+                    vb += db * db;
+                    cov += da * db;
+                }
+            }
+            va /= 63.0;
+            vb /= 63.0;
+            cov /= 63.0;
+            total += ((2.0 * ma * mb + c1) * (2.0 * cov + c2))
+                / ((ma * ma + mb * mb + c1) * (va + vb + c2));
+            windows += 1;
+        }
+    }
+    total / windows.max(1) as f32
+}
+
 #[test]
-fn the_shader_faces_look_alike_on_the_cpu() {
-    // without wgpu's shaders the CPU draws them, coarser: the same picture
-    // in the large (its mean colour), and still moving
+fn the_shader_faces_drawn_by_the_cpu_look_like_the_gpus() {
+    // where shaders do not run on a GPU the CPU draws the faces per pixel
+    // (at half the resolution here): the same picture by structure (SSIM),
+    // not only by its mean colour, and moving
     let background = {
         let s = viz::scheme("classic", &Default::default()).background;
         image::Rgba([s.r(), s.g(), s.b(), 255])
     };
     let mut report = Vec::new();
+    let mut failed = Vec::new();
     for face in FACES.iter().filter(|f| f.shader) {
         let mut seen = Vec::new();
+        let mut pictures = Vec::new();
         for gpu in [true, false] {
             let mut h = faces::harness(face.key, vec2(320.0, 180.0), gpu, 3.0);
+            // (every frame rendered: the GPU's feedback moves on when it is)
             for _ in 0..45 {
                 faces::frame(&mut h);
+                h.render().unwrap();
             }
             let first = h.render().unwrap();
             for _ in 0..3 {
                 faces::frame(&mut h);
+                h.render().unwrap();
             }
             let second = h.render().unwrap();
             if !gpu {
@@ -161,50 +222,59 @@ fn the_shader_faces_look_alike_on_the_cpu() {
                     .unwrap();
             }
             seen.push(stats(&second, &first, background));
+            pictures.push(second);
         }
-        let (g, c) = (&seen[0], &seen[1]);
-        let distance: f32 = (0..3).map(|k| (g.mean[k] - c.mean[k]).abs()).sum();
+        let similar = ssim(&pictures[0], &pictures[1]);
+        let c = &seen[1];
         report.push(format!(
-            "{:<10} mean colour GPU {:?} CPU {:?} (apart {distance:.1}); motion {:.1} % / {:.1} %",
+            "{:<10} SSIM {similar:.3}; motion {:.1} % / {:.1} %",
             face.key,
-            g.mean.map(|v| v as u32),
-            c.mean.map(|v| v as u32),
-            g.motion * 100.0,
+            seen[0].motion * 100.0,
             c.motion * 100.0
         ));
-        assert!(distance < 40.0, "{}", report.last().unwrap());
-        assert!(
-            c.motion > 0.0005 && c.coverage > 0.05,
-            "{}",
-            report.last().unwrap()
-        );
+        if similar < 0.8 || c.motion < 0.0005 || c.coverage < 0.05 {
+            failed.push(report.last().unwrap().clone());
+        }
     }
     println!("{}", report.join("\n"));
+    assert!(failed.is_empty(), "{failed:#?}");
 }
 
-/// What the GPU's work costs, rendered by wgpu (where there is no GPU: Mesa's
-/// lavapipe on the CPU, far slower than any graphics card) - for a measure,
-/// not a limit: `cargo test --test faces -- --ignored`.
+/// What the GPU's work costs a face at 620 x 300, 1920 x 1080 and 4K: its
+/// own render passes timed by the GPU's timestamp queries where the device
+/// has them (else the clock round each submission), nothing read back.
+/// Where there is no GPU (Mesa's lavapipe) this is a CPU's time - a
+/// measure, not a limit: `cargo test --release --test faces -- --ignored`.
 #[test]
 #[ignore]
 fn what_the_shader_faces_cost_the_gpu() {
-    for (w, h) in [(620.0, 300.0), (1920.0, 1080.0), (3840.0, 2160.0)] {
-        let mut line = format!("{w}x{h}:");
+    let mut h = faces::harness("plasma", vec2(320.0, 180.0), true, 3.0);
+    for _ in 0..30 {
+        faces::frame(&mut h);
+    }
+    let app = h.state();
+    let rs = app.render_state.clone().expect("wgpu");
+    let info = rs.adapter.get_info();
+    println!("{} ({:?})", info.name, info.device_type);
+    let scheme = viz::scheme("classic", &Default::default());
+    for (w, hgt) in [(620u32, 300u32), (1920, 1080), (3840, 2160)] {
+        let mut line = format!("{w}x{hgt}:");
+        let mut timed = false;
         for face in FACES.iter().filter(|f| f.shader) {
-            let mut harness = faces::harness(face.key, vec2(w, h), true, 3.0);
-            for _ in 0..10 {
-                faces::frame(&mut harness);
-            }
-            harness.render().unwrap();
-            let started = std::time::Instant::now();
-            for _ in 0..3 {
-                faces::frame(&mut harness);
-                harness.render().unwrap();
-            }
-            let ms = started.elapsed().as_secs_f64() * 1000.0 / 3.0;
-            line.push_str(&format!(" {} {ms:.0} ms,", face.key));
+            let shader = viz::gpu::Shader::of(face.key).unwrap_or(viz::gpu::Shader::Mel);
+            let u = viz::gpu::Uniforms::new(shader, &app.analyzer, &scheme, 0.0);
+            let (ms, stamps) = viz::gpu::measure(&rs, u, (w, hgt), 10);
+            timed |= stamps;
+            line.push_str(&format!(" {} {ms:.2} ms,", face.key));
         }
-        println!("{line}");
+        println!(
+            "{line} ({})",
+            if timed {
+                "GPU timestamps"
+            } else {
+                "wall clock, no timestamps"
+            }
+        );
     }
 }
 
@@ -273,4 +343,53 @@ fn the_analyzer_curve_is_filled_by_height_without_streaks() {
         "{:.1} % of the fill off its row's colour",
         share * 100.0
     );
+}
+
+#[test]
+fn a_new_face_fades_in_over_the_one_before() {
+    let mean = |image: &image::RgbaImage| {
+        let mut m = [0.0f32; 3];
+        for p in image.pixels() {
+            for c in 0..3 {
+                m[c] += p[c] as f32;
+            }
+        }
+        m.map(|v| v / (image.width() * image.height()) as f32)
+    };
+    let mut h = faces::harness("spectrum", vec2(320.0, 180.0), true, 4.0);
+    for _ in 0..30 {
+        faces::frame(&mut h);
+    }
+    let before = mean(&h.render().unwrap());
+    h.state_mut().key = "plasma";
+    faces::frame(&mut h);
+    assert_eq!(
+        viz::fading(&h.state().state),
+        Some("spectrum"),
+        "no fade began"
+    );
+    for _ in 0..8 {
+        faces::frame(&mut h);
+    }
+    let during = mean(&h.render().unwrap());
+    for _ in 0..12 {
+        faces::frame(&mut h);
+    }
+    assert_eq!(
+        viz::fading(&h.state().state),
+        None,
+        "still fading after {} s",
+        viz::CROSSFADE
+    );
+    let after = mean(&h.render().unwrap());
+    // halfway the picture is between the two (every channel)
+    for c in 0..3 {
+        let (lo, hi) = (before[c].min(after[c]), before[c].max(after[c]));
+        assert!(
+            during[c] > lo - 2.0
+                && during[c] < hi + 2.0
+                && (hi - lo < 4.0 || (during[c] - lo) > 1.0 && (hi - during[c]) > 1.0),
+            "channel {c}: {before:?} -> {during:?} -> {after:?}"
+        );
+    }
 }

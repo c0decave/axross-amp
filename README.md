@@ -20,8 +20,10 @@ picture is made by `AMP_DEMO_TRACK=… cargo test --test ui -- --ignored`.</sub>
   album gain, pre-amp, held below the peak, a gain of its own for untagged tracks;
   Opus R128 gains too); a ten-band **equalizer** with axross's presets; a volume curve
   as axross's; pause, seek, stop and a new track fade (no clicks), and so does a
-  dropout's edge; peaks above full scale are rounded off by a soft limiter instead of
-  clipped. The output callback takes no lock and allocates nothing (a lock-free ring;
+  dropout's edge. At unity gain the samples go out bit for bit (a master peaking just
+  under full scale is not bent); a track ReplayGain makes louder goes through a
+  look-ahead true-peak limiter (-1 dBTP, 4x oversampled, 1.3 ms ahead) instead of
+  clipping. The output callback takes no lock and allocates nothing (a lock-free ring;
   a test counts its allocations through a real device); files are read and decoded
   seconds ahead on threads of their own, so a slow disk or a stalled network share is
   no dropout. A small output buffer is asked for (1024 frames); the position and the
@@ -35,7 +37,13 @@ picture is made by `AMP_DEMO_TRACK=… cargo test --test ui -- --ignored`.</sub>
   (`ICY 200 OK`) play. The network is read on threads of its own: a server that
   stalls holds up nothing (a read gives up after 20 s; a stream let go closes its
   connection at once). HLS (`.m3u8` with segments) is not supported and says so.
-- **Visualizations**, 48 of them in three groups, drawn on the GPU:
+- **The window** is laid out round the picture: what plays on a card tinted with the
+  cover's colour (the accent of the whole window comes from the cover, kept readable),
+  the picture large, and below it the playlist (two lines a track, the playing one
+  with its cover and bars that move with the sound) or the equalizer (a dB scale with
+  its 0 dB line, each band's value) - the playlist has the rest of the window, also a
+  small one. Paused, the picture stands still; changing faces fades one into the next.
+- **Visualizations**, 48 of them in three groups:
   - *Classic* - all eighteen of axross's, drawn as axross draws them (its geometry,
     colours and constants; [side by side](docs/axross-and-amp.png)): spectrum,
     mirrored, radial and polar spectrum, line spectrum, LED equalizer, particle
@@ -44,27 +52,31 @@ picture is made by `AMP_DEMO_TRACK=… cargo test --test ui -- --ignored`.</sub>
   - *Analysis* - a spectrum analyzer (8192-point FFT, a held peak curve, the
     strongest peak with its note and cents, the note and level under the pointer),
     a loudness meter after EBU R128 (momentary, short-term, integrated with both
-    gates, loudness range, true peak, the last minute), phase and stereo width
-    (correlation, width, balance, the last ten seconds), a goniometer (with its
-    persistence and an automatic gain), the track's waveform (read in the background;
-    a click goes there), a chromagram with the circle of fifths and the key, a piano
-    roll and a mel spectrogram.
-  - *Generative* - plasma, fire, metaballs, aurora, flow field, synthwave, tunnel,
-    galaxy, Julia set, reaction-diffusion, arcs, ripples, skyline, isometric bars,
-    DNA helix, spirograph, polygon morph, mandala, moiré, beat rings, smoke and the
-    title's words on the beat. They move with the bass, the treble, the beat and
-    the tempo.
+    gates, loudness range, true peak by BS.1770's own filter, the last minute, a
+    target of -23, -16 or -14 LUFS), phase and stereo width (correlation, width,
+    balance, the last ten seconds), a goniometer with a phosphor's persistence, the
+    track's waveform (read in the background; a click goes there), a chromagram with
+    the circle of fifths and the whole track's key (with how sure, "?" until then), a
+    piano roll (notes found at two resolutions, harmonics told from notes) and a mel
+    spectrogram in magma.
+  - *Generative* - liquid (domain-warped noise), fire, metaballs, aurora, flow field,
+    synthwave, tunnel, galaxy, Julia set (smooth escape colours, orbit traps),
+    reaction-diffusion, a feedback face in MilkDrop's way (its last frame warped under
+    a new layer), a flyover of a raymarched landscape the bass lifts, crystals
+    (Voronoi cells), skyline, isometric bars, DNA helix, spirograph, polygon morph,
+    moiré (antialiased), beat rings, smoke and the title's words on the beat.
 
-  The pixel faces are WGSL shaders run through egui's wgpu renderer; without wgpu
-  the same functions are drawn on the CPU, coarser. The sound is analysed once a
-  frame for all faces (bars, levels, stereo picture, loudness, beat, and for the
-  faces that ask a fine spectrum with notes, chroma and mel bands), and neither the
-  analysis nor most faces allocate in a frame; the pictures move alike at any frame
-  rate. In axross's colour schemes (Classic, Fire, Ice, Neon, Mono, Follow the theme,
-  Custom - edited here), with its options (bars, smoothing, peak fall, frame rate).
-  A click shows the next face (Shift+V the one before), a double-click makes it
-  large, F11 full screen, a right click its menu with every face at a glance; "Off"
-  draws nothing (and costs nothing).
+  The loudness, the true peak, the beat and the notes are measured on a thread of
+  their own from every sample played - minimised, on another tab or with the picture
+  off too. The pixel faces are WGSL shaders run through egui's wgpu renderer; where
+  there is no GPU of its own (no wgpu, or a software rasterizer) a thread draws them
+  per pixel at the resolution it manages in a frame. The picture is analysed once a
+  frame for all faces, and neither that nor most faces allocate in a frame; the
+  pictures move alike at any frame rate. In axross's colour schemes (Classic, Fire,
+  Ice, Neon, Mono, Follow the theme, Custom - edited here), with its options (bars,
+  smoothing, peak fall, frame rate). A click shows the next face (Shift+V the one
+  before), a double-click makes it large (its title kept above it), F11 full screen, a
+  right click its menu with every face at a glance; "Off" draws nothing.
 - **Playlist**: shuffle (Previous goes back the way it came), repeat (all / one), a
   filter (Ctrl+F), sorting (title, artist, album with its discs and track numbers,
   file name, folder, length, reversed; names in natural order), several rows at once
@@ -185,10 +197,10 @@ the Mixer tab needs `pactl` (Linux, or a PulseAudio elsewhere).
 Known limits: cpal's PulseAudio back end (cpal 0.18.2, the newest) takes a mutex
 after the output callback has returned, to hand the samples over - outside this
 player's callback, which itself takes no lock, and out of its hands until cpal
-changes it. HLS radio (`.m3u8` segment lists) is not played. Without wgpu (another
-renderer) the shader faces are drawn on the CPU on a coarse grid - softer, and
-dearer. The beat is found from the onsets; on syncopated music the tempo may read
-half or double.
+changes it. HLS radio (`.m3u8` segment lists) is not played. Without a GPU the shader
+faces are drawn by the CPU at a lower resolution (they cost a core's share there).
+The beat is found from the onsets; on syncopated music the tempo may read half or
+double. The notes below about C2 are not told apart from their neighbours.
 
 Tests: `cargo test` runs everywhere. The window is driven headless (egui_kittest,
 wgpu - Mesa's lavapipe works without a GPU); the engine's sound is taken by the
@@ -205,7 +217,13 @@ much it draws, in how many colours, how much it moves), the shaders on the CPU
 against the GPU, the cost of a frame at 620 x 300, 1920 x 1080 and 3840 x 2160, the
 allocations of a frame counted; the analysis against known signals (a 1 kHz sine at
 -18 dBFS reads -18 LUFS, mono correlates +1 and inverted -1, a C major chord lights
-C, E and G, clicks at 128 BPM are 128 BPM, an intersample peak is found).
+C, E and G, clicks at 128 BPM are 128 BPM, an intersample peak is found) and EBU
+Tech 3341's cases 1-5 and 15-18 and Tech 3342's cases 1-4 synthesised; end to end
+through the player, the same integrated loudness shown, hidden, with the picture off
+and at 3 fps, a chord progression's key and a melody's notes; the CPU's drawing of
+the shader faces against the GPU's by SSIM; a hot master bit for bit at unity gain.
+`tests/python_compat.rs` has axross's own Python read and write the shared state file
+(`AMP_AXROSS`, `AMP_PYTHON`; it says loudly when it could not).
 `docs/axross_faces.py` renders axross's own faces (offscreen Qt) from the same signal
 for the comparison sheet. `tests/states.rs` renders the window in each of its states.
 

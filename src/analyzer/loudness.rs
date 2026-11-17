@@ -2,7 +2,7 @@
 //! shelf and a high pass, at any rate), momentary (400 ms) and short-term
 //! (3 s) loudness, the integrated loudness with its two gates and the
 //! loudness range (LRA, EBU Tech 3342), the sample peak and the true peak
-//! (4x oversampled). Counted from what is played, in 100 ms steps; the
+//! (4x oversampled by BS.1770's own filter). Counted from what is played, in 100 ms steps; the
 //! integrated loudness and the range from histograms (0.1 LU a step), so
 //! a track of any length costs the same.
 
@@ -69,33 +69,68 @@ fn k_weighting(rate: u32) -> [Biquad; 2] {
     [shelf, pass]
 }
 
-/// A windowed sinc for 4x oversampling: `phases[p][t]`.
+/// BS.1770-4's 4x oversampling filter (Annex 2): 48 taps in 4 phases.
+// (the standard's values as it prints them: multiples of 2^-14, exact)
+#[allow(clippy::excessive_precision)]
 fn oversampling() -> [[f32; TAPS]; 4] {
-    let mut phases = [[0.0f32; TAPS]; 4];
-    let len = (TAPS * 4) as f64;
-    for (p, phase) in phases.iter_mut().enumerate() {
-        let mut sum = 0.0;
-        for (t, tap) in phase.iter_mut().enumerate() {
-            // the filter's tap t*4+p of 48, centred
-            let n = (t * 4 + p) as f64;
-            let x = (n - (len - 1.0) / 2.0) / 4.0;
-            let sinc = if x.abs() < 1e-12 {
-                1.0
-            } else {
-                (PI * x).sin() / (PI * x)
-            };
-            // a Blackman window
-            let w = 0.42 - 0.5 * (2.0 * PI * n / (len - 1.0)).cos()
-                + 0.08 * (4.0 * PI * n / (len - 1.0)).cos();
-            *tap = (sinc * w) as f32;
-            sum += sinc * w;
-        }
-        // each phase passes a constant unchanged
-        for tap in phase.iter_mut() {
-            *tap /= sum as f32;
-        }
-    }
-    phases
+    [
+        [
+            0.001_708_984_375,
+            0.010_986_328_125,
+            -0.019_653_320_312_5,
+            0.033_203_125,
+            -0.059_448_242_187_5,
+            0.137_329_101_562_5,
+            0.972_167_968_75,
+            -0.102_294_921_875,
+            0.047_607_421_875,
+            -0.026_611_328_125,
+            0.014_892_578_125,
+            -0.008_300_781_25,
+        ],
+        [
+            -0.029_174_804_687_5,
+            0.029_296_875,
+            -0.051_757_812_5,
+            0.089_111_328_125,
+            -0.166_503_906_25,
+            0.465_087_890_625,
+            0.779_785_156_25,
+            -0.200_317_382_812_5,
+            0.101_562_5,
+            -0.058_227_539_062_5,
+            0.033_081_054_687_5,
+            -0.018_920_898_437_5,
+        ],
+        [
+            -0.018_920_898_437_5,
+            0.033_081_054_687_5,
+            -0.058_227_539_062_5,
+            0.101_562_5,
+            -0.200_317_382_812_5,
+            0.779_785_156_25,
+            0.465_087_890_625,
+            -0.166_503_906_25,
+            0.089_111_328_125,
+            -0.051_757_812_5,
+            0.029_296_875,
+            -0.029_174_804_687_5,
+        ],
+        [
+            -0.008_300_781_25,
+            0.014_892_578_125,
+            -0.026_611_328_125,
+            0.047_607_421_875,
+            -0.102_294_921_875,
+            0.972_167_968_75,
+            0.137_329_101_562_5,
+            -0.059_448_242_187_5,
+            0.033_203_125,
+            -0.019_653_320_312_5,
+            0.010_986_328_125,
+            0.001_708_984_375,
+        ],
+    ]
 }
 
 pub struct Meter {
@@ -446,5 +481,143 @@ mod tests {
             m.true_peak,
             m.sample_peak
         );
+    }
+}
+
+/// EBU Tech 3341 (loudness metering: the EBU mode) and Tech 3342 (loudness
+/// range): their synthesised test signals and what a meter must read.
+#[cfg(test)]
+mod ebu {
+    use super::*;
+
+    /// A stereo 1 kHz sine at `dbfs` (peak) for `secs`, phase going on.
+    fn sine(m: &mut Meter, rate: u32, dbfs: f64, secs: f64, at: &mut u64) {
+        let amp = 10f64.powf(dbfs / 20.0);
+        let frames = (secs * rate as f64).round() as u64;
+        let mut chunk = Vec::with_capacity(9600);
+        for i in 0..frames {
+            let v = ((2.0 * PI * 1000.0 * (*at + i) as f64 / rate as f64).sin() * amp) as f32;
+            chunk.push(v);
+            chunk.push(v);
+            if chunk.len() == 9600 {
+                m.push(&chunk);
+                chunk.clear();
+            }
+        }
+        m.push(&chunk);
+        *at += frames;
+    }
+
+    fn programme(parts: &[(f64, f64)]) -> Meter {
+        let rate = 48_000;
+        let mut m = Meter::new(rate);
+        let mut at = 0;
+        for (dbfs, secs) in parts {
+            sine(&mut m, rate, *dbfs, *secs, &mut at);
+        }
+        m
+    }
+
+    #[test]
+    fn tech_3341_cases_1_and_2_steady_sines() {
+        for level in [-23.0, -33.0] {
+            let m = programme(&[(level, 20.0)]);
+            for (name, v) in [("M", m.momentary), ("S", m.short_term), ("I", m.integrated)] {
+                assert!((v as f64 - level).abs() <= 0.1, "{level}: {name} {v}");
+            }
+        }
+    }
+
+    #[test]
+    fn tech_3341_cases_3_to_5_the_gates() {
+        // 3: the quieter parts are under the relative gate
+        let m = programme(&[(-36.0, 10.0), (-23.0, 60.0), (-36.0, 10.0)]);
+        assert!(
+            (m.integrated + 23.0).abs() <= 0.1,
+            "case 3: {}",
+            m.integrated
+        );
+        // 4: and the quietest under the absolute one
+        let m = programme(&[
+            (-72.0, 10.0),
+            (-36.0, 10.0),
+            (-23.0, 60.0),
+            (-36.0, 10.0),
+            (-72.0, 10.0),
+        ]);
+        assert!(
+            (m.integrated + 23.0).abs() <= 0.1,
+            "case 4: {}",
+            m.integrated
+        );
+        // 5: louder and quieter around the target average to it
+        let m = programme(&[(-26.0, 20.0), (-20.0, 20.1), (-26.0, 20.0)]);
+        assert!(
+            (m.integrated + 23.0).abs() <= 0.1,
+            "case 5: {}",
+            m.integrated
+        );
+    }
+
+    #[test]
+    fn tech_3341_true_peak_cases_15_to_18() {
+        // sines at -6 dBFS whose samples fall beside their peaks: the true
+        // peak reads -6 dBTP (+0.2 / -0.4 dB)
+        let rate = 48_000u32;
+        for (case, divisor, phase_deg) in [
+            (15, 4.0, 0.0),
+            (16, 4.0, 45.0),
+            (17, 6.0, 60.0),
+            (18, 8.0, 67.5),
+        ] {
+            let hz = rate as f64 / divisor;
+            let amp = 10f64.powf(-6.0 / 20.0);
+            let phase = phase_deg * PI / 180.0;
+            // (faded in over 50 ms: an abrupt start rings - Gibbs - above
+            // the sine's own peak)
+            let sound: Vec<f32> = (0..rate as usize)
+                .flat_map(|i| {
+                    let fade = 0.5 - 0.5 * (PI * (i as f64 / 2400.0).min(1.0)).cos();
+                    let v = ((2.0 * PI * hz * i as f64 / rate as f64 + phase).sin() * amp * fade)
+                        as f32;
+                    [v, v]
+                })
+                .collect();
+            let mut m = Meter::new(rate);
+            m.push(&sound);
+            assert!(
+                (-6.4..=-5.8).contains(&m.true_peak),
+                "case {case}: {} dBTP (samples peak at {} dBFS)",
+                m.true_peak,
+                m.sample_peak
+            );
+        }
+    }
+
+    #[test]
+    fn tech_3342_loudness_range_cases_1_to_4() {
+        for (case, parts, want) in [
+            (1, vec![(-20.0, 20.0), (-30.0, 20.0)], 10.0),
+            (2, vec![(-20.0, 20.0), (-15.0, 20.0)], 5.0),
+            (3, vec![(-40.0, 20.0), (-20.0, 20.0)], 20.0),
+            (
+                4,
+                vec![
+                    (-50.0, 20.0),
+                    (-35.0, 20.0),
+                    (-20.0, 20.0),
+                    (-35.0, 20.0),
+                    (-50.0, 20.0),
+                ],
+                15.0,
+            ),
+        ] {
+            let m = programme(&parts);
+            assert!(
+                (m.range - want).abs() <= 1.0,
+                "case {case}: LRA {} LU, {want} wanted",
+                m.range
+            );
+        }
     }
 }
