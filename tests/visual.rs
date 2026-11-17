@@ -30,9 +30,33 @@ fn a_right_click_on_the_picture_offers_its_options() {
     h.get_by_role_and_label(egui::accesskit::Role::Button, "Visualization")
         .click();
     settle(&mut h, 2);
+    // the faces in their groups
+    h.get_by_role_and_label(egui::accesskit::Role::Button, "Classic")
+        .click();
+    settle(&mut h, 2);
     h.get_by_label("3D ring").click();
     settle(&mut h, 2);
     assert_eq!(h.state().mode(), "ring");
+    h.hover_at(centre);
+    h.run_steps(1);
+    for pressed in [true, false] {
+        h.event(Event::PointerButton {
+            pos: centre,
+            button: PointerButton::Secondary,
+            pressed,
+            modifiers: Default::default(),
+        });
+    }
+    settle(&mut h, 2);
+    h.get_by_role_and_label(egui::accesskit::Role::Button, "Visualization")
+        .click();
+    settle(&mut h, 2);
+    h.get_by_role_and_label(egui::accesskit::Role::Button, "Generative")
+        .click();
+    settle(&mut h, 2);
+    h.get_by_label("Plasma").click();
+    settle(&mut h, 2);
+    assert_eq!(h.state().mode(), "plasma");
     // the colours of the window itself
     h.get_by_label("⚙").click();
     settle(&mut h, 2);
@@ -74,5 +98,5 @@ fn off_draws_no_analysis() {
         "the analysis ran with the picture off"
     );
     // a click on the picture never steps into "off"
-    assert_eq!(axross_amp::viz::next("starfield"), "spectrum");
+    assert_eq!(axross_amp::viz::next("typography"), "spectrum");
 }

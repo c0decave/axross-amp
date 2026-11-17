@@ -1,0 +1,183 @@
+//! Every face, from a known signal, rendered by wgpu (Mesa's lavapipe
+//! without a GPU): what each draws is measured (how much of the picture,
+//! how many colours, how much moves from one frame to the next), the
+//! pictures are kept in `target/screenshots/faces/` (docs/faces_sheet.py
+//! makes the README's sheets from them), and the shader faces drawn on the
+//! CPU (no wgpu) must look like the GPU's.
+
+#[path = "support/faces.rs"]
+mod faces;
+
+use axross_amp::viz::{self, FACES, Group, Overview};
+use egui::vec2;
+use std::path::PathBuf;
+
+fn shots() -> PathBuf {
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/screenshots/faces");
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+fn far(a: &image::Rgba<u8>, b: &image::Rgba<u8>) -> bool {
+    (0..3)
+        .map(|c| (a[c] as i32 - b[c] as i32).abs())
+        .sum::<i32>()
+        > 24
+}
+
+struct Stats {
+    coverage: f32,
+    colours: usize,
+    motion: f32,
+    mean: [f32; 3],
+}
+
+fn stats(
+    image: &image::RgbaImage,
+    before: &image::RgbaImage,
+    background: image::Rgba<u8>,
+) -> Stats {
+    // (inside the rounded corners)
+    let (x0, y0, x1, y1) = (6, 6, image.width() - 6, image.height() - 6);
+    let (mut drawn, mut moved) = (0usize, 0usize);
+    let mut colours = std::collections::HashSet::new();
+    let mut mean = [0.0f64; 3];
+    for y in y0..y1 {
+        for x in x0..x1 {
+            let p = image.get_pixel(x, y);
+            for c in 0..3 {
+                mean[c] += p[c] as f64;
+            }
+            if far(p, &background) {
+                drawn += 1;
+                colours.insert([p[0] / 32, p[1] / 32, p[2] / 32]);
+            }
+            if far(p, before.get_pixel(x, y)) {
+                moved += 1;
+            }
+        }
+    }
+    let total = ((x1 - x0) * (y1 - y0)) as f32;
+    Stats {
+        coverage: drawn as f32 / total,
+        colours: colours.len(),
+        motion: moved as f32 / total,
+        mean: mean.map(|m| (m / total as f64) as f32),
+    }
+}
+
+/// The track's waveform as the player reads it (min, max, rms a column).
+fn overview_of(sound: &[f32]) -> Overview {
+    let frames = sound.len() / 2;
+    let columns = 1200;
+    let per = frames / columns;
+    Overview {
+        columns: (0..columns)
+            .map(|c| {
+                let part = &sound[c * per * 2..(c + 1) * per * 2];
+                let (mut lo, mut hi, mut sq) = (0.0f32, 0.0f32, 0.0f32);
+                for f in part.chunks(2) {
+                    let v = (f[0] + f[1]) * 0.5;
+                    lo = lo.min(v);
+                    hi = hi.max(v);
+                    sq += v * v;
+                }
+                [lo, hi, (sq / per as f32).sqrt()]
+            })
+            .collect(),
+        done: 1.0,
+    }
+}
+
+#[test]
+fn every_face_draws_moves_and_is_kept_as_a_picture() {
+    let background = {
+        let s = viz::scheme("classic", &Default::default()).background;
+        image::Rgba([s.r(), s.g(), s.b(), 255])
+    };
+    let mut report = Vec::new();
+    let mut failures = Vec::new();
+    for face in FACES.iter().filter(|f| f.group != Group::Off) {
+        let mut h = faces::harness(face.key, vec2(620.0, 300.0), true, 3.0);
+        if face.key == "overview" {
+            let o = overview_of(&h.state().sound);
+            h.state_mut().overview = Some(o);
+        }
+        // 2.5 s, as axross's faces get in docs/axross_faces.py
+        for _ in 0..75 {
+            faces::frame(&mut h);
+        }
+        let first = h.render().expect("renders");
+        // a third of a second on
+        for _ in 0..10 {
+            faces::frame(&mut h);
+        }
+        let second = h.render().expect("renders");
+        second
+            .save(shots().join(format!("{}.png", face.key)))
+            .unwrap();
+        let st = stats(&second, &first, background);
+        report.push(format!(
+            "{:<13} {:<10} coverage {:>5.1} %, {:>3} colours, motion {:>5.1} %",
+            face.key,
+            face.group.name(),
+            st.coverage * 100.0,
+            st.colours,
+            st.motion * 100.0
+        ));
+        // something of its own, in more than two colours, moving with the sound
+        if !(0.001..=1.0).contains(&st.coverage) || st.colours < 3 || st.motion < 0.0005 {
+            failures.push(report.last().unwrap().clone());
+        }
+    }
+    println!("{}", report.join("\n"));
+    assert!(failures.is_empty(), "{failures:#?}");
+}
+
+#[test]
+fn the_shader_faces_look_alike_on_the_cpu() {
+    // without wgpu's shaders the CPU draws them, coarser: the same picture
+    // in the large (its mean colour), and still moving
+    let background = {
+        let s = viz::scheme("classic", &Default::default()).background;
+        image::Rgba([s.r(), s.g(), s.b(), 255])
+    };
+    let mut report = Vec::new();
+    for face in FACES.iter().filter(|f| f.shader) {
+        let mut seen = Vec::new();
+        for gpu in [true, false] {
+            let mut h = faces::harness(face.key, vec2(320.0, 180.0), gpu, 3.0);
+            for _ in 0..45 {
+                faces::frame(&mut h);
+            }
+            let first = h.render().unwrap();
+            for _ in 0..3 {
+                faces::frame(&mut h);
+            }
+            let second = h.render().unwrap();
+            if !gpu {
+                second
+                    .save(shots().join(format!("{}-cpu.png", face.key)))
+                    .unwrap();
+            }
+            seen.push(stats(&second, &first, background));
+        }
+        let (g, c) = (&seen[0], &seen[1]);
+        let distance: f32 = (0..3).map(|k| (g.mean[k] - c.mean[k]).abs()).sum();
+        report.push(format!(
+            "{:<10} mean colour GPU {:?} CPU {:?} (apart {distance:.1}); motion {:.1} % / {:.1} %",
+            face.key,
+            g.mean.map(|v| v as u32),
+            c.mean.map(|v| v as u32),
+            g.motion * 100.0,
+            c.motion * 100.0
+        ));
+        assert!(distance < 40.0, "{}", report.last().unwrap());
+        assert!(
+            c.motion > 0.0005 && c.coverage > 0.05,
+            "{}",
+            report.last().unwrap()
+        );
+    }
+    println!("{}", report.join("\n"));
+}

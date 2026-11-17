@@ -333,13 +333,19 @@ impl App {
         playlist.add_tracks(saved.tracks.clone());
         playlist.set_shuffle(saved.shuffle);
         playlist.repeat = Repeat::from_key(&saved.repeat);
+        let mut viz_state = VizState::default();
+        // the pixel faces' shaders, where egui draws with wgpu
+        if let Some(render_state) = cc.wgpu_render_state.as_ref() {
+            viz::gpu::install(render_state);
+            viz_state.set_gpu(true);
+        }
         let mut app = App {
             engine,
             playlist,
             info: TrackInfo::default(),
             cover: None,
             analyzer: Analyzer::new(),
-            viz_state: VizState::default(),
+            viz_state,
             tap: Vec::new(),
             mode: viz::known(&saved.visualizer),
             scheme_key: saved.visual_scheme.clone(),
@@ -829,6 +835,7 @@ impl App {
     /// The details of the track that plays now.
     fn take_info(&mut self, ctx: &egui::Context, info: TrackInfo) {
         self.loaded = Some(self.generation);
+        self.analyzer.new_track();
         self.opening = false;
         self.failures = 0;
         self.duration = info.duration.or(self.duration);
@@ -1549,7 +1556,11 @@ impl App {
             self.previous();
         }
         if pressed(Key::V) {
-            self.mode = viz::next(self.mode);
+            self.mode = if modifiers.shift {
+                viz::previous(self.mode)
+            } else {
+                viz::next(self.mode)
+            };
             self.dirty = true;
         }
     }
@@ -1754,11 +1765,8 @@ impl App {
                 egui::ComboBox::from_id_salt("mode")
                     .selected_text(viz::name(mode))
                     .width(150.0)
-                    .show_ui(ui, |ui| {
-                        for (key, name) in viz::MODES {
-                            ui.selectable_value(&mut mode, key, name);
-                        }
-                    })
+                    .height(560.0)
+                    .show_ui(ui, |ui| faces_list(ui, &mut mode))
                     .response
                     .accessible_name("Visualization");
                 if mode != self.mode {
@@ -1774,12 +1782,29 @@ impl App {
     /// full screen, the playlist shown or not - axross's context menu.
     fn visual_menu(&mut self, ui: &mut Ui) {
         ui.menu_button("Visualization", |ui| {
-            for (key, name) in viz::MODES {
-                if ui.radio(self.mode == key, name).clicked() {
-                    self.mode = key;
-                    self.dirty = true;
-                    ui.close();
-                }
+            for group in [
+                viz::Group::Classic,
+                viz::Group::Analysis,
+                viz::Group::Generative,
+            ] {
+                ui.menu_button(group.name(), |ui| {
+                    egui::ScrollArea::vertical()
+                        .max_height(480.0)
+                        .show(ui, |ui| {
+                            for face in viz::FACES.iter().filter(|f| f.group == group) {
+                                if ui.radio(self.mode == face.key, face.name).clicked() {
+                                    self.mode = face.key;
+                                    self.dirty = true;
+                                    ui.close();
+                                }
+                            }
+                        });
+                });
+            }
+            if ui.radio(self.mode == "off", "Off").clicked() {
+                self.mode = "off";
+                self.dirty = true;
+                ui.close();
             }
         });
         ui.label(RichText::new("Colours").strong());
@@ -2114,7 +2139,7 @@ impl App {
         let scheme = viz::scheme(&self.scheme_key, &self.custom_colours);
         let dt = self.last_frame.elapsed().as_secs_f32().clamp(0.0, 0.2);
         self.last_frame = Instant::now();
-        self.engine.shared.tap_into(&mut self.tap);
+        let written = self.engine.shared.tap_into(&mut self.tap);
         let rate = self
             .engine
             .shared
@@ -2122,19 +2147,34 @@ impl App {
             .load(std::sync::atomic::Ordering::Relaxed);
         // (off: no analysis, no frames for it)
         if self.mode != "off" {
-            self.analyzer
-                .update(&self.tap, rate, &self.options, dt, self.playing());
+            self.analyzer.update(
+                &self.tap,
+                written,
+                rate,
+                &self.options,
+                dt,
+                self.playing(),
+                viz::needs(self.mode),
+            );
             self.analyzer_frames += 1;
         }
-        viz::draw(
-            ui.painter(),
+        let title = self
+            .window_title
+            .strip_prefix("axross-amp – ")
+            .unwrap_or("");
+        let frame = viz::Frame {
+            painter: ui.painter(),
             rect,
-            &self.analyzer,
-            &scheme,
-            self.mode,
-            &mut self.viz_state,
+            a: &self.analyzer,
+            s: &scheme,
             dt,
-        );
+            title,
+            overview: None,
+            position: self.engine.shared.position() as f32,
+            duration: self.duration.unwrap_or(0.0) as f32,
+            hover: response.hover_pos(),
+        };
+        viz::draw(&frame, self.mode, &mut self.viz_state);
         // the face's name, for a moment after it changed (axross's 1.5 s)
         let now = ui.input(|i| i.time);
         if self.label_for != self.mode {
@@ -3110,6 +3150,20 @@ fn style(ctx: &egui::Context) {
         s.spacing.item_spacing = vec2(8.0, 6.0);
         s.spacing.button_padding = vec2(10.0, 4.0);
     });
+}
+
+/// The faces in their groups, to choose one (the mode box).
+fn faces_list(ui: &mut Ui, mode: &mut &'static str) {
+    let mut last = None;
+    for face in viz::FACES {
+        if last != Some(face.group) && face.group != viz::Group::Off {
+            ui.label(RichText::new(face.group.name()).small().color(MUTED));
+        } else if face.group == viz::Group::Off {
+            ui.separator();
+        }
+        last = Some(face.group);
+        ui.selectable_value(mode, face.key, face.name);
+    }
 }
 
 #[cfg(test)]

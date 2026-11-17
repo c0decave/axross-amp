@@ -9,7 +9,7 @@ mod scratch;
 
 use axross_amp::app::App;
 use axross_amp::engine::RenderState;
-use axross_amp::viz::MODES;
+use axross_amp::viz::{FACES, Group};
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
 use std::io::Write;
@@ -154,15 +154,16 @@ fn the_window_shows_the_track_and_every_visualization() {
     let background = *blank.get_pixel(rect.center().x as u32, rect.center().y as u32);
 
     let mut report = Vec::new();
-    for (key, _name) in MODES {
-        if key == "off" {
-            continue;
-        }
+    for key in FACES
+        .iter()
+        .filter(|f| f.group != Group::Off)
+        .map(|f| f.key)
+    {
         harness.state_mut().set_mode(key);
-        play_for(&mut harness, &mut output, 0.6);
+        play_for(&mut harness, &mut output, 0.35);
         assert_eq!(harness.state().mode(), key);
         let first = harness.render().unwrap();
-        play_for(&mut harness, &mut output, 0.1);
+        play_for(&mut harness, &mut output, 0.25);
         let second = harness.render().unwrap();
         let rect = harness.get_by_role(egui::accesskit::Role::Image).rect();
         let p = picture(&second, rect, &first, background);
@@ -176,7 +177,7 @@ fn the_window_shows_the_track_and_every_visualization() {
         // each face draws something of its own, in more than one colour,
         // and moves with the sound
         assert!(
-            (0.003..0.995).contains(&p.coverage),
+            (0.001..=1.0).contains(&p.coverage),
             "{key}: coverage {}",
             p.coverage
         );

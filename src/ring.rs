@@ -263,8 +263,9 @@ impl Tap {
     }
 
     /// As [`Tap::read_into`], the newest `delay` frames left out, at most
-    /// `max` frames.
-    pub fn read_delayed(&self, out: &mut Vec<f32>, delay: u64, max: u64) {
+    /// `max` frames; the count of frames played up to the last one read
+    /// (what came since the last read is the difference).
+    pub fn read_delayed(&self, out: &mut Vec<f32>, delay: u64, max: u64) -> u64 {
         out.clear();
         let n = self.written.load(Ordering::Acquire).saturating_sub(delay);
         let count = n
@@ -275,6 +276,7 @@ impl Tap {
             out.push(f32::from_bits(self.buf[at].load(Ordering::Relaxed)));
             out.push(f32::from_bits(self.buf[at + 1].load(Ordering::Relaxed)));
         }
+        n
     }
 
     /// Forget what was played (nothing to show).

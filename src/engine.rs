@@ -385,12 +385,12 @@ impl Shared {
 
     /// The latest frames heard (the visualizations: in step with the sound,
     /// not ahead of it by the output's latency).
-    pub fn tap_into(&self, out: &mut Vec<f32>) {
+    pub fn tap_into(&self, out: &mut Vec<f32>) -> u64 {
         let delay = self
             .latency
             .load(Ordering::Relaxed)
             .min((TAP_FRAMES - TAP_READ) as u64);
-        self.tap.read_delayed(out, delay, TAP_READ as u64);
+        self.tap.read_delayed(out, delay, TAP_READ as u64)
     }
 
     /// As when the output reports that its device is gone (tests).
