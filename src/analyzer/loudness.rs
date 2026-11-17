@@ -15,7 +15,7 @@ const UNIT: f64 = 0.1;
 /// 100 ms steps kept: 30 of them make the short-term loudness.
 const BLOCKS: usize = 30;
 /// Taps of each phase of the 4x oversampling filter.
-const TAPS: usize = 12;
+pub(crate) const TAPS: usize = 12;
 
 #[derive(Clone, Copy, Debug, Default)]
 struct Biquad {
@@ -72,7 +72,7 @@ fn k_weighting(rate: u32) -> [Biquad; 2] {
 /// BS.1770-4's 4x oversampling filter (Annex 2): 48 taps in 4 phases.
 // (the standard's values as it prints them: multiples of 2^-14, exact)
 #[allow(clippy::excessive_precision)]
-fn oversampling() -> [[f32; TAPS]; 4] {
+pub(crate) fn oversampling() -> [[f32; TAPS]; 4] {
     [
         [
             0.001_708_984_375,

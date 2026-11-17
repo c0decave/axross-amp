@@ -1,25 +1,33 @@
-//! A look-ahead true-peak limiter for a track that is made louder
-//! (ReplayGain or its pre-amplification above unity): the sound is held
-//! back [`LOOKAHEAD`] frames, so the gain can come down smoothly before a
-//! peak instead of bending the peak itself. Its peaks are found between the
-//! samples too (4x oversampled), and kept below [`CEILING_DB`] dBTP.
+//! A look-ahead true-peak limiter: the sound is held back about 4 ms, so
+//! the gain comes down smoothly before a peak (over those 4 ms) instead of
+//! bending the peak itself, and rises again over 80 ms. Peaks are found
+//! between the samples too - 4x oversampled by BS.1770's own filter, the
+//! loudness meter's - and kept below the ceiling.
 //!
-//! A track played at unity gain never meets it: the decoder leaves the
-//! samples untouched (bit for bit). Once it has started on a track it stays
-//! in the path until a seek or the track's end (its delay must not come and
+//! The decoder puts one in the way of a track ReplayGain makes louder
+//! (ceiling [`CEILING_DB`]); the player one after the resampler, where a
+//! track is played at another rate than its own (its intersample peaks
+//! become samples: [`RESAMPLED_DB`]). A track at unity gain at its own rate
+//! meets neither: its samples go out bit for bit. Once one has started it
+//! stays in the path until a seek or the end (its delay must not come and
 //! go mid-stream), with nothing to do where nothing peaks.
 
-/// Frames the sound is held back (1.3 ms at 48 kHz).
-pub const LOOKAHEAD: usize = 64;
-/// The highest true peak let through, dBTP.
+use crate::analyzer::loudness::{TAPS, oversampling};
+
+/// The most frames held back (4 ms at 256 kHz).
+const MOST: usize = 1024;
+/// Seconds held back: what the gain takes to come down.
+const AHEAD_SECS: f32 = 0.004;
+/// The highest true peak let through a track made louder, dBTP.
 pub const CEILING_DB: f32 = -1.0;
-/// Taps of each phase of the oversampling filter.
-const TAPS: usize = 8;
+/// And through what the resampler made of a track, dBTP.
+pub const RESAMPLED_DB: f32 = -0.3;
 
 pub struct Limiter {
     /// The frames held back (a ring) and each one's gain needed.
-    delay: [[f32; 2]; LOOKAHEAD],
-    need: [f32; LOOKAHEAD],
+    delay: Box<[[f32; 2]; MOST]>,
+    need: Box<[f32; MOST]>,
+    ahead: usize,
     at: usize,
     filled: usize,
     /// The last TAPS input frames, for the peaks between samples.
@@ -35,28 +43,36 @@ pub struct Limiter {
 }
 
 impl Limiter {
-    pub fn new(rate: u32) -> Limiter {
+    /// One that keeps true peaks below `ceiling_db` dBTP at `rate`.
+    pub fn with_ceiling(rate: u32, ceiling_db: f32) -> Limiter {
+        let rate = rate.max(8000);
         Limiter {
-            delay: [[0.0; 2]; LOOKAHEAD],
-            need: [1.0; LOOKAHEAD],
+            delay: Box::new([[0.0; 2]; MOST]),
+            need: Box::new([1.0; MOST]),
+            ahead: ((rate as f32 * AHEAD_SECS) as usize).clamp(16, MOST),
             at: 0,
             filled: 0,
             history: [[0.0; 2]; TAPS],
             hist_at: 0,
-            phases: phases(),
+            phases: oversampling(),
             gain: 1.0,
             // back to unity with a time constant of 80 ms
-            release: 1.0 - (-1.0 / (0.08 * rate.max(1) as f32)).exp(),
-            // (aiming 0.05 dB lower: the peaks between samples are estimates)
-            ceiling: 10f32.powf((CEILING_DB - 0.05) / 20.0),
+            release: 1.0 - (-1.0 / (0.08 * rate as f32)).exp(),
+            // (aiming 0.05 dB lower: the filter's estimate is within that)
+            ceiling: 10f32.powf((ceiling_db - 0.05) / 20.0),
             active: false,
         }
     }
 
+    /// A track made louder's: [`CEILING_DB`].
+    pub fn new(rate: u32) -> Limiter {
+        Limiter::with_ceiling(rate, CEILING_DB)
+    }
+
     /// Forget everything (a seek, a new track): out of the path again.
     pub fn reset(&mut self) {
-        self.delay = [[0.0; 2]; LOOKAHEAD];
-        self.need = [1.0; LOOKAHEAD];
+        self.delay.fill([0.0; 2]);
+        self.need.fill(1.0);
         self.at = 0;
         self.filled = 0;
         self.history = [[0.0; 2]; TAPS];
@@ -65,8 +81,13 @@ impl Limiter {
         self.active = false;
     }
 
+    /// Frames it holds back.
+    pub fn delay_frames(&self) -> usize {
+        self.ahead
+    }
+
     /// The highest of the frame's samples and the sound between it and the
-    /// frames before (4x).
+    /// frames before (BS.1770's 4x oversampling).
     fn peak(&mut self, l: f32, r: f32) -> f32 {
         self.history[self.hist_at] = [l, r];
         let mut peak = l.abs().max(r.abs());
@@ -83,7 +104,7 @@ impl Limiter {
         peak
     }
 
-    /// Interleaved stereo in place: what comes out is LOOKAHEAD frames
+    /// Interleaved stereo in place: what comes out is the look-ahead
     /// behind what went in (the first call gives that many fewer frames).
     pub fn process(&mut self, samples: &mut Vec<f32>) {
         self.active = true;
@@ -106,39 +127,35 @@ impl Limiter {
         samples.truncate(written * 2);
     }
 
-    /// A frame in, the frame LOOKAHEAD behind it out (once there is one),
-    /// at the gain that keeps every peak ahead of it below the ceiling.
+    /// A frame in, the frame the look-ahead behind it out (once there is
+    /// one), at the gain that keeps every peak ahead of it below the ceiling.
     fn push(&mut self, frame: [f32; 2], need: f32) -> Option<[f32; 2]> {
-        let out = (self.filled == LOOKAHEAD).then(|| self.delay[self.at]);
+        let n = self.ahead;
+        let out = (self.filled == n).then(|| self.delay[self.at]);
         self.delay[self.at] = frame;
         self.need[self.at] = need;
-        self.at = (self.at + 1) % LOOKAHEAD;
-        self.filled = (self.filled + 1).min(LOOKAHEAD);
+        self.at = (self.at + 1) % n;
+        self.filled = (self.filled + 1).min(n);
         let out = out?;
-        // the lowest gain a peak in the next LOOKAHEAD frames needs: the gain
-        // falls towards it evenly over the frames before it comes
+        // the gain falls evenly towards what each peak ahead needs, to be
+        // there when it comes (the filter finds a peak between samples a
+        // few frames after it: reached that much sooner)
         let mut lowest = 1.0f32;
         let mut ramp = 1.0f32;
-        for k in 0..LOOKAHEAD {
-            let n = self.need[(self.at + k) % LOOKAHEAD];
-            if n < 1.0 {
-                lowest = lowest.min(n);
-                // (k frames before a peak needing n: as far down as a linear
-                // fall from now reaching n there)
-                // (the filter finds a peak between samples a few frames
-                // after it: reached that much sooner)
+        for k in 0..n {
+            let wanted = self.need[(self.at + k) % n];
+            if wanted < 1.0 {
+                lowest = lowest.min(wanted);
                 let steps = (k + 1).saturating_sub(TAPS / 2).max(1);
-                let on_the_way = self.gain + (n - self.gain) * (1.0 / steps as f32);
-                ramp = ramp.min(on_the_way);
+                ramp = ramp.min(self.gain + (wanted - self.gain) / steps as f32);
             }
         }
         if lowest < 1.0 || self.gain < 1.0 {
-            let target = ramp.min(1.0);
-            self.gain = if target < self.gain {
-                target
+            self.gain = if ramp < self.gain {
+                ramp
             } else {
                 // rising again: slowly, never above what is ahead
-                (self.gain + (1.0 - self.gain) * self.release).min(target)
+                (self.gain + (1.0 - self.gain) * self.release).min(ramp)
             };
             if self.gain > 0.999_99 && lowest >= 1.0 {
                 self.gain = 1.0;
@@ -156,8 +173,8 @@ impl Limiter {
         if !self.active {
             return;
         }
-        // (LOOKAHEAD frames of nothing push out the `filled` held back)
-        for _ in 0..LOOKAHEAD {
+        // (that many frames of nothing push out those held back)
+        for _ in 0..self.ahead {
             if let Some([l, r]) = self.push([0.0, 0.0], 1.0) {
                 out.push(l);
                 out.push(r);
@@ -165,33 +182,6 @@ impl Limiter {
         }
         self.reset();
     }
-}
-
-/// A windowed sinc for 4x oversampling (the three phases between the
-/// samples matter; the fourth is the sample itself).
-fn phases() -> [[f32; TAPS]; 4] {
-    let mut out = [[0.0f32; TAPS]; 4];
-    let len = (TAPS * 4) as f64;
-    for (p, phase) in out.iter_mut().enumerate() {
-        let mut sum = 0.0;
-        for (t, tap) in phase.iter_mut().enumerate() {
-            let n = (t * 4 + p) as f64;
-            let x = (n - (len - 1.0) / 2.0) / 4.0;
-            let sinc = if x.abs() < 1e-12 {
-                1.0
-            } else {
-                (std::f64::consts::PI * x).sin() / (std::f64::consts::PI * x)
-            };
-            let w = 0.42 - 0.5 * (2.0 * std::f64::consts::PI * n / (len - 1.0)).cos()
-                + 0.08 * (4.0 * std::f64::consts::PI * n / (len - 1.0)).cos();
-            *tap = (sinc * w) as f32;
-            sum += sinc * w;
-        }
-        for tap in phase.iter_mut() {
-            *tap /= sum as f32;
-        }
-    }
-    out
 }
 
 #[cfg(test)]
@@ -224,6 +214,14 @@ mod tests {
         let ceiling = 10f32.powf(CEILING_DB / 20.0);
         let highest = out.iter().fold(0.0f32, |m, v| m.max(v.abs()));
         assert!(highest <= ceiling + 1e-4, "{highest}");
+        // and between the samples too, as a BS.1770 meter reads it
+        let mut meter = crate::analyzer::loudness::Meter::new(48_000);
+        meter.push(&out);
+        assert!(
+            meter.true_peak <= CEILING_DB + 0.1,
+            "{} dBTP",
+            meter.true_peak
+        );
         // not a clipper: the wave keeps its shape - each frame is its input
         // scaled (the held back frames come out in order), both sides alike,
         // and the gain moves smoothly
@@ -234,7 +232,8 @@ mod tests {
                 let g1 = frame[1] / source[1];
                 assert!((g0 - g1).abs() < 1e-3, "both sides the same gain");
                 assert!(g0 > 0.0 && g0 <= 1.0 + 1e-6, "{g0}");
-                assert!((g0 - last).abs() < 0.05, "a jump in gain: {last} to {g0}");
+                // (over 4 ms: no step of more than 2 % a frame)
+                assert!((g0 - last).abs() < 0.02, "a jump in gain: {last} to {g0}");
                 last = g0;
             }
         }
@@ -248,5 +247,43 @@ mod tests {
         limiter.process(&mut out);
         limiter.flush(&mut out);
         assert_eq!(out, input);
+    }
+}
+
+#[cfg(test)]
+mod true_peaks {
+    use super::*;
+
+    #[test]
+    fn high_tones_peaking_between_their_samples_are_held_too() {
+        // 12 and 18 kHz at 48 kHz, the samples beside the peaks, 6 dB too
+        // loud: a meter after BS.1770 reads them below the ceiling (the
+        // old 8-tap detector read them 0.4-0.5 dB low and let them over)
+        for hz in [12_000.0f32, 18_000.0] {
+            let input: Vec<f32> = (0..48_000)
+                .flat_map(|i| {
+                    let fade = (i as f32 / 480.0).min(1.0);
+                    let v =
+                        (std::f32::consts::TAU * hz * i as f32 / 48_000.0 + 0.6).sin() * 1.8 * fade;
+                    [v, v]
+                })
+                .collect();
+            let mut limiter = Limiter::new(48_000);
+            let mut out = input.clone();
+            limiter.process(&mut out);
+            limiter.flush(&mut out);
+            let mut meter = crate::analyzer::loudness::Meter::new(48_000);
+            meter.push(&out);
+            assert!(
+                meter.true_peak <= CEILING_DB + 0.1,
+                "{hz} Hz: {} dBTP",
+                meter.true_peak
+            );
+            assert!(
+                meter.true_peak > CEILING_DB - 1.0,
+                "{hz} Hz: {} dBTP",
+                meter.true_peak
+            );
+        }
     }
 }

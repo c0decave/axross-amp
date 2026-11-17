@@ -2090,6 +2090,14 @@ fn read_file(
                 }
             }
             Ok(false) => {
+                // what the limiter still holds back, before the end
+                d.finish(&mut samples);
+                if !samples.is_empty() {
+                    queued.fetch_add(samples.len() / 2, Ordering::Relaxed);
+                    if tx.send(Feed::Pcm { epoch, samples }).is_err() {
+                        return;
+                    }
+                }
                 ended = true;
                 d.eof = false; // (a seek back reads on)
                 if tx.send(Feed::End { epoch }).is_err() {
@@ -2129,6 +2137,10 @@ struct Player {
     /// A file's sound to the output's rate - one resampler on across a
     /// gapless join (the same rate: not even the filter's edge between them).
     resampler: Resampler,
+    /// After the resampler, where a track plays at another rate than its
+    /// own: its peaks between samples become samples (a hot master's go
+    /// over full scale) - held below RESAMPLED_DB instead of clipped.
+    out_limiter: crate::limiter::Limiter,
     /// The queued track's first sound is the next to go into the ring.
     pending_boundary: bool,
     /// Equalized and not yet taken by the ring (it was full).
@@ -2287,6 +2299,7 @@ impl Player {
 
     /// What is decoded and not heard goes (faded out); the position starts at `ms`.
     fn flush_at(&mut self, ms: u64) {
+        self.out_limiter.reset();
         self.shared.restart_at(ms);
         self.shared.ending.store(false, Ordering::Relaxed);
         self.pending_boundary = false;
@@ -2483,6 +2496,9 @@ impl Player {
             let mut tail = Vec::new();
             self.resampler.flush(&mut tail);
             self.eq.process(&mut tail);
+            if self.out_limiter.active {
+                self.out_limiter.process(&mut tail);
+            }
             self.carry.extend_from_slice(&tail);
             self.resampler = Resampler::new(next.rate.max(1), self.out_rate);
         }
@@ -2491,6 +2507,22 @@ impl Player {
             self.ending = Some((old, queued, info));
         }
         Some(true)
+    }
+
+    /// The chunk just resampled through the output's limiter, where the
+    /// track is played at another rate (or the limiter is already in the
+    /// path); at the track's own rate it is untouched.
+    fn limit_resampled(&mut self) {
+        let resampling = self.resampler.from != self.resampler.to;
+        if resampling || self.out_limiter.active {
+            if !self.out_limiter.active {
+                self.out_limiter = crate::limiter::Limiter::with_ceiling(
+                    self.out_rate,
+                    crate::limiter::RESAMPLED_DB,
+                );
+            }
+            self.out_limiter.process(&mut self.chunk);
+        }
     }
 
     /// A file being opened: opened (told, also while nothing plays), or failed.
@@ -2633,6 +2665,7 @@ impl Player {
                     self.chunk.clear();
                     self.resampler.process(&samples, &mut self.chunk);
                     self.eq.process(&mut self.chunk);
+                    self.limit_resampled();
                     let n = self.shared.push(&self.chunk);
                     self.carry.extend_from_slice(&self.chunk[n * 2..]);
                     moved = true;
@@ -2678,6 +2711,10 @@ impl Player {
             let mut tail = Vec::new();
             self.resampler.flush(&mut tail);
             self.eq.process(&mut tail);
+            if self.out_limiter.active {
+                self.out_limiter.process(&mut tail);
+                self.out_limiter.flush(&mut tail);
+            }
             self.carry.extend_from_slice(&tail);
             if let Some(Source::File(f)) = self.current.as_mut() {
                 f.finished = true;
@@ -2779,6 +2816,7 @@ fn run(
         ending: None,
         prepared: None,
         resampler: Resampler::new(48_000, 48_000),
+        out_limiter: crate::limiter::Limiter::with_ceiling(48_000, crate::limiter::RESAMPLED_DB),
         pending_boundary: false,
         carry: Vec::new(),
         output_ok: false,

@@ -682,6 +682,10 @@ fn a_track_made_louder_is_held_below_the_ceiling() {
     let highest = heard.iter().fold(0.0f32, |m, v| m.max(v.abs()));
     let ceiling = 10f32.powf(-1.0 / 20.0);
     assert!(highest <= ceiling + 1e-3, "a peak at {highest}");
+    // between the samples too, as a BS.1770 meter reads it
+    let mut meter = axross_amp::analyzer::loudness::Meter::new(RATE);
+    meter.push(heard);
+    assert!(meter.true_peak <= -0.9, "{} dBTP", meter.true_peak);
     assert!(highest > ceiling * 0.9, "it was made louder: {highest}");
     // no flat tops: the loudest samples are not held at one value
     let at_top = heard.iter().filter(|v| v.abs() > highest - 1e-5).count();
@@ -692,4 +696,44 @@ fn a_track_made_louder_is_held_below_the_ceiling() {
         .filter(|f| f[0] != 0.0 || f[1] != 0.0)
         .count();
     assert!((sound as i64 - RATE as i64).abs() < 100, "{sound} frames");
+}
+
+#[test]
+fn a_hot_master_played_at_another_rate_is_held_below_full_scale() {
+    // 44.1 kHz on a 48 kHz output: the resampler turns the peaks between a
+    // hot master's samples into samples - above full scale, where they were
+    // cut flat. The output's limiter holds them at -0.3 dBTP instead.
+    let dir = folder("resampled");
+    let rate = 44_100u32;
+    let master: Vec<f32> = (0..rate as usize)
+        .flat_map(|i| {
+            let t = i as f32 / rate as f32;
+            // a quarter of the rate, sampled 45 degrees off its peaks: the
+            // samples at -0.7 dBFS, the sound between them at +2.3 dBFS
+            let v = (std::f32::consts::TAU * 11_025.0 * t + std::f32::consts::FRAC_PI_4).sin()
+                * 1.3
+                * (0.97 + 0.03 * (std::f32::consts::TAU * 3.0 * t).sin());
+            [v, v]
+        })
+        .collect();
+    std::fs::write(dir.join("hot.wav"), wav_of(rate, &master)).unwrap();
+    let engine = Engine::start_headless(|| {});
+    engine.shared.set_volume(1.0);
+    load(&engine, &dir.join("hot.wav").to_string_lossy(), 1);
+    let mut output = Output::new();
+    output.play(&engine, 1.6, |_, _| {});
+    let heard = heard_from_start(&output.heard);
+    let highest = heard.iter().fold(0.0f32, |m, v| m.max(v.abs()));
+    assert!(highest < 0.98, "a sample at {highest}: full scale reached");
+    let mut meter = axross_amp::analyzer::loudness::Meter::new(RATE);
+    meter.push(heard);
+    assert!(meter.true_peak <= -0.2, "{} dBTP", meter.true_peak);
+    // no flat tops, and all of it heard
+    let at_top = heard.iter().filter(|v| v.abs() > highest - 1e-5).count();
+    assert!(at_top < 40, "{at_top} samples at the top: clipped");
+    let sound = heard
+        .chunks(2)
+        .filter(|f| f[0] != 0.0 || f[1] != 0.0)
+        .count();
+    assert!((sound as i64 - RATE as i64).abs() < 200, "{sound} frames");
 }
