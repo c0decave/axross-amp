@@ -124,12 +124,16 @@ pub fn config_dir() -> PathBuf {
         .join("axross")
 }
 
+/// The player's file and axross's audio settings, in [`config_dir`].
+pub const STATE_FILE: &str = "media_player.json";
+pub const AUDIO_FILE: &str = "audio.json";
+
 pub fn state_path() -> PathBuf {
-    config_dir().join("media_player.json")
+    config_dir().join(STATE_FILE)
 }
 
 pub fn audio_path() -> PathBuf {
-    config_dir().join("audio.json")
+    config_dir().join(AUDIO_FILE)
 }
 
 /// The JSON object in `path` (an empty one when it is missing, too big or

@@ -77,15 +77,41 @@ pub struct App {
     /// The output device chosen for the player ("" the default).
     output_choice: String,
     audio_path: PathBuf,
+    gate: KeyGate,
+}
+
+/// Where the app keeps its state and what it connects to (tests use a
+/// folder of their own and leave the desktop alone).
+#[derive(Clone, Debug)]
+pub struct Setup {
+    /// axross's configuration folder (`~/.config/axross`).
+    pub config_dir: PathBuf,
+    /// Offer the player to the desktop (MPRIS on the session D-Bus: media
+    /// keys, the desktop's sound menu).
+    pub desktop: bool,
+}
+
+impl Default for Setup {
+    fn default() -> Self {
+        Setup {
+            config_dir: state::config_dir(),
+            desktop: true,
+        }
+    }
 }
 
 impl App {
     pub fn new(cc: &eframe::CreationContext<'_>, args: Vec<String>) -> Self {
+        Self::with_setup(cc, args, Setup::default())
+    }
+
+    /// The app with its state in `setup.config_dir`.
+    pub fn with_setup(cc: &eframe::CreationContext<'_>, args: Vec<String>, setup: Setup) -> Self {
         style(&cc.egui_ctx);
         let ctx = cc.egui_ctx.clone();
         let engine = Engine::start(move || ctx.request_repaint());
-        let state_path = state::state_path();
-        let audio_path = state::audio_path();
+        let state_path = setup.config_dir.join(state::STATE_FILE);
+        let audio_path = setup.config_dir.join(state::AUDIO_FILE);
         let saved = state::read_state(&state_path);
         let eq_settings = state::read_eq(&audio_path);
         engine.shared.set_volume(volume_curve(saved.volume));
@@ -156,6 +182,7 @@ impl App {
             bluetooth_page: Default::default(),
             output_choice: output,
             audio_path,
+            gate: KeyGate::default(),
         };
         if !args.is_empty() {
             let first = app.playlist.tracks.len();
@@ -486,13 +513,28 @@ impl App {
 
     // -- the parts of the window -----------------------------------------------------------
 
+    /// Which of the player's keys the window takes this frame: none on
+    /// another tab, while a text is typed (a URL, a file's name) or a file
+    /// dialog is open; Space and Enter not while a widget has the keyboard's
+    /// focus - they press that widget.
+    fn key_gate(&self, ctx: &egui::Context) -> KeyGate {
+        let typing = ctx.text_edit_focused()
+            || self.url_open
+            || matches!(self.dialog.state(), egui_file_dialog::DialogState::Open);
+        let any = self.tab == Tab::Player && !typing;
+        KeyGate {
+            any,
+            activation: any && ctx.memory(|m| m.focused().is_none()),
+        }
+    }
+
     fn keys(&mut self, ui: &Ui) {
-        if ui.ctx().memory(|m| m.focused().is_some()) && self.url_open {
-            return; // (typing a URL)
+        if !self.gate.any {
+            return;
         }
         let (space, left, right, up, down, m, n, p, v) = ui.input(|i| {
             (
-                i.key_pressed(Key::Space),
+                i.key_pressed(Key::Space) && self.gate.activation,
                 i.key_pressed(Key::ArrowLeft),
                 i.key_pressed(Key::ArrowRight),
                 i.key_pressed(Key::ArrowUp),
@@ -1043,6 +1085,15 @@ impl App {
                             Sense::click_and_drag(),
                         );
                         let selected = self.selected == Some(i);
+                        // (a screen reader reads the row: its title, whether it is chosen)
+                        response.widget_info(|| {
+                            egui::WidgetInfo::selected(
+                                egui::accesskit::Role::ListItem,
+                                true,
+                                selected,
+                                &title,
+                            )
+                        });
                         if current || selected || response.hovered() {
                             let fill = if current {
                                 ACCENT.gamma_multiply(0.25)
@@ -1133,14 +1184,16 @@ impl App {
             if let Some(i) = play {
                 self.play_index(i, 0, true);
             }
-            if ui.input(|inp| inp.key_pressed(Key::Delete))
+            if self.gate.any
+                && ui.input(|inp| inp.key_pressed(Key::Delete))
                 && let Some(i) = self.selected
             {
                 self.playlist.remove(i);
                 self.selected = None;
                 self.dirty = true;
             }
-            if ui.input(|inp| inp.key_pressed(Key::Enter))
+            if self.gate.activation
+                && ui.input(|inp| inp.key_pressed(Key::Enter))
                 && let Some(i) = self.selected
             {
                 self.play_index(i, 0, true);
@@ -1235,6 +1288,7 @@ impl eframe::App for App {
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         self.handle_events(&ctx);
+        self.gate = self.key_gate(&ctx);
         self.keys(ui);
         // dropped files and folders
         let dropped: Vec<String> = ui.input(|i| {
@@ -1348,6 +1402,14 @@ impl Drop for App {
     fn drop(&mut self) {
         self.save(true);
     }
+}
+
+/// Which keys of the player the window takes (see [`App::key_gate`]).
+#[derive(Clone, Copy, Default)]
+struct KeyGate {
+    any: bool,
+    /// Space and Enter (no widget has the keyboard's focus).
+    activation: bool,
 }
 
 /// The tabs of the window.
