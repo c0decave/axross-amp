@@ -124,6 +124,10 @@ pub struct App {
     sleep: Option<Sleep>,
     /// The track details shown (a window).
     details: Option<Details>,
+    /// Full screen (the picture only); the face whose name shows, until when.
+    fullscreen: bool,
+    label_for: &'static str,
+    label_until: f64,
 }
 
 /// The sleep timer: the music pauses at a time (fading out over its last
@@ -363,6 +367,9 @@ impl App {
             amp_dirty: false,
             sleep: None,
             details: None,
+            fullscreen: false,
+            label_for: "",
+            label_until: 0.0,
         };
         #[cfg(target_os = "linux")]
         if setup.desktop {
@@ -1241,7 +1248,7 @@ impl App {
             self.focus_filter = true;
             if !self.playlist_open {
                 self.playlist_open = true;
-                let id = ui.make_persistent_id("playlist");
+                let id = playlist_header_id();
                 let mut state = egui::collapsing_header::CollapsingState::load_with_default_open(
                     ui.ctx(),
                     id,
@@ -1296,6 +1303,12 @@ impl App {
         }
         if pressed(Key::Home) {
             self.seek(0.0);
+        }
+        if pressed(Key::F11) {
+            self.set_fullscreen(ui.ctx(), !self.fullscreen);
+        }
+        if pressed(Key::Escape) && self.fullscreen {
+            self.set_fullscreen(ui.ctx(), false);
         }
         if pressed(Key::M) {
             self.set_muted(!self.muted);
@@ -1453,17 +1466,52 @@ impl App {
         });
     }
 
+    /// The visualization's menu (⚙, and a right click on the picture):
+    /// the face, the colours (the custom ones edited here), the options,
+    /// full screen, the playlist shown or not - axross's context menu.
     fn visual_menu(&mut self, ui: &mut Ui) {
+        ui.menu_button("Visualization", |ui| {
+            for (key, name) in viz::MODES {
+                if ui.radio(self.mode == key, name).clicked() {
+                    self.mode = key;
+                    self.dirty = true;
+                    ui.close();
+                }
+            }
+        });
         ui.label(RichText::new("Colours").strong());
-        for (key, name, _) in
-            viz::SCHEMES
-                .iter()
-                .chain(std::iter::once(&("custom", "Custom", ["#000000"; 5])))
-        {
-            if ui.radio(self.scheme_key == *key, *name).clicked() {
-                self.scheme_key = (*key).to_owned();
+        let named = viz::SCHEMES.iter().map(|(k, n, _)| (*k, *n));
+        for (key, name) in named.chain([("theme", "Follow the theme"), ("custom", "Custom")]) {
+            if ui.radio(self.scheme_key == key, name).clicked() {
+                self.scheme_key = key.to_owned();
                 self.dirty = true;
             }
+        }
+        if self.scheme_key == "custom" {
+            ui.horizontal_wrapped(|ui| {
+                for (key, name, default) in viz::CUSTOM_COLOURS {
+                    let now = self
+                        .custom_colours
+                        .get(key)
+                        .map(String::as_str)
+                        .unwrap_or(default);
+                    let v = u32::from_str_radix(now.trim_start_matches('#'), 16).unwrap_or(0);
+                    let mut rgb = [(v >> 16) as u8, (v >> 8) as u8, v as u8];
+                    if ui
+                        .color_edit_button_srgb(&mut rgb)
+                        .on_hover_text(name)
+                        .accessible_name(format!("{name} colour"))
+                        .changed()
+                    {
+                        self.custom_colours.insert(
+                            key.to_owned(),
+                            format!("#{:02x}{:02x}{:02x}", rgb[0], rgb[1], rgb[2]),
+                        );
+                        self.dirty = true;
+                    }
+                    ui.label(RichText::new(name).small());
+                }
+            });
         }
         ui.separator();
         let mut o = self.options.clone();
@@ -1471,10 +1519,38 @@ impl App {
         ui.add(egui::Slider::new(&mut o.smoothing, 0..=95).text("Smoothing %"));
         ui.add(egui::Slider::new(&mut o.peak_fall, 5..=300).text("Peak fall %/s"));
         ui.add(egui::Slider::new(&mut o.fps, 10..=60).text("Frame rate cap"));
+        ui.checkbox(&mut o.hide_cursor, "Hide the pointer in full screen");
         if o != self.options {
             self.options = o.clamped();
             self.dirty = true;
         }
+        ui.separator();
+        let mut full = self.fullscreen;
+        if ui.checkbox(&mut full, "Full screen (F11)").changed() {
+            self.set_fullscreen(ui.ctx(), full);
+            ui.close();
+        }
+        let mut list = self.playlist_open;
+        if ui.checkbox(&mut list, "Show the playlist").changed() {
+            self.show_playlist(ui.ctx(), list);
+        }
+    }
+
+    /// The picture over the whole screen (F11; Escape leaves).
+    fn set_fullscreen(&mut self, ctx: &egui::Context, on: bool) {
+        self.fullscreen = on;
+        self.big_visual = on;
+        ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(on));
+    }
+
+    fn show_playlist(&mut self, ctx: &egui::Context, open: bool) {
+        self.playlist_open = open;
+        self.dirty = true;
+        let id = playlist_header_id();
+        let mut state =
+            egui::collapsing_header::CollapsingState::load_with_default_open(ctx, id, open);
+        state.set_open(open);
+        state.store(ctx);
     }
 
     fn now_playing(&mut self, ui: &mut Ui) {
@@ -1740,11 +1816,41 @@ impl App {
             &mut self.viz_state,
             dt,
         );
+        // the face's name, for a moment after it changed (axross's 1.5 s)
         let now = ui.input(|i| i.time);
+        if self.label_for != self.mode {
+            self.label_for = self.mode;
+            self.label_until = now + 1.5;
+        }
+        if now < self.label_until {
+            ui.painter().text(
+                rect.center_top() + vec2(0.0, 18.0),
+                egui::Align2::CENTER_CENTER,
+                viz::name(self.mode),
+                egui::FontId::proportional(15.0),
+                scheme.peak.gamma_multiply(0.8),
+            );
+            ui.ctx()
+                .request_repaint_after(Duration::from_secs_f64(self.label_until - now));
+        }
+        // full screen: the pointer hides when it rests over the picture
+        if self.fullscreen && self.options.hide_cursor && response.hovered() {
+            let still = ui.input(|i| i.pointer.time_since_last_movement());
+            if still > 2.5 {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::None);
+            } else {
+                ui.ctx()
+                    .request_repaint_after(Duration::from_secs_f32(2.5 - still + 0.05));
+            }
+        }
         let wait = ui.ctx().options(|o| o.input_options.max_double_click_delay);
         if response.double_clicked() {
             self.pending_click = None;
-            self.big_visual = !self.big_visual;
+            if self.fullscreen {
+                self.set_fullscreen(ui.ctx(), false);
+            } else {
+                self.big_visual = !self.big_visual;
+            }
         } else if response.clicked() {
             self.pending_click = Some(now);
         }
@@ -1758,10 +1864,11 @@ impl App {
                     .request_repaint_after(std::time::Duration::from_secs_f64(wait));
             }
         }
-        response.on_hover_text(format!(
-            "{} - click: next face, double-click: larger (V)",
+        let response = response.on_hover_text(format!(
+            "{} - click: next face, double-click: larger, right click: options (V, F11)",
             viz::name(self.mode)
         ));
+        response.context_menu(|ui| self.visual_menu(ui));
     }
 
     fn position(&mut self, ui: &mut Ui) {
@@ -2013,7 +2120,7 @@ impl App {
         let total: u64 = self.playlist.tracks.iter().map(|t| t.duration_ms).sum();
         let header = egui::collapsing_header::CollapsingState::load_with_default_open(
             ui.ctx(),
-            ui.make_persistent_id("playlist"),
+            playlist_header_id(),
             self.playlist_open,
         );
         let state = header.show_header(ui, |ui| {
@@ -2543,6 +2650,11 @@ fn file_url(path: &str) -> String {
         }
     }
     out
+}
+
+/// The playlist's folding header (opened from a menu and Ctrl+F too).
+fn playlist_header_id() -> egui::Id {
+    egui::Id::NULL.with("amp-playlist")
 }
 
 /// ReplayGain's settings as the engine takes them.

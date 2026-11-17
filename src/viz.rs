@@ -94,7 +94,28 @@ pub const SCHEMES: [(&str, &str, [&str; 5]); 5] = [
     ),
 ];
 
+/// axross's "Follow the theme": the window's own colours (its dark look,
+/// its blue accent).
+const THEME: [&str; 5] = ["#0d1117", "#1f4f8f", "#4c9aff", "#a5d6ff", "#ffffff"];
+
+/// The custom scheme's colours (axross's CUSTOM_COLOURS): key, name, default.
+pub const CUSTOM_COLOURS: [(&str, &str, &str); 4] = [
+    ("background", "Background", "#000000"),
+    ("low", "Quiet", "#1e90ff"),
+    ("high", "Loud", "#ff1493"),
+    ("peak", "Peaks", "#ffffff"),
+];
+
 pub fn scheme(key: &str, custom: &std::collections::BTreeMap<String, String>) -> Scheme {
+    if key == "theme" {
+        return Scheme {
+            background: hex(THEME[0]),
+            low: hex(THEME[1]),
+            mid: hex(THEME[2]),
+            high: hex(THEME[3]),
+            peak: hex(THEME[4]),
+        };
+    }
     if key == "custom" {
         let get = |k: &str, d: &str| hex(custom.get(k).map(String::as_str).unwrap_or(d));
         let low = get("low", "#1e90ff");

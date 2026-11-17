@@ -42,6 +42,8 @@ pub struct VisualOptions {
     pub peak_fall: u32,
     pub smoothing: u32,
     pub fps: u32,
+    /// In full screen the mouse pointer hides when it rests (axross's option).
+    pub hide_cursor: bool,
 }
 
 impl Default for VisualOptions {
@@ -52,6 +54,7 @@ impl Default for VisualOptions {
             peak_fall: 45,
             smoothing: 85,
             fps: 30,
+            hide_cursor: true,
         }
     }
 }
@@ -63,6 +66,7 @@ impl VisualOptions {
             peak_fall: self.peak_fall.clamp(5, 300),
             smoothing: self.smoothing.clamp(0, 95),
             fps: self.fps.clamp(10, 60),
+            hide_cursor: self.hide_cursor,
         }
     }
 }
@@ -323,6 +327,10 @@ pub fn read_state(path: &Path) -> PlayerState {
             peak_fall: get("peak_fall", defaults.peak_fall),
             smoothing: get("smoothing", defaults.smoothing),
             fps: get("fps", defaults.fps),
+            hide_cursor: options
+                .get("hide_cursor")
+                .and_then(Value::as_bool)
+                .unwrap_or(defaults.hide_cursor),
         }
         .clamped();
     }
@@ -352,6 +360,10 @@ pub fn write_state(path: &Path, state: &PlayerState) -> std::io::Result<()> {
     options.insert("peak_fall".into(), json!(state.visual_options.peak_fall));
     options.insert("smoothing".into(), json!(state.visual_options.smoothing));
     options.insert("fps".into(), json!(state.visual_options.fps));
+    options.insert(
+        "hide_cursor".into(),
+        json!(state.visual_options.hide_cursor),
+    );
     for (key, value) in [
         ("version", json!(STATE_VERSION)),
         ("volume", json!(state.volume)),
