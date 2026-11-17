@@ -97,7 +97,10 @@ fn the_real_callback_allocates_nothing() {
     }
     drop(engine);
     assert!(ended, "the track did not end");
-    assert!(CALLBACKS.load(Ordering::Relaxed) > 10, "the callback did not run");
+    assert!(
+        CALLBACKS.load(Ordering::Relaxed) > 10,
+        "the callback did not run"
+    );
     assert_eq!(
         ALLOCATIONS.load(Ordering::Relaxed),
         0,
