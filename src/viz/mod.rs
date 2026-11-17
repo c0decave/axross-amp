@@ -970,6 +970,8 @@ pub fn draw(f: &Frame<'_>, key: &str, state: &mut VizState) {
     }
 }
 
+pub use generative::cover_side;
+
 /// The feedback face's preset now (tests).
 pub fn feedback_preset(state: &VizState) -> usize {
     generative::preset(&state.generative)

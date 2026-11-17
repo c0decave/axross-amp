@@ -1,8 +1,10 @@
 //! A look-ahead true-peak limiter: the sound is held back about 4 ms, so
 //! the gain comes down smoothly before a peak (over those 4 ms) instead of
 //! bending the peak itself, and rises again over 80 ms. Peaks are found
-//! between the samples too - 4x oversampled by BS.1770's own filter, the
-//! loudness meter's - and kept below the ceiling.
+//! between the samples too - 8x oversampled by a windowed sinc (BS.1770's
+//! 4x filter reads dense, clipped masters up to 0.8 dB low) - and kept
+//! below the ceiling. Where it holds nothing (only delays) it neither
+//! looks for peaks nor scans what is ahead: its cost is a copy.
 //!
 //! The decoder puts one in the way of a track ReplayGain makes louder
 //! (ceiling [`CEILING_DB`]); the player one after the resampler, where a
@@ -12,7 +14,41 @@
 //! stays in the path until a seek or the end (its delay must not come and
 //! go mid-stream), with nothing to do where nothing peaks.
 
-use crate::analyzer::loudness::{TAPS, oversampling};
+/// The detector's taps a phase (a windowed sinc) and its phases.
+const TAPS: usize = 64;
+const PHASES: usize = 8;
+
+/// The 8x interpolator: for each fraction k/8 between two samples, the
+/// taps over the TAPS samples round it (a Kaiser-like window).
+fn oversampling() -> [[f32; TAPS]; PHASES - 1] {
+    let mut out = [[0.0f32; TAPS]; PHASES - 1];
+    for (k, phase) in out.iter_mut().enumerate() {
+        let f = (k + 1) as f64 / PHASES as f64;
+        let mut sum = 0.0f64;
+        for (t, tap) in phase.iter_mut().enumerate() {
+            // (sample t is TAPS/2 - 1 - t + f before the point wanted)
+            let d = t as f64 - (TAPS / 2 - 1) as f64 - f;
+            let sinc = if d.abs() < 1e-9 {
+                1.0
+            } else {
+                (std::f64::consts::PI * d).sin() / (std::f64::consts::PI * d)
+            };
+            let x = d / (TAPS as f64 / 2.0);
+            let window = if x.abs() < 1.0 {
+                0.42 + 0.5 * (std::f64::consts::PI * x).cos()
+                    + 0.08 * (2.0 * std::f64::consts::PI * x).cos()
+            } else {
+                0.0
+            };
+            *tap = (sinc * window) as f32;
+            sum += sinc * window;
+        }
+        for tap in phase.iter_mut() {
+            *tap = (*tap as f64 / sum) as f32;
+        }
+    }
+    out
+}
 
 /// The most frames held back (4 ms at 256 kHz).
 const MOST: usize = 1024;
@@ -33,7 +69,11 @@ pub struct Limiter {
     /// The last TAPS input frames, for the peaks between samples.
     history: [[f32; 2]; TAPS],
     hist_at: usize,
-    phases: [[f32; TAPS]; 4],
+    phases: [[f32; TAPS]; PHASES - 1],
+    /// Frames ahead whose gain must come down (none: nothing to scan),
+    /// and how many times what is ahead was scanned (tests).
+    pending: usize,
+    pub scans: u64,
     /// The gain now (falls before a peak, rises slowly after it).
     gain: f32,
     release: f32,
@@ -55,12 +95,14 @@ impl Limiter {
             history: [[0.0; 2]; TAPS],
             hist_at: 0,
             phases: oversampling(),
+            pending: 0,
+            scans: 0,
             gain: 1.0,
             // back to unity with a time constant of 80 ms
             release: 1.0 - (-1.0 / (0.08 * rate as f32)).exp(),
-            // (aiming 0.35 dB lower: BS.1770's 4x filter reads broadband
-            // sound up to about that low, as an 8x look shows)
-            ceiling: 10f32.powf((ceiling_db - 0.35) / 20.0),
+            // (aiming 0.5 dB lower: what an 8x look still misses, and
+            // what a gain that moves adds between the samples)
+            ceiling: 10f32.powf((ceiling_db - 0.5) / 20.0),
             active: false,
         }
     }
@@ -78,6 +120,7 @@ impl Limiter {
         self.filled = 0;
         self.history = [[0.0; 2]; TAPS];
         self.hist_at = 0;
+        self.pending = 0;
         self.gain = 1.0;
         self.active = false;
     }
@@ -87,22 +130,28 @@ impl Limiter {
         self.ahead
     }
 
-    /// The highest of the frame's samples and the sound between it and the
-    /// frames before (BS.1770's 4x oversampling).
-    fn peak(&mut self, l: f32, r: f32) -> f32 {
+    /// The frame into the detector's history; with `look`, the highest of
+    /// the sound between the frames round it (8x), the samples' too.
+    fn peak(&mut self, l: f32, r: f32, look: bool) -> f32 {
         self.history[self.hist_at] = [l, r];
-        let mut peak = l.abs().max(r.abs());
+        self.hist_at = (self.hist_at + 1) % TAPS;
+        if !look {
+            return 0.0;
+        }
+        // (the point looked at lies TAPS/2 frames back: the detector's
+        // delay, well within the look-ahead)
+        let mut peak = 0.0f32;
         for phase in &self.phases {
             let mut v = [0.0f32; 2];
             for (t, tap) in phase.iter().enumerate() {
-                let [x, y] = self.history[(self.hist_at + TAPS - t) % TAPS];
+                let [x, y] = self.history[(self.hist_at + t) % TAPS];
                 v[0] += tap * x;
                 v[1] += tap * y;
             }
             peak = peak.max(v[0].abs()).max(v[1].abs());
         }
-        self.hist_at = (self.hist_at + 1) % TAPS;
-        peak
+        let [x, y] = self.history[(self.hist_at + TAPS / 2) % TAPS];
+        peak.max(x.abs()).max(y.abs()).max(l.abs()).max(r.abs())
     }
 
     /// Interleaved stereo in place: what comes out is the look-ahead
@@ -121,7 +170,7 @@ impl Limiter {
         let mut written = 0;
         for k in 0..frames {
             let (l, r) = (samples[2 * k], samples[2 * k + 1]);
-            let peak = self.peak(l, r);
+            let peak = self.peak(l, r, hold);
             let need = if hold && peak > self.ceiling {
                 self.ceiling / peak
             } else {
@@ -141,11 +190,22 @@ impl Limiter {
     fn push(&mut self, frame: [f32; 2], need: f32) -> Option<[f32; 2]> {
         let n = self.ahead;
         let out = (self.filled == n).then(|| self.delay[self.at]);
+        if self.filled == n && self.need[self.at] < 1.0 {
+            self.pending -= 1;
+        }
+        if need < 1.0 {
+            self.pending += 1;
+        }
         self.delay[self.at] = frame;
         self.need[self.at] = need;
         self.at = (self.at + 1) % n;
         self.filled = (self.filled + 1).min(n);
         let out = out?;
+        // (nothing ahead to come down for, at unity: nothing to scan)
+        if self.pending == 0 && self.gain == 1.0 {
+            return Some(out);
+        }
+        self.scans += 1;
         // the gain falls evenly towards what each peak ahead needs, to be
         // there when it comes (the filter finds a peak between samples a
         // few frames after it: reached that much sooner)
@@ -209,6 +269,23 @@ mod tests {
                 [v, v * 0.9]
             })
             .collect()
+    }
+
+    #[test]
+    fn where_it_holds_nothing_it_scans_nothing() {
+        // in the path all along, it must cost next to nothing where it
+        // only delays: no look for peaks, no scan of what is ahead (at
+        // 192 kHz a scan a frame was 150 million steps a second)
+        let mut limiter = Limiter::with_ceiling(192_000, RESAMPLED_DB);
+        let mut quiet = tone(192_000, 0.5);
+        limiter.process_holding(&mut quiet, true);
+        let mut loud = tone(192_000, 2.0);
+        limiter.process_holding(&mut loud, false);
+        assert_eq!(limiter.scans, 0, "it scanned with nothing to hold");
+        // and when it does hold, it works as it should
+        let mut loud = tone(192_000, 2.0);
+        limiter.process_holding(&mut loud, true);
+        assert!(limiter.scans > 0);
     }
 
     #[test]

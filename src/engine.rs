@@ -114,34 +114,47 @@ pub fn crossfades(secs: f32, current: &TrackInfo, next: &TrackInfo) -> bool {
     crossfades_between(secs, ("", current), ("", next))
 }
 
-/// As [`crossfades`], with the tracks' paths: two files of one folder in
-/// order (track numbers one after the other, or untagged, the names in
-/// order: an untagged album's rips) are an album too.
+/// As [`crossfades`], with the tracks' paths. Tagged with albums (both):
+/// the same album (and album artist) plays gapless. Untagged (both): two
+/// files of one folder numbered one after the other (track numbers, or
+/// the names' leading numbers: "01 …", "02 …") are an untagged album's
+/// rips. Anything else - one tagged and one not, a flat folder of
+/// unrelated files - fades.
 pub fn crossfades_between(
     secs: f32,
     (current_path, current): (&str, &TrackInfo),
     (next_path, next): (&str, &TrackInfo),
 ) -> bool {
-    let same_album = !current.album.is_empty()
-        && current.album == next.album
-        && current.album_artist == next.album_artist;
-    let folder = |p: &str| std::path::Path::new(p).parent().map(|d| d.to_path_buf());
-    let same_folder = !current_path.is_empty()
-        && !crate::playlist::is_stream(current_path)
-        && folder(current_path) == folder(next_path);
-    let in_order = match (current.track_number, next.track_number) {
-        (Some(a), Some(b)) => b == a + 1,
-        _ => {
-            let name = |p: &str| {
-                std::path::Path::new(p)
-                    .file_name()
-                    .map(|n| n.to_string_lossy().to_lowercase())
-                    .unwrap_or_default()
+    if secs <= 0.0 {
+        return false;
+    }
+    let album = match (current.album.is_empty(), next.album.is_empty()) {
+        (false, false) => current.album == next.album && current.album_artist == next.album_artist,
+        (true, true) => {
+            let folder = |p: &str| std::path::Path::new(p).parent().map(|d| d.to_path_buf());
+            let same_folder = !current_path.is_empty()
+                && !crate::playlist::is_stream(current_path)
+                && folder(current_path) == folder(next_path);
+            let leading = |p: &str| -> Option<u64> {
+                let name = std::path::Path::new(p)
+                    .file_name()?
+                    .to_string_lossy()
+                    .into_owned();
+                let digits: String = name.chars().take_while(char::is_ascii_digit).collect();
+                digits.parse().ok()
             };
-            name(next_path) > name(current_path)
+            let numbered = match (current.track_number, next.track_number) {
+                (Some(a), Some(b)) => b == a + 1,
+                _ => matches!(
+                    (leading(current_path), leading(next_path)),
+                    (Some(a), Some(b)) if b == a + 1
+                ),
+            };
+            same_folder && numbered
         }
+        _ => false,
     };
-    secs > 0.0 && !same_album && !(same_folder && in_order)
+    !album
 }
 
 /// The track fading out under the next one: its source, its resampler,
@@ -153,6 +166,23 @@ struct Fading {
     total: usize,
     done: usize,
     ended: bool,
+    /// How alike the two tracks are (correlation 0..1, smoothed): the fade's
+    /// law follows it, so that the sum keeps its level.
+    alike: f32,
+}
+
+/// The gains of a fade at `x` (0..1) - in, out - for two tracks correlated
+/// `rho` (0..1): the one coming in rises as a sine; the one going out falls
+/// so that the sum's power stays the same (a^2 + b^2 + 2 rho a b = 1): equal
+/// power for unrelated tracks, equal amplitude for alike ones.
+pub fn fade_gains(x: f32, rho: f32) -> (f32, f32) {
+    if x >= 1.0 {
+        return (1.0, 0.0);
+    }
+    let rho = rho.clamp(0.0, 1.0);
+    let a = (x.max(0.0) * std::f32::consts::FRAC_PI_2).sin();
+    let b = -rho * a + (1.0 - a * a * (1.0 - rho * rho)).max(0.0).sqrt();
+    (a, b.max(0.0))
 }
 
 /// A track named to follow the current one.
@@ -2557,6 +2587,7 @@ impl Player {
                         total,
                         done: 0,
                         ended: false,
+                        alike: 0.0,
                     });
                 }
                 let play = play && self.may_play();
@@ -2744,6 +2775,7 @@ impl Player {
             total: ((left * self.out_rate as f64) as usize).max(1),
             done: 0,
             ended: false,
+            alike: 0.0,
         });
         let total = ((left * self.out_rate as f64) as usize).max(1);
         self.ending = Some((None, queued, next_info));
@@ -2790,14 +2822,23 @@ impl Player {
         };
         let frames = self.chunk.len() / 2;
         let old = fading.buf.len() / 2;
+        // how alike they are in this chunk
+        let (mut xy, mut xx, mut yy) = (0.0f64, 0.0f64, 0.0f64);
+        for i in 0..frames.min(old) {
+            for c in 0..2 {
+                let (x, y) = (self.chunk[2 * i + c] as f64, fading.buf[2 * i + c] as f64);
+                xy += x * y;
+                xx += x * x;
+                yy += y * y;
+            }
+        }
+        if xx > 1e-9 && yy > 1e-9 {
+            let rho = (xy / (xx * yy).sqrt()) as f32;
+            fading.alike += (rho.clamp(0.0, 1.0) - fading.alike) * 0.3;
+        }
         for i in 0..frames {
             let x = (fading.done + i) as f32 / fading.total as f32;
-            let (fade_in, fade_out) = if x >= 1.0 {
-                (1.0, 0.0)
-            } else {
-                let a = x * std::f32::consts::FRAC_PI_2;
-                (a.sin(), a.cos())
-            };
+            let (fade_in, fade_out) = fade_gains(x, fading.alike);
             let (l, r) = if i < old {
                 (fading.buf[2 * i], fading.buf[2 * i + 1])
             } else {
@@ -2973,6 +3014,14 @@ impl Player {
                         continue; // (read before a seek)
                     }
                     f.decoded += (samples.len() / 2) as u64;
+                    // (a crossfade near: the limiter holds already - what
+                    // it has held back when the fade begins is held too)
+                    let soon = self.crossfade > 0.0
+                        && f.rate > 0
+                        && f.info.as_ref().and_then(|i| i.duration).is_some_and(|d| {
+                            let at = f.from_ms as f64 / 1000.0 + f.decoded as f64 / f.rate as f64;
+                            d - at <= self.crossfade as f64 + 0.3
+                        });
                     if std::mem::take(&mut self.pending_boundary) {
                         // the queued track's first sound: heard from here
                         let at = self.shared.end_of_buffer();
@@ -2982,7 +3031,7 @@ impl Player {
                     }
                     self.chunk.clear();
                     self.resampler.process(&samples, &mut self.chunk);
-                    let fading = self.fading.is_some();
+                    let fading = self.fading.is_some() || soon;
                     self.mix_fading();
                     self.eq.process(&mut self.chunk);
                     self.limit_output(fading);
@@ -3189,6 +3238,24 @@ fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_fade_keeps_the_sums_level_for_tracks_alike_and_unlike() {
+        // unrelated (rho 0): equal power; alike (rho 1): equal amplitude
+        // (equal power rose 3 dB in the middle for them); between: the
+        // sum's power a^2 + b^2 + 2 rho a b stays 1
+        for rho in [0.0f32, 0.3, 0.7, 1.0] {
+            for k in 0..=20 {
+                let (a, b) = fade_gains(k as f32 / 20.0, rho);
+                let power = a * a + b * b + 2.0 * rho * a * b;
+                assert!((power - 1.0).abs() < 1e-4, "rho {rho} at {k}: {power}");
+            }
+        }
+        let (a, b) = fade_gains(0.5, 1.0);
+        assert!((a + b - 1.0).abs() < 1e-5, "alike: amplitudes add to one");
+        let (a, b) = fade_gains(0.5, 0.0);
+        assert!((a - b).abs() < 1e-5 && (a * a + b * b - 1.0).abs() < 1e-5);
+    }
 
     #[test]
     fn a_large_cover_is_kept_large_for_the_picture() {

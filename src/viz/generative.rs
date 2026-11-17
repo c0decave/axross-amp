@@ -430,12 +430,17 @@ fn seed(st: &mut State, x: usize, y: usize, r: usize) {
 
 // -- the cover -----------------------------------------------------------------------
 
+/// The cover's side in the cover face of `r` (its inner rect).
+pub fn cover_side(r: Rect) -> f32 {
+    (r.height() * 0.84).min(r.width() * 0.62)
+}
+
 /// The cover large, as the picture: dimmed behind it, a glow round it that
 /// swells with the bass, a ring at each beat, the spectrum faint below.
 fn cover(f: &Frame<'_>, cv: &mut super::Canvas, st: &mut State) {
     let (a, s, r) = (f.a, f.s, f.rect);
     let p = f.painter;
-    let side = (r.height() * 0.84).min(r.width() * 0.62);
+    let side = cover_side(r);
     let c = r.center();
     let art = Rect::from_center_size(c, vec2(side, side));
     let beat = a.beat.count != st.last_beat;

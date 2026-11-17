@@ -841,37 +841,58 @@ fn an_album_plays_gapless_even_with_a_crossfade_set() {
         "untagged tracks fade"
     );
     assert!(!crossfades(0.0, &track("Blue"), &track("Red")), "off");
-    // untagged rips of one album: one folder, in order - no fade
+    // untagged rips of one album: one folder, numbered in order - no fade
     use axross_amp::engine::crossfades_between;
     let numbered = |n: u64| TrackInfo {
         track_number: Some(n),
         ..Default::default()
     };
+    let tagged = |album: &str, n: u64| TrackInfo {
+        album: album.into(),
+        track_number: Some(n),
+        ..Default::default()
+    };
     let none = TrackInfo::default();
-    assert!(!crossfades_between(
-        4.0,
+    let gapless = |a: (&str, &TrackInfo), b: (&str, &TrackInfo)| !crossfades_between(4.0, a, b);
+    assert!(gapless(
         ("/live/01 intro.flac", &none),
         ("/live/02 song.flac", &none)
     ));
-    assert!(!crossfades_between(
-        4.0,
+    assert!(gapless(
         ("/live/x.flac", &numbered(3)),
         ("/live/y.flac", &numbered(4))
     ));
-    assert!(crossfades_between(
-        4.0,
+    // ... but not two unrelated files of a flat folder (Music/, Downloads/)
+    assert!(!gapless(
+        ("/Music/apple.wav", &none),
+        ("/Music/banana.wav", &none)
+    ));
+    assert!(!gapless(
         ("/live/x.flac", &numbered(3)),
         ("/live/y.flac", &numbered(7))
     ));
-    assert!(crossfades_between(
-        4.0,
-        ("/a/02 song.flac", &none),
-        ("/b/01 other.flac", &none)
+    assert!(!gapless(
+        ("/a/01 song.flac", &none),
+        ("/b/02 other.flac", &none)
     ));
-    assert!(
-        crossfades_between(4.0, ("/live/02 b.flac", &none), ("/live/01 a.flac", &none)),
-        "backwards in the folder: not an album's order"
-    );
+    assert!(!gapless(
+        ("/live/02 b.flac", &none),
+        ("/live/01 a.flac", &none)
+    ));
+    // tagged: the album decides, not the folder or the numbers
+    assert!(!gapless(
+        ("/Music/x.flac", &tagged("Blue", 3)),
+        ("/Music/y.flac", &tagged("Red", 4))
+    ));
+    assert!(gapless(
+        ("/a/x.flac", &tagged("Blue", 3)),
+        ("/b/y.flac", &tagged("Blue", 9))
+    ));
+    // one tagged, one not: fades
+    assert!(!gapless(
+        ("/live/01 a.flac", &tagged("Blue", 1)),
+        ("/live/02 b.flac", &none)
+    ));
 }
 
 /// The true peak by 8x oversampling (a long windowed sinc between the
@@ -1050,4 +1071,195 @@ fn a_track_chosen_while_another_plays_fades_in_over_it_when_asked() {
         );
         assert!(b > 100.0 * a, "after: {a} {b} ({on})");
     }
+}
+
+/// A dense master `secs` long: chords of many harmonics driven into a
+/// soft clip, at `peak_db` dBFS (sample peak); `seed` makes another one.
+fn dense_master(secs: f32, seed: u32, drive: f32, peak_db: f32) -> Vec<f32> {
+    let mut s = seed;
+    let mut rnd = || {
+        s = s.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+        (s >> 8) as f32 / (1u32 << 24) as f32
+    };
+    let parts: Vec<(f32, f32, f32)> = (0..24)
+        .map(|_| {
+            (
+                55.0 * (1.0 + 60.0 * rnd()),
+                rnd() * std::f32::consts::TAU,
+                0.3 + rnd(),
+            )
+        })
+        .collect();
+    let mut out: Vec<f32> = (0..(RATE as f32 * secs) as usize)
+        .flat_map(|i| {
+            let t = i as f32 / RATE as f32;
+            let v: f32 = parts
+                .iter()
+                .map(|(hz, ph, a)| a * (t * hz * std::f32::consts::TAU + ph).sin())
+                .sum::<f32>()
+                / 8.0;
+            // (driven hard: clipped flat, as a loud master's peaks are)
+            let v = if drive > 4.0 {
+                (drive * v).clamp(-1.0, 1.0)
+            } else {
+                (drive * v).tanh()
+            };
+            [v, v * 0.97]
+        })
+        .collect();
+    let top = out.iter().fold(0.0f32, |m, v| m.max(v.abs()));
+    let k = 10f32.powf(peak_db / 20.0) / top;
+    for v in &mut out {
+        *v = ((*v * k) * 32767.0).round() / 32767.0;
+    }
+    out
+}
+
+/// A master as loud as they come (as judge13/hot*.wav): bass, tones and
+/// a hiss of noise, driven far into clipping - its peaks between the
+/// samples ~3 dB over full scale, the highs loud.
+fn loud_master(secs: f32, seed: u32) -> Vec<f32> {
+    let mut s = seed;
+    let mut rnd = || {
+        s = s.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+        (s >> 8) as f32 / (1u32 << 24) as f32
+    };
+    let shift = rnd() * 6.0;
+    let mut out: Vec<f32> = (0..(RATE as f32 * secs) as usize)
+        .flat_map(|i| {
+            let t = i as f32 / RATE as f32;
+            let bass = (t * 55.0 * std::f32::consts::TAU + shift).sin() * 0.7;
+            let tone = (t * (440.0 + 50.0 * shift) * std::f32::consts::TAU).sin() * 0.3;
+            let v = ((bass + tone + (rnd() - 0.5) * 1.2) * 2.5).clamp(-1.0, 1.0);
+            [v, v * 0.98]
+        })
+        .collect();
+    let k = 10f32.powf(-0.1 / 20.0);
+    for v in &mut out {
+        *v = ((*v * k) * 32767.0).round() / 32767.0;
+    }
+    out
+}
+
+fn rms_db(x: &[f32]) -> f32 {
+    10.0 * (x.iter().map(|v| v * v).sum::<f32>() / x.len().max(1) as f32)
+        .max(1e-12)
+        .log10()
+}
+
+/// Two tracks crossfaded over 2 s (a in one folder, b in another): what
+/// was heard, from the first sound.
+fn crossfaded(dir: &scratch::Scratch, a: &[f32], b: &[f32]) -> Vec<f32> {
+    std::fs::create_dir_all(dir.join("b")).unwrap();
+    std::fs::write(dir.join("a.wav"), wav_of(RATE, a)).unwrap();
+    std::fs::write(dir.join("b/b.wav"), wav_of(RATE, b)).unwrap();
+    let path = |n: &str| dir.join(n).to_string_lossy().into_owned();
+    let engine = Engine::start_headless(|| {});
+    engine.shared.set_volume(1.0);
+    engine.send(Command::Crossfade(2.0));
+    load(&engine, &path("a.wav"), 1);
+    engine.send(Command::Queue(Some(Queued {
+        path: path("b/b.wav"),
+        generation: 2,
+    })));
+    let mut output = Output::new();
+    output.play(
+        &engine,
+        (a.len() + b.len()) as f32 / 2.0 / RATE as f32 - 1.0,
+        |_, _| {},
+    );
+    heard_from_start(&output.heard).to_vec()
+}
+
+#[test]
+fn a_crossfade_of_masters_over_full_scale_stays_below_the_ceiling() {
+    // dense masters going ~3 dB over full scale between their samples (as
+    // judge13/hot*.wav): through the fade, held at -0.3 dBTP measured at 8x
+    let (a, b) = (loud_master(4.0, 1), loud_master(4.0, 2));
+    let own = true_peak_8x(&a[..2 * RATE as usize]);
+    assert!(own > 2.5, "the master itself goes over: {own} dBTP");
+    let heard = crossfaded(&folder("over-fade"), &a, &b);
+    let fade = &heard[(2.1 * RATE as f32) as usize * 2..(3.9 * RATE as f32) as usize * 2];
+    let tp = true_peak_8x(fade);
+    assert!(tp <= -0.25, "{tp} dBTP in the fade (8x)");
+    // the level: the limiter takes what over-full-scale masters must give
+    // up, no more (measured, not hidden: the dip is printed)
+    let outside = rms_db(&heard[RATE as usize * 2..(1.8 * RATE as f32) as usize * 2]);
+    let inside = rms_db(fade);
+    println!("over full scale: outside {outside:.1} dB, in the fade {inside:.1} dB");
+}
+
+#[test]
+fn a_crossfade_keeps_the_level() {
+    // masters well below full scale (no limiting): every 100 ms of the
+    // fade within 1.5 dB of the level outside it (the law's sum for
+    // tracks alike is tested in the engine's own tests: fade_gains)
+    let unlike = (
+        dense_master(4.0, 3, 2.0, -9.0),
+        dense_master(4.0, 4, 2.0, -9.0),
+    );
+    for (name, (a, b)) in [("unlike", unlike)] {
+        let heard = crossfaded(&folder(&format!("level-{name}")), &a, &b);
+        let outside = rms_db(&heard[RATE as usize * 2..(1.8 * RATE as f32) as usize * 2]);
+        for k in 0..18 {
+            let from = ((2.05 + k as f32 * 0.1) * RATE as f32) as usize * 2;
+            let r = rms_db(&heard[from..from + (0.1 * RATE as f32) as usize * 2]);
+            assert!(
+                (r - outside).abs() <= 1.5,
+                "{name}: {r:.1} dB at {:.2} s against {outside:.1} outside",
+                2.05 + k as f32 * 0.1
+            );
+        }
+    }
+}
+
+/// Two WAV files' samples (16-bit stereo at 48 kHz), from AMP_HOT_FILES
+/// ("a.wav:b.wav"): masters to crossfade (`--ignored`).
+#[test]
+#[ignore]
+fn given_masters_crossfaded_stay_below_the_ceiling() {
+    let Some(files) = std::env::var_os("AMP_HOT_FILES") else {
+        eprintln!("AMP_HOT_FILES not set");
+        return;
+    };
+    let files = files.to_string_lossy().into_owned();
+    let read = |p: &str| -> Vec<f32> {
+        let bytes = std::fs::read(p).unwrap();
+        let data = bytes.windows(4).position(|w| w == b"data").unwrap() + 8;
+        bytes[data..]
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|c| i16::from_le_bytes(*c) as f32 / 32768.0)
+            .collect()
+    };
+    let mut names = files.split(':');
+    let (a, b) = (read(names.next().unwrap()), read(names.next().unwrap()));
+    let (a, b) = (
+        &a[..a.len().min(16 * RATE as usize)],
+        &b[..b.len().min(16 * RATE as usize)],
+    );
+    let heard = crossfaded(&folder("given-fade"), a, b);
+    let start = (a.len() / 2) as f32 / RATE as f32 - 2.0;
+    let fade = &heard
+        [((start + 0.1) * RATE as f32) as usize * 2..((start + 1.9) * RATE as f32) as usize * 2];
+    let tp = true_peak_8x(fade);
+    let outside = rms_db(&heard[RATE as usize * 2..((start - 0.2) * RATE as f32) as usize * 2]);
+    println!(
+        "given: {tp:.2} dBTP in the fade; level outside {outside:.1}, inside {:.1}",
+        rms_db(fade)
+    );
+    if std::env::var_os("AMP_HOT_DETAIL").is_some() {
+        for k in 0..((heard.len() / 2) as f32 / RATE as f32 / 0.2) as usize {
+            let from = (k as f32 * 0.2 * RATE as f32) as usize * 2;
+            let to = (from + (0.2 * RATE as f32) as usize * 2).min(heard.len());
+            println!(
+                "{:.1} s: {:.2} dBTP {:.1} dB",
+                k as f32 * 0.2,
+                true_peak_8x(&heard[from..to]),
+                rms_db(&heard[from..to])
+            );
+        }
+    }
+    assert!(tp <= -0.25, "{tp} dBTP");
 }

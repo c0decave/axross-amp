@@ -50,8 +50,8 @@ pub struct App {
     playlist: Playlist,
     info: TrackInfo,
     cover: Option<TextureHandle>,
-    /// The cover large (smoothly scaled: mipmaps), where there is one.
-    cover_large: Option<TextureHandle>,
+    /// The cover at the sizes it is shown (made on the CPU, filtered).
+    sizer: crate::cover::Sizer,
     /// The pictures' colours from the cover (when it has colour).
     cover_scheme: Option<viz::Scheme>,
     /// The accent: from the cover (its strongest colour, readable on the
@@ -418,7 +418,7 @@ impl App {
             playlist,
             info: TrackInfo::default(),
             cover: None,
-            cover_large: None,
+            sizer: crate::cover::Sizer::default(),
             cover_scheme: None,
             accent: ACCENT,
             analyzer: Analyzer::new(),
@@ -866,7 +866,7 @@ impl App {
         self.select(Some(index));
         self.info = TrackInfo::default();
         self.cover = None;
-        self.cover_large = None;
+        self.sizer.set(None);
         self.cover_scheme = None;
         self.stream_title.clear();
         self.notice.clear();
@@ -921,6 +921,12 @@ impl App {
     }
 
     /// The details of the track that plays now.
+    /// A track's information as if the engine had just read it (tests).
+    #[doc(hidden)]
+    pub fn show_info(&mut self, ctx: &egui::Context, info: TrackInfo) {
+        self.take_info(ctx, info);
+    }
+
     fn take_info(&mut self, ctx: &egui::Context, info: TrackInfo) {
         self.loaded = Some(self.generation);
         self.analyzer.new_track();
@@ -941,15 +947,7 @@ impl App {
             self.playlist.version += 1;
         }
         self.cover = info.art.as_deref().map(|art| cover_texture(ctx, art));
-        self.cover_large =
-            info.art
-                .as_deref()
-                .and_then(|art| art.large.as_ref())
-                .map(|(w, h, rgba)| {
-                    let image =
-                        egui::ColorImage::from_rgba_unmultiplied([*w as usize, *h as usize], rgba);
-                    ctx.load_texture("cover-large", image, smooth_texture())
-                });
+        self.sizer.set(info.art.clone());
         self.cover_scheme = info
             .art
             .as_deref()
@@ -2102,7 +2100,8 @@ impl App {
                     // (the cover as large as the window allows: 120..200 px)
                     let side = (ui.available_width() * 0.22).clamp(120.0, 200.0);
                     let size = vec2(side, side);
-                    if let Some(texture) = self.cover_large.as_ref().or(self.cover.as_ref()) {
+                    let px = side * ui.ctx().pixels_per_point();
+                    if let Some(texture) = self.sizer.get(px).or(self.cover.as_ref()) {
                         ui.add(
                             egui::Image::new(texture)
                                 .fit_to_exact_size(size)
@@ -2292,8 +2291,10 @@ impl App {
 
     /// One line of what plays (the large picture's): its cover and title.
     fn title_line(&mut self, ui: &mut Ui) {
+        let px = 28.0 * ui.ctx().pixels_per_point();
+        let texture = self.sizer.get(px).or(self.cover.as_ref()).cloned();
         ui.horizontal(|ui| {
-            if let Some(texture) = &self.cover {
+            if let Some(texture) = &texture {
                 ui.add(
                     egui::Image::new(texture)
                         .fit_to_exact_size(vec2(28.0, 28.0))
@@ -2677,11 +2678,15 @@ impl App {
             opacity: 1.0,
             second: false,
             loudness_target: self.amp.loudness_target,
-            cover: self
-                .cover_large
-                .as_ref()
-                .or(self.cover.as_ref())
-                .map(|t| (t.id(), t.size_vec2())),
+            cover: if self.mode == "cover" {
+                let px = viz::cover_side(rect.shrink(4.0)) * ui.ctx().pixels_per_point();
+                self.sizer
+                    .get(px)
+                    .or(self.cover.as_ref())
+                    .map(|t| (t.id(), t.size_vec2()))
+            } else {
+                None
+            },
         };
         self.viz_state.gpu.interval = 1.0 / self.fps_cap();
         viz::draw(&frame, self.mode, &mut self.viz_state);
@@ -3152,6 +3157,9 @@ impl App {
     }
 
     fn playlist_view(&mut self, ui: &mut Ui) {
+        // (the playing row's cover, made at its size)
+        let px = 30.0 * ui.ctx().pixels_per_point();
+        let thumb_texture = self.sizer.get(px).or(self.cover.as_ref()).cloned();
         {
             let row = 40.0;
             ui.horizontal(|ui| {
@@ -3280,7 +3288,7 @@ impl App {
                         vec2(30.0, 30.0),
                     );
                     if current {
-                        if let Some(texture) = &self.cover {
+                        if let Some(texture) = &thumb_texture {
                             painter.image(
                                 texture.id(),
                                 thumb,
@@ -3580,6 +3588,11 @@ impl eframe::App for App {
 
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        // the cover made at the sizes it is shown: what is done comes in
+        self.sizer.poll(&ctx);
+        if self.sizer.waiting() {
+            ctx.request_repaint_after(Duration::from_millis(30));
+        }
         self.gate = self.key_gate(&ctx);
         self.keys(ui);
         // dropped files and folders
@@ -3857,15 +3870,7 @@ pub fn clock(secs: f64) -> String {
 fn cover_texture(ctx: &egui::Context, art: &crate::engine::Art) -> TextureHandle {
     let size = [art.width as usize, art.height as usize];
     let colour = egui::ColorImage::from_rgba_unmultiplied(size, &art.rgba);
-    ctx.load_texture("cover", colour, smooth_texture())
-}
-
-/// Linear both ways, with mipmaps: smooth made larger and made smaller.
-fn smooth_texture() -> egui::TextureOptions {
-    egui::TextureOptions {
-        mipmap_mode: Some(egui::TextureFilter::Linear),
-        ..egui::TextureOptions::LINEAR
-    }
+    ctx.load_texture("cover", colour, egui::TextureOptions::LINEAR)
 }
 
 /// The look: dark, rounded, one blue accent.
