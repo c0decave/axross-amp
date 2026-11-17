@@ -66,7 +66,8 @@ pub enum Command {
         gains: [f32; 10],
         enabled: bool,
     },
-    /// How ReplayGain levels the tracks (from the next track on).
+    /// How ReplayGain levels the tracks (the current one too, from what is
+    /// decoded next).
     Loudness(Loudness),
     /// Play on this output device (an id of [`output_devices`]; None: the
     /// default) - also while playing.

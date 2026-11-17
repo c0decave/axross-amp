@@ -824,7 +824,7 @@ impl App {
                     .text("Pre-amp dB"),
             );
             ui.label(
-                RichText::new("Levels tracks by their ReplayGain tags (from the next track on).")
+                RichText::new("Levels tracks by their ReplayGain tags (a moment later: what is decoded ahead plays as it was).")
                     .small()
                     .color(MUTED),
             );
