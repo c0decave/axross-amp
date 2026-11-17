@@ -106,3 +106,50 @@ fn the_window_shows_the_track_and_every_visualization() {
         std::fs::read_to_string(home.join(".config/axross/media_player.json")).unwrap_or_default();
     assert!(saved.is_empty() || saved.contains("Tone in A"), "{saved}");
 }
+
+/// The README's picture: the window playing a real track (AMP_DEMO_TRACK,
+/// synthesized and tagged as a demo), its sound taken in real time by the
+/// test as a sound card would. `cargo test --test ui -- --ignored`.
+#[test]
+#[ignore]
+fn the_readme_picture() {
+    let Some(track) = std::env::var_os("AMP_DEMO_TRACK") else {
+        eprintln!("AMP_DEMO_TRACK not set");
+        return;
+    };
+    let dir = std::env::temp_dir().join(format!("amp-hero-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("config")).unwrap();
+    std::fs::write(
+        dir.join("config/media_player.json"),
+        r#"{"visualizer": "spectrum", "visual_options": {"bars": 48}, "playlist_open": true}"#,
+    )
+    .unwrap();
+    let setup = axross_amp::app::Setup {
+        config_dir: dir.join("config"),
+        desktop: false,
+        desktop_bus: None,
+        headless_audio: true,
+    };
+    let args = vec![track.to_string_lossy().into_owned()];
+    let mut harness = Harness::builder()
+        .with_size(egui::vec2(620.0, 860.0))
+        .wgpu()
+        .build_eframe(move |cc| App::with_setup(cc, args.clone(), setup.clone()));
+    let mut state = axross_amp::engine::RenderState::default();
+    let mut buf = vec![0.0f32; 480 * 2];
+    let end = std::time::Instant::now() + std::time::Duration::from_secs(9);
+    while std::time::Instant::now() < end {
+        harness
+            .state()
+            .engine()
+            .shared
+            .render(&mut buf, 2, &mut state);
+        harness.run_steps(1);
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let image = harness.render().expect("renders");
+    // (without the status line: the test's own output has no device name)
+    let image = image::imageops::crop_imm(&image, 0, 0, 620, 834).to_image();
+    image.save(shots().join("hero.png")).unwrap();
+}

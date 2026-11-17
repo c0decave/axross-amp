@@ -4,6 +4,9 @@ axross's Media Player as a program of its own - written in Rust.
 
 ![The window](docs/window.png)
 
+<sub>The track in the picture is a demo synthesized for it (`docs/make_demo.py`); the
+picture is made by `AMP_DEMO_TRACK=… cargo test --test ui -- --ignored`.</sub>
+
 - **Plays** local files (MP3, FLAC, Ogg Vorbis, Opus, AAC / M4A, ALAC, WAV, AIFF, CAF;
   MP4 / MKV containers), folders and M3U / PLS playlists, and **internet radio** by
   its http(s) URL - decoded by [symphonia](https://github.com/pdeljanov/Symphonia)
@@ -14,15 +17,19 @@ axross's Media Player as a program of its own - written in Rust.
   AAC / ALAC in MP4 are trimmed by their edit list (encoder delay and padding).
 - **Sound**: resampled to the output's rate by a band-limited (windowed-sinc)
   resampler; 5.1 / 7.1 downmixed as ITU-R BS.775 has it; **ReplayGain** (track or
-  album gain, pre-amp, held below the peak; Opus R128 gains too); a ten-band
-  **equalizer** with axross's presets; a volume curve as axross's. An output that
-  goes away (a headset switched off) is opened again; one chosen that is not there
-  gives way to the default.
+  album gain, pre-amp, held below the peak, a gain of its own for untagged tracks;
+  Opus R128 gains too); a ten-band **equalizer** with axross's presets; a volume curve
+  as axross's; pause, seek, stop and a new track fade (no clicks). The output callback
+  takes no lock and allocates nothing (a lock-free ring); seconds are decoded ahead.
+  An output that goes away (a headset switched off) is opened again; one chosen that is
+  not there gives way to the default; without any, nothing pretends to play and the
+  window offers Retry.
 - **Internet radio**: what the station plays now (ICY `StreamTitle`), its name and
   genre; a radio that breaks off is connected again; a `.pls` / `.m3u` URL from a
   radio directory is resolved (only its http(s) entries); old SHOUTcast servers
   (`ICY 200 OK`) play. The network is read on threads of its own: a server that
-  stalls holds up nothing.
+  stalls holds up nothing (a read gives up after 20 s; a stream let go closes its
+  connection at once). HLS (`.m3u8` with segments) is not supported and says so.
 - **Visualizations** drawn on the GPU (egui) - all eighteen of axross's: spectrum,
   mirrored, radial and polar spectrum, line spectrum, LED equalizer, particle
   columns, waterfall, ridgelines, spectrum terrain, 3D ring, bell curves, wave
@@ -32,15 +39,19 @@ axross's Media Player as a program of its own - written in Rust.
   rate). A click shows the next face, a double-click makes it large, F11 full
   screen, a right click its menu.
 - **Playlist**: shuffle (Previous goes back the way it came), repeat (all / one), a
-  filter (Ctrl+F), sorting (title, file name, folder, length, reversed), reordering
-  by dragging or by keys, drag and drop of files and folders from the desktop
-  (walked in the background), saving as M3U8. Titles and lengths are read in the
-  background; a track that cannot be played is marked red with why; the details of
-  a track (tags, format, ReplayGain) in a window of their own.
+  filter (Ctrl+F), sorting (title, artist, album with its discs and track numbers,
+  file name, folder, length, reversed; names in natural order), several rows at once
+  (Ctrl- / Shift-click) to remove or drag, reordering by keys, drag and drop of files
+  and folders from the desktop (walked in the background), saving as M3U8. Titles,
+  lengths, artists and albums are read in the background; a track that cannot be
+  played is marked red with why; the details of a track (tags, format, ReplayGain) in
+  a window of their own. At most 10,000 tracks - axross's player reads no more.
 - **Sleep timer** (15 to 90 minutes with a fade, or at the end of the track).
 - **The desktop** (Linux): MPRIS 2 on the session bus - media keys, a headset's
-  buttons, the desktop's sound menu and lock screen show and control it. The window
-  title says what plays; the window opens as large as it was left.
+  buttons, the desktop's sound menu and lock screen show and control it, also while
+  the window is minimised. One player: a second start hands its files over. A desktop
+  entry and an icon are in `packaging/`. The window title says what plays; the window
+  opens as large as it was left.
 - **The system mixer** (Mixer tab): this player's output device, volume, mute and
   equalizer; the sound server's outputs and inputs (volume, balance kept, mute, port,
   default), the applications playing and recording (volume, mute, which device) and
@@ -59,6 +70,8 @@ axross's Media Player as a program of its own - written in Rust.
   program pick up where the other left off. Keys they do not know are kept. What
   only this program has (window size, ReplayGain) is in
   `~/.config/axross/axross-amp.json`, as axross rewrites its own file with its keys.
+  Files are written on a thread of their own, merged with what axross's player wrote
+  meanwhile (its playlist is not undone by a change of volume here).
 
 ![The visualizations](docs/visualizations.png)
 
@@ -126,8 +139,7 @@ presence log, HCI capture streams, GATT details, connection tests and driving a 
 stick directly (Bumble). Left out on purpose: crossfading (it fights gapless albums),
 playback speed and A-B loops, lyrics and scrobbling (none of them in axross either);
 a visualization detached into a window of its own (full screen and the large view
-cover it); choosing several playlist rows at once (one at a time here); axross's
-check that the sound card plays at its speed; its session's theme and language;
+cover it); axross's check that the sound card plays at its speed; its session's theme and language;
 tracks dropped from axross's remote panes (axross's own business). On
 macOS and Windows the Bluetooth tab points to the system's settings (BlueZ is
 Linux's) and there is no MPRIS (media keys there would need the platform's own APIs);
