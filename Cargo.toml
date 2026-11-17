@@ -22,7 +22,7 @@ serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 symphonia = { version = "0.6.1", features = ["all"] }
 symphonia-adapter-libopus = "0.3.0"
-ureq = { version = "3.5.2", default-features = false, features = ["rustls"] }
+ureq = { version = "3.5.1", default-features = false, features = ["rustls"] }
 
 [dev-dependencies]
 egui_kittest = { version = "0.37.0", features = ["wgpu", "snapshot", "eframe"] }
