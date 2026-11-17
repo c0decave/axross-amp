@@ -19,8 +19,13 @@ picture is made by `AMP_DEMO_TRACK=… cargo test --test ui -- --ignored`.</sub>
   resampler; 5.1 / 7.1 downmixed as ITU-R BS.775 has it; **ReplayGain** (track or
   album gain, pre-amp, held below the peak, a gain of its own for untagged tracks;
   Opus R128 gains too); a ten-band **equalizer** with axross's presets; a volume curve
-  as axross's; pause, seek, stop and a new track fade (no clicks). The output callback
-  takes no lock and allocates nothing (a lock-free ring); seconds are decoded ahead.
+  as axross's; pause, seek, stop and a new track fade (no clicks), and so does a
+  dropout's edge; peaks above full scale are rounded off by a soft limiter instead of
+  clipped. The output callback takes no lock and allocates nothing (a lock-free ring;
+  a test counts its allocations through a real device); files are read and decoded
+  seconds ahead on threads of their own, so a slow disk or a stalled network share is
+  no dropout. A small output buffer is asked for (1024 frames); the position and the
+  pictures follow what the speakers play, not what was decoded.
   An output that goes away (a headset switched off) is opened again; one chosen that is
   not there gives way to the default; without any, nothing pretends to play and the
   window offers Retry.
@@ -37,12 +42,14 @@ picture is made by `AMP_DEMO_TRACK=… cargo test --test ui -- --ignored`.</sub>
   axross's colour schemes (Classic, Fire, Ice, Neon, Mono, Follow the theme,
   Custom - edited here), with its options (bars, smoothing, peak fall, frame
   rate). A click shows the next face, a double-click makes it large, F11 full
-  screen, a right click its menu.
+  screen, a right click its menu; "Off" draws nothing (and costs nothing).
 - **Playlist**: shuffle (Previous goes back the way it came), repeat (all / one), a
   filter (Ctrl+F), sorting (title, artist, album with its discs and track numbers,
   file name, folder, length, reversed; names in natural order), several rows at once
-  (Ctrl- / Shift-click) to remove or drag, reordering by keys, drag and drop of files
-  and folders from the desktop (walked in the background), saving as M3U8. Titles,
+  (Ctrl- / Shift-click) to remove or drag, reordering by keys, **play next** (from a
+  row's menu; queued rows are marked), **undo** of a removal, clearing, sorting or
+  reordering (Ctrl+Z), drag and drop of files and folders from the desktop (walked in
+  the background; a file already in the list is not added twice), saving as M3U8. Titles,
   lengths, artists and albums are read in the background; a track that cannot be
   played is marked red with why; the details of a track (tags, format, ReplayGain) in
   a window of their own. At most 10,000 tracks - axross's player reads no more.
@@ -99,6 +106,7 @@ Keys (on the Player tab, not while typing in a field):
 | Ctrl+F | the playlist's filter |
 | Ctrl+↑ / ↓, Alt+↑ / ↓ | choose a track in the playlist; move it |
 | Enter, Delete | play the chosen track; remove it |
+| Ctrl+Z | undo the playlist's last change |
 
 The mouse wheel seeks over the position and sets the volume over its slider.
 
@@ -144,6 +152,12 @@ tracks dropped from axross's remote panes (axross's own business). On
 macOS and Windows the Bluetooth tab points to the system's settings (BlueZ is
 Linux's) and there is no MPRIS (media keys there would need the platform's own APIs);
 the Mixer tab needs `pactl` (Linux, or a PulseAudio elsewhere).
+
+Known limits: cpal's PulseAudio back end (cpal 0.18.2, the newest) takes a mutex
+after the output callback has returned, to hand the samples over - outside this
+player's callback, which itself takes no lock, and out of its hands until cpal
+changes it. HLS radio (`.m3u8` segment lists)
+is not played.
 
 Tests: `cargo test` runs everywhere. The window is driven headless (egui_kittest,
 wgpu - Mesa's lavapipe works without a GPU); the engine's sound is taken by the
