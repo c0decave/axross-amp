@@ -21,13 +21,6 @@ const WAVE_STEPS: usize = 600;
 const ROLL_LOW: usize = 36;
 const ROLL_HIGH: usize = 96;
 
-/// Krumhansl-Kessler's key profiles (major, minor), from C.
-const MAJOR: [f32; 12] = [
-    6.35, 2.23, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.88,
-];
-const MINOR: [f32; 12] = [
-    6.33, 2.68, 3.52, 5.38, 2.60, 3.53, 2.54, 4.75, 3.98, 2.69, 3.34, 3.17,
-];
 /// The circle of fifths, from C at the top.
 const FIFTHS: [usize; 12] = [0, 7, 2, 9, 4, 11, 6, 1, 8, 3, 10, 5];
 
@@ -163,7 +156,15 @@ fn hz_text(hz: f32) -> String {
 
 fn note_text(hz: f32) -> String {
     let (midi, cents) = fine::note(hz);
-    let sign = if cents >= 0.0 { "+" } else { "-" };
+    // (rounded first: never "-0 ct")
+    let cents = cents.round();
+    let sign = if cents > 0.0 {
+        "+"
+    } else if cents < 0.0 {
+        "-"
+    } else {
+        "±"
+    };
     format!("{} {sign}{:.0} ct", fine::note_name(midi), cents.abs())
 }
 
@@ -967,12 +968,16 @@ fn overview(f: &Frame<'_>, cv: &mut Canvas, st: &State) {
 fn chroma(f: &Frame<'_>, cv: &mut Canvas, st: &mut State, dt: f32) {
     let (a, s, p) = (f.a, f.s, f.painter);
     let fine = &a.fine;
-    // the key: the chroma of the last seconds against the profiles
-    let keep = (-dt / 6.0).exp();
+    // the key: the whole track's notes against the key profiles (the
+    // meters', which heard all of it); without them, what this face saw
+    let keep = (-dt / 30.0).exp();
     for (avg, c) in st.chroma.iter_mut().zip(fine.chroma) {
         *avg = *avg * keep + c * (1.0 - keep);
     }
-    st.key = key_of(&st.chroma);
+    st.key = a.key().unwrap_or_else(|| {
+        let chroma = st.chroma.map(|v| v as f64);
+        crate::meters::key_of(&chroma)
+    });
     let r = f.rect;
     let wheel = (r.height() - 8.0).min(r.width() * 0.42);
     let grid = Rect::from_min_max(
@@ -1047,7 +1052,7 @@ fn chroma(f: &Frame<'_>, cv: &mut Canvas, st: &mut State, dt: f32) {
         }
         // the key's place on the circle
         let (root, _, sure) = st.key;
-        if sure > 0.3 {
+        if sure >= KEY_SURE {
             let slot = FIFTHS.iter().position(|c| *c == root).unwrap_or(0);
             let angle = -PI / 2.0 + slot as f32 / 12.0 * TAU;
             pen.circle(
@@ -1071,47 +1076,37 @@ fn chroma(f: &Frame<'_>, cv: &mut Canvas, st: &mut State, dt: f32) {
             colour,
         );
     }
+    // the key and how sure it is (a "?" until it is)
     let (root, minor, sure) = st.key;
-    if sure > 0.3 {
-        let name = format!(
+    let name = if sure >= KEY_SURE {
+        format!(
             "{} {}",
             fine::NOTE_NAMES[root],
             if minor { "minor" } else { "major" }
-        );
-        label(
-            p,
-            c,
-            Align2::CENTER_CENTER,
-            name,
-            (inner * 0.3).clamp(10.0, 20.0),
-            s.peak,
-        );
-    }
+        )
+    } else {
+        "key ?".to_owned()
+    };
+    label(
+        p,
+        c - vec2(0.0, 6.0),
+        Align2::CENTER_CENTER,
+        name,
+        (inner * 0.3).clamp(10.0, 20.0),
+        s.peak,
+    );
+    label(
+        p,
+        c + vec2(0.0, (inner * 0.3).clamp(10.0, 20.0) * 0.6 + 2.0),
+        Align2::CENTER_CENTER,
+        format!("{:.0} % sure", sure * 100.0),
+        10.0,
+        s.text(),
+    );
 }
 
-/// The key whose profile the chroma follows best: (root, minor, correlation).
-pub fn key_of(chroma: &[f32; 12]) -> (usize, bool, f32) {
-    let mean = chroma.iter().sum::<f32>() / 12.0;
-    let mut best = (0, false, f32::MIN);
-    for (minor, profile) in [(false, &MAJOR), (true, &MINOR)] {
-        let pm = profile.iter().sum::<f32>() / 12.0;
-        for root in 0..12 {
-            let (mut num, mut da, mut db) = (0.0, 0.0, 0.0);
-            for k in 0..12 {
-                let x = chroma[(root + k) % 12] - mean;
-                let y = profile[k] - pm;
-                num += x * y;
-                da += x * x;
-                db += y * y;
-            }
-            let r = num / (da * db).sqrt().max(1e-9);
-            if r > best.2 {
-                best = (root, minor, r);
-            }
-        }
-    }
-    best
-}
+/// How sure the key must be to be named.
+const KEY_SURE: f32 = 0.2;
 
 // -- the piano roll ------------------------------------------------------------------
 
@@ -1287,34 +1282,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_key_of_c_major_and_a_minor() {
-        // C major's scale tones, the tonic and the fifth strongest
-        let mut c = [0.0f32; 12];
-        for (k, v) in [
-            (0, 1.0),
-            (2, 0.5),
-            (4, 0.8),
-            (5, 0.5),
-            (7, 0.9),
-            (9, 0.5),
-            (11, 0.4),
-        ] {
-            c[k] = v;
-        }
-        assert_eq!(key_of(&c).0, 0);
-        assert!(!key_of(&c).1);
-        let mut a = [0.0f32; 12];
-        for (k, v) in [
-            (9, 1.0),
-            (0, 0.8),
-            (4, 0.9),
-            (11, 0.4),
-            (2, 0.5),
-            (5, 0.4),
-            (7, 0.5),
-        ] {
-            a[k] = v;
-        }
-        assert_eq!(key_of(&a), (9, true, key_of(&a).2));
+    fn a_reading_on_the_note_has_no_minus_zero() {
+        assert_eq!(note_text(440.0), "A4 ±0 ct");
+        assert_eq!(note_text(440.0 * 2f32.powf(-0.2 / 1200.0)), "A4 ±0 ct");
+        assert!(note_text(445.0).starts_with("A4 +"));
+        assert!(note_text(435.0).starts_with("A4 -"));
     }
 }

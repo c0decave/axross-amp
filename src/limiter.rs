@@ -71,13 +71,13 @@ impl Limiter {
         self.history[self.hist_at] = [l, r];
         let mut peak = l.abs().max(r.abs());
         for phase in &self.phases {
-            for c in 0..2 {
-                let mut v = 0.0;
-                for (t, tap) in phase.iter().enumerate() {
-                    v += tap * self.history[(self.hist_at + TAPS - t) % TAPS][c];
-                }
-                peak = peak.max(v.abs());
+            let mut v = [0.0f32; 2];
+            for (t, tap) in phase.iter().enumerate() {
+                let [x, y] = self.history[(self.hist_at + TAPS - t) % TAPS];
+                v[0] += tap * x;
+                v[1] += tap * y;
             }
+            peak = peak.max(v[0].abs()).max(v[1].abs());
         }
         self.hist_at = (self.hist_at + 1) % TAPS;
         peak

@@ -388,6 +388,17 @@ impl Shared {
         self.tap.read_delayed(out, delay, TAP_READ as u64)
     }
 
+    /// The heard frames from `from` on, as many as there are (at most
+    /// 16384), for a reader that keeps its own place (the meters): where
+    /// they begin and end.
+    pub fn tap_from(&self, from: u64, out: &mut Vec<f32>) -> (u64, u64) {
+        let delay = self
+            .latency
+            .load(Ordering::Relaxed)
+            .min((TAP_FRAMES - TAP_READ) as u64);
+        self.tap.read_from(from, delay, 16_384, out)
+    }
+
     /// As when the output reports that its device is gone (tests).
     #[doc(hidden)]
     pub fn simulate_output_loss(&self) {

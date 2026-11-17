@@ -15,6 +15,7 @@
 pub mod beat;
 pub mod fine;
 pub mod loudness;
+pub mod notes;
 
 use crate::state::VisualOptions;
 use rustfft::num_complex::Complex;
@@ -114,6 +115,9 @@ pub struct Analyzer {
     /// The device's rate the numbers are for.
     pub rate: u32,
     last_written: u64,
+    /// The meters' thread's readings, when it runs (then loudness, beat and
+    /// notes come from it, which hears every sample).
+    external: Option<crate::meters::Readings>,
 }
 
 impl Default for Analyzer {
@@ -170,6 +174,7 @@ impl Analyzer {
             time: 0.0,
             rate: 48_000,
             last_written: 0,
+            external: None,
         };
         a.resize(32, 48_000);
         a
@@ -299,12 +304,15 @@ impl Analyzer {
         self.phase += (self.phase_target - self.phase) * follow;
 
         self.samples(tap, frames, live, dt);
-        if live && new > 0 {
+        if let Some(r) = self.external {
+            self.take(&r);
+        } else if live && new > 0 {
             let fresh = &tap[(frames - new) * 2..];
             self.loudness.push(fresh);
             self.beat.push(tap, new, rate);
         }
         self.beat.frame(dt, live);
+        self.fine.external = self.external.map(|r| (r.keys, r.chroma));
         if needs.fine && live {
             self.fine.update(tap, rate, dt);
         } else if needs.fine {
@@ -459,6 +467,41 @@ impl Analyzer {
         self.correlation += (correlation - self.correlation) * follow;
         self.width += (width - self.width) * follow;
         self.balance += (balance - self.balance) * follow;
+    }
+
+    /// From now on loudness, beat and notes are the meters' (each frame's
+    /// latest readings given here before [`Analyzer::update`]).
+    pub fn set_readings(&mut self, r: crate::meters::Readings) {
+        self.external = Some(r);
+    }
+
+    /// The meters' readings into what the faces read.
+    fn take(&mut self, r: &crate::meters::Readings) {
+        let m = &mut self.loudness;
+        m.momentary = r.momentary;
+        m.short_term = r.short_term;
+        m.integrated = r.integrated;
+        m.range = r.range;
+        m.momentary_max = r.momentary_max;
+        m.short_term_max = r.short_term_max;
+        m.sample_peak = r.sample_peak;
+        m.true_peak = r.true_peak;
+        m.seconds = r.seconds;
+        let b = &mut self.beat;
+        if r.beats != b.count {
+            b.pulse = 1.0;
+            b.since = 0.0;
+        }
+        b.count = r.beats;
+        b.bpm = r.bpm;
+        b.confidence = r.bpm_confidence;
+        b.strength = r.beat_strength;
+    }
+
+    /// The track's key, as the meters found it over the whole track (root,
+    /// minor, how sure); none without them.
+    pub fn key(&self) -> Option<(usize, bool, f32)> {
+        self.external.map(|r| r.key)
     }
 
     /// A new track: its loudness counted from nothing.

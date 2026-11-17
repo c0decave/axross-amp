@@ -279,6 +279,26 @@ impl Tap {
         n
     }
 
+    /// The frames from `from` on (counted as [`Tap::read_delayed`] counts
+    /// them), the newest `delay` left out, `max` at most, into `out`
+    /// (interleaved): where they begin and end. Those already written over
+    /// are skipped (the start is later than `from`).
+    pub fn read_from(&self, from: u64, delay: u64, max: u64, out: &mut Vec<f32>) -> (u64, u64) {
+        out.clear();
+        let end = self.written.load(Ordering::Acquire).saturating_sub(delay);
+        // (what is left of the ring after the newest `delay` frames, with a
+        // margin for the writer running on meanwhile)
+        let oldest = end.saturating_sub(self.frames as u64 - delay.min(self.frames as u64) - 1024);
+        let start = from.max(oldest).min(end);
+        let end = end.min(start + max);
+        for k in start..end {
+            let at = (k % self.frames as u64) as usize * 2;
+            out.push(f32::from_bits(self.buf[at].load(Ordering::Relaxed)));
+            out.push(f32::from_bits(self.buf[at + 1].load(Ordering::Relaxed)));
+        }
+        (start, end)
+    }
+
     /// Forget what was played (nothing to show).
     pub fn clear(&self) {
         // (the frames stay; the count says none was played)

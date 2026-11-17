@@ -10,6 +10,7 @@ pub mod bluetooth_ui;
 pub mod engine;
 pub mod eq;
 pub mod limiter;
+pub mod meters;
 pub mod mixer;
 pub mod mixer_ui;
 pub mod mp4edit;

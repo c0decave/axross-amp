@@ -83,6 +83,8 @@ pub struct Fine {
     clock: f32,
     /// Steps of history this frame made.
     pub steps: u32,
+    /// The keys and chroma from the meters' thread, when it runs.
+    pub external: Option<([f32; KEYS], [f32; 12])>,
 }
 
 impl Default for Fine {
@@ -126,6 +128,7 @@ impl Fine {
             head: 0,
             clock: 0.0,
             steps: 0,
+            external: None,
         }
     }
 
@@ -238,9 +241,33 @@ impl Fine {
             self.peak_hz = 0.0;
             self.peak_db = FLOOR_DB;
         }
-        // the keys, the chroma: from the spectrum's peaks (a bin above both
-        // neighbours), each at its note - not the bins near a note, which
-        // the window's main lobe would light for its neighbours too
+        // the keys and the chroma: the meters' (every sample heard, two
+        // resolutions, harmonics told apart) where they run, else this
+        // spectrum's own peaks
+        let (now, classes) = self.external.unwrap_or_else(|| self.own_notes());
+        let fade = (-dt * 8.0).exp();
+        for (key, v) in self.keys.iter_mut().zip(now) {
+            *key = v.max(*key * fade);
+        }
+        let follow = 1.0 - (-dt * 10.0).exp();
+        for (c, target) in self.chroma.iter_mut().zip(classes) {
+            *c += (target - *c) * follow;
+        }
+        for (m, band) in self.mel_bands.iter().enumerate() {
+            let mut p = 0.0;
+            for (w, power) in band.weights.iter().zip(&self.power[band.first..]) {
+                p += w * power;
+            }
+            let db = 10.0 * p.max(1e-12).log10();
+            self.mel[m] = ((db + 90.0) / 80.0).clamp(0.0, 1.0);
+        }
+        self.step(dt);
+    }
+
+    /// The keys and the pitch classes (the loudest 1) of this spectrum's
+    /// peaks (a bin above both neighbours), each at its note - not the bins
+    /// near a note, which the window's main lobe lights for its neighbours.
+    fn own_notes(&self) -> ([f32; KEYS], [f32; 12]) {
         let mut classes = [0.0f32; 12];
         let mut now = [0.0f32; KEYS];
         let (first, last) = (
@@ -272,25 +299,11 @@ impl Fine {
                 classes[midi.rem_euclid(12) as usize] += p.sqrt();
             }
         }
-        let fade = (-dt * 8.0).exp();
-        for (key, v) in self.keys.iter_mut().zip(now) {
-            *key = v.max(*key * fade);
-        }
         let loudest = classes.iter().cloned().fold(0.0, f32::max);
-        let follow = 1.0 - (-dt * 10.0).exp();
-        for (c, v) in self.chroma.iter_mut().zip(classes) {
-            let target = if loudest > 1e-6 { v / loudest } else { 0.0 };
-            *c += (target - *c) * follow;
+        for c in classes.iter_mut() {
+            *c = if loudest > 1e-6 { *c / loudest } else { 0.0 };
         }
-        for (m, band) in self.mel_bands.iter().enumerate() {
-            let mut p = 0.0;
-            for (w, power) in band.weights.iter().zip(&self.power[band.first..]) {
-                p += w * power;
-            }
-            let db = 10.0 * p.max(1e-12).log10();
-            self.mel[m] = ((db + 90.0) / 80.0).clamp(0.0, 1.0);
-        }
-        self.step(dt);
+        (now, classes)
     }
 
     /// Nothing plays: everything falls.

@@ -41,6 +41,8 @@ pub struct App {
     info: TrackInfo,
     cover: Option<TextureHandle>,
     analyzer: Analyzer,
+    /// Loudness, beat, notes, key: on their own thread, every sample heard.
+    meters: crate::meters::Meters,
     viz_state: VizState,
     tap: Vec<f32>,
     mode: &'static str,
@@ -338,6 +340,7 @@ impl App {
         playlist.add_tracks(saved.tracks.clone());
         playlist.set_shuffle(saved.shuffle);
         playlist.repeat = Repeat::from_key(&saved.repeat);
+        let meters = crate::meters::Meters::start(engine.shared.clone());
         let mut viz_state = VizState::default();
         // the pixel faces' shaders, where egui draws with wgpu
         if let Some(render_state) = cc.wgpu_render_state.as_ref() {
@@ -350,6 +353,7 @@ impl App {
             info: TrackInfo::default(),
             cover: None,
             analyzer: Analyzer::new(),
+            meters,
             viz_state,
             tap: Vec::new(),
             mode: viz::known(&saved.visualizer),
@@ -842,6 +846,7 @@ impl App {
     fn take_info(&mut self, ctx: &egui::Context, info: TrackInfo) {
         self.loaded = Some(self.generation);
         self.analyzer.new_track();
+        self.meters.new_track();
         self.opening = false;
         self.failures = 0;
         self.duration = info.duration.or(self.duration);
@@ -2130,6 +2135,11 @@ impl App {
             .unwrap_or(0.0)
     }
 
+    /// What the meters say (tests; the loudness of what was heard).
+    pub fn meter_readings(&self) -> crate::meters::Readings {
+        self.meters.read()
+    }
+
     /// Frames the analysis ran (tests: none with the picture off).
     pub fn analyzer_frames(&self) -> u64 {
         self.analyzer_frames
@@ -2206,6 +2216,7 @@ impl App {
             .load(std::sync::atomic::Ordering::Relaxed);
         // (off: no analysis, no frames for it)
         if self.mode != "off" {
+            self.analyzer.set_readings(self.meters.read());
             self.analyzer.update(
                 &self.tap,
                 written,
