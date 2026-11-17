@@ -12,6 +12,8 @@ pub mod eq;
 pub mod mixer;
 pub mod mixer_ui;
 pub mod mp4edit;
+#[cfg(target_os = "linux")]
+pub mod mpris;
 pub mod net;
 pub mod playlist;
 pub mod state;

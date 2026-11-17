@@ -69,6 +69,7 @@ pub fn harness_sized(dir: &Path, args: Vec<String>, size: egui::Vec2) -> Harness
     let setup = Setup {
         config_dir: dir.join("config"),
         desktop: false,
+        desktop_bus: None,
         headless_audio: true,
     };
     Harness::builder()

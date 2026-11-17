@@ -57,6 +57,8 @@ pub struct App {
     loaded: Option<u64>,
     /// The track asked for is still opening (a stream connects).
     opening: bool,
+    /// Stopped (by Stop, or at the end of the list) rather than paused.
+    stopped: bool,
     failures: usize,
     /// Tracks that could not be played, by path: why (shown in the playlist).
     broken: std::collections::HashMap<String, String>,
@@ -67,6 +69,10 @@ pub struct App {
     notice: String,
     /// The window's title as last set.
     window_title: String,
+    /// The player on the desktop's bus (MPRIS), and its cover's file:// URL.
+    #[cfg(target_os = "linux")]
+    mpris: Option<crate::mpris::Mpris>,
+    art_url: String,
     /// The track playing came by itself (the one before ended): a track that
     /// cannot be played is then skipped; one the user chose stays, with why.
     automatic: bool,
@@ -104,6 +110,8 @@ pub struct Setup {
     /// Offer the player to the desktop (MPRIS on the session D-Bus: media
     /// keys, the desktop's sound menu).
     pub desktop: bool,
+    /// The D-Bus for MPRIS (None: the session bus).
+    pub desktop_bus: Option<String>,
     /// No sound device: the sound is taken by whoever calls
     /// [`crate::engine::Shared::render`] (tests).
     pub headless_audio: bool,
@@ -114,6 +122,7 @@ impl Default for Setup {
         Setup {
             config_dir: state::config_dir(),
             desktop: true,
+            desktop_bus: None,
             headless_audio: false,
         }
     }
@@ -178,12 +187,16 @@ impl App {
             generations: 0,
             loaded: None,
             opening: false,
+            stopped: true,
             failures: 0,
             broken: Default::default(),
             queued: None,
             stream_title: String::new(),
             notice: String::new(),
             window_title: String::new(),
+            #[cfg(target_os = "linux")]
+            mpris: None,
+            art_url: String::new(),
             automatic: false,
             duration: None,
             seek_drag: None,
@@ -215,6 +228,15 @@ impl App {
             audio_path,
             gate: KeyGate::default(),
         };
+        #[cfg(target_os = "linux")]
+        if setup.desktop {
+            let ctx = cc.egui_ctx.clone();
+            app.mpris = Some(crate::mpris::Mpris::start(
+                setup.desktop_bus.clone(),
+                app.engine.shared.clone(),
+                move || ctx.request_repaint(),
+            ));
+        }
         if !args.is_empty() {
             let first = app.playlist.tracks.len();
             app.add(&args);
@@ -350,6 +372,7 @@ impl App {
         self.generation = self.new_generation();
         self.automatic = false;
         self.opening = true;
+        self.stopped = false;
         self.queued = None;
         self.playlist.play(index);
         self.selected = Some(index);
@@ -433,6 +456,13 @@ impl App {
             .cover
             .as_deref()
             .and_then(|bytes| cover_texture(ctx, bytes));
+        self.art_url.clear();
+        #[cfg(target_os = "linux")]
+        if self.mpris.is_some()
+            && let Some(bytes) = info.cover.as_deref()
+        {
+            self.art_url = crate::mpris::write_cover(bytes).unwrap_or_default();
+        }
         self.info = info;
         // (a note about a track skipped on the way stays)
         if !(self.automatic && self.status.ends_with("skipped.")) {
@@ -441,8 +471,27 @@ impl App {
         self.dirty = true;
     }
 
+    /// Seek in the track playing (past its end: the next one, as at its end).
+    fn seek(&mut self, secs: f64) {
+        if !(self.info.seekable && self.loaded == Some(self.generation)) {
+            return;
+        }
+        let secs = secs.max(0.0);
+        if let Some(duration) = self.duration
+            && secs >= duration
+        {
+            return self.next(true);
+        }
+        self.engine.send(Command::Seek(secs));
+        #[cfg(target_os = "linux")]
+        if let Some(m) = &self.mpris {
+            m.seeked(secs);
+        }
+    }
+
     fn stop(&mut self) {
         self.engine.send(Command::Stop);
+        self.stopped = true;
         if self.current_is_stream() {
             // (the engine lets the stream go: Play connects anew)
             self.loaded = None;
@@ -463,6 +512,7 @@ impl App {
             self.engine.send(Command::Pause);
         } else if self.loaded == Some(self.generation) || self.opening {
             self.engine.send(Command::Play);
+            self.stopped = false;
         } else if let Some(i) = self
             .playlist
             .current
@@ -492,7 +542,7 @@ impl App {
     fn previous(&mut self) {
         // within the first seconds: the track before; later: this one from its start
         if self.engine.shared.position() > 3.0 {
-            self.engine.send(Command::Seek(0.0));
+            self.seek(0.0);
         } else if let Some(i) = self.playlist.previous() {
             self.play_index(i, 0, true);
         }
@@ -696,10 +746,10 @@ impl App {
             self.toggle_play();
         }
         if left {
-            self.engine.send(Command::Seek((pos - 5.0).max(0.0)));
+            self.seek(pos - 5.0);
         }
         if right {
-            self.engine.send(Command::Seek(pos + 5.0));
+            self.seek(pos + 5.0);
         }
         if up {
             self.set_volume(self.volume + 5);
@@ -935,6 +985,120 @@ impl App {
         }
     }
 
+    /// What the desktop asked (MPRIS), and the state it is told.
+    #[cfg(target_os = "linux")]
+    fn desktop(&mut self, ctx: &egui::Context) {
+        use crate::mpris::Request;
+        let Some(requests) = self.mpris.as_ref().map(|m| m.requests()) else {
+            return;
+        };
+        for request in requests {
+            match request {
+                Request::Play if !self.playing() => self.toggle_play(),
+                Request::Play => {}
+                Request::Pause => {
+                    if self.playing() {
+                        self.engine.send(Command::Pause);
+                    }
+                }
+                Request::PlayPause => self.toggle_play(),
+                Request::Stop => self.stop(),
+                Request::Next => self.next(false),
+                Request::Previous => self.previous(),
+                Request::Seek(us) => {
+                    let pos = self.engine.shared.position();
+                    self.seek(pos + us as f64 / 1e6);
+                }
+                Request::SetPosition(id, us) => {
+                    if id == self.generation && us >= 0 {
+                        self.seek(us as f64 / 1e6);
+                    }
+                }
+                Request::Volume(v) => self.set_volume((v * 100.0).round() as u32),
+                Request::Shuffle(on) => {
+                    self.playlist.set_shuffle(on);
+                    self.dirty = true;
+                }
+                Request::Loop(mode) => {
+                    self.playlist.repeat = match mode.as_str() {
+                        "Track" => Repeat::One,
+                        "Playlist" => Repeat::All,
+                        _ => Repeat::Off,
+                    };
+                    self.dirty = true;
+                }
+                Request::OpenUri(uri) => {
+                    let target = match uri.strip_prefix("file://") {
+                        Some(path) => percent_decode(path),
+                        None => uri,
+                    };
+                    let first = self.playlist.tracks.len();
+                    self.add(&[target]);
+                    if self.playlist.tracks.len() > first {
+                        self.play_index(first, 0, true);
+                    }
+                }
+                Request::Raise => {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+                }
+                Request::Quit => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
+            }
+        }
+        let snapshot = self.mpris_snapshot();
+        if let Some(m) = self.mpris.as_mut() {
+            m.update(snapshot);
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn mpris_snapshot(&self) -> crate::mpris::Snapshot {
+        let loaded = self.loaded == Some(self.generation);
+        let status = if self.playing() {
+            "Playing"
+        } else if loaded && !self.stopped {
+            "Paused"
+        } else {
+            "Stopped"
+        };
+        let track = self
+            .playlist
+            .current
+            .and_then(|i| self.playlist.tracks.get(i))
+            .map(|t| {
+                let (title, by) = self.now_playing_text();
+                let stream = playlist::is_stream(&t.path);
+                crate::mpris::Track {
+                    id: self.generation,
+                    title,
+                    artist: if stream { by } else { self.info.artist.clone() },
+                    album: self.info.album.clone(),
+                    url: if stream {
+                        t.path.clone()
+                    } else {
+                        file_url(&t.path)
+                    },
+                    length_us: self.duration.map(|d| (d * 1e6) as i64),
+                    art_url: self.art_url.clone(),
+                }
+            });
+        let any = !self.playlist.tracks.is_empty();
+        crate::mpris::Snapshot {
+            status,
+            loop_status: match self.playlist.repeat {
+                Repeat::Off => "None",
+                Repeat::One => "Track",
+                Repeat::All => "Playlist",
+            },
+            shuffle: self.playlist.shuffle,
+            volume: self.volume as f64 / 100.0,
+            can_seek: loaded && self.info.seekable && self.duration.is_some(),
+            can_next: any,
+            can_previous: any,
+            track,
+        }
+    }
+
     /// The window's title (tests).
     pub fn title(&self) -> &str {
         &self.window_title
@@ -1025,7 +1189,7 @@ impl App {
                     self.seek_drag = Some(value);
                 }
                 if response.drag_stopped() || (response.changed() && !response.dragged()) {
-                    self.engine.send(Command::Seek(value));
+                    self.seek(value);
                     self.seek_drag = None;
                 }
             });
@@ -1498,6 +1662,8 @@ impl eframe::App for App {
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         self.handle_events(&ctx);
+        #[cfg(target_os = "linux")]
+        self.desktop(&ctx);
         self.sync_queue();
         self.window_title(&ctx);
         self.gate = self.key_gate(&ctx);
@@ -1610,6 +1776,8 @@ impl eframe::App for App {
 
     fn on_exit(&mut self) {
         self.save(true);
+        #[cfg(target_os = "linux")]
+        crate::mpris::remove_covers();
     }
 }
 
@@ -1649,6 +1817,42 @@ fn band_name(hz: f32) -> String {
     } else {
         format!("{hz}")
     }
+}
+
+/// A local path as a file:// URL (what is not plain, percent-encoded).
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn file_url(path: &str) -> String {
+    let mut out = String::from("file://");
+    for b in path.bytes() {
+        if b.is_ascii_alphanumeric() || b"/-._~".contains(&b) {
+            out.push(b as char);
+        } else {
+            out.push_str(&format!("%{b:02X}"));
+        }
+    }
+    out
+}
+
+/// %XX sequences back to their bytes (a file:// URL's path).
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn percent_decode(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%'
+            && let Some(v) = text
+                .get(i + 1..i + 3)
+                .and_then(|h| u8::from_str_radix(h, 16).ok())
+        {
+            out.push(v);
+            i += 3;
+            continue;
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 /// The host of an http(s) URL (for "Connecting to …").
@@ -1714,6 +1918,17 @@ fn style(ctx: &egui::Context) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn file_urls_go_both_ways() {
+        let path = "/m/Bob & Alice/01 – Ça va?.flac";
+        let url = file_url(path);
+        assert_eq!(
+            url,
+            "file:///m/Bob%20%26%20Alice/01%20%E2%80%93%20%C3%87a%20va%3F.flac"
+        );
+        assert_eq!(percent_decode(&url["file://".len()..]), path);
+    }
 
     #[test]
     fn clocks() {
