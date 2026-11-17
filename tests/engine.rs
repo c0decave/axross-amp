@@ -313,12 +313,18 @@ fn radio(socket: &mut TcpStream, head: &str, metaint: Option<usize>, secs: f32, 
 
 #[test]
 fn a_stalled_server_holds_up_nothing() {
-    // the server answers, sends a few bytes of a header and then nothing
-    let (base, _) = server(|_, mut socket| {
+    // the server answers, sends a few bytes of a header and then nothing; it
+    // notes when the player lets go of the connection
+    let closed = Arc::new(Mutex::new(None::<Instant>));
+    let c = closed.clone();
+    let (base, _) = server(move |_, mut socket| {
         let _ = socket.write_all(
             b"HTTP/1.0 200 OK\r\nContent-Type: audio/wav\r\n\r\nRIFF\xff\xff\xff\xffWAVE",
         );
-        std::thread::sleep(Duration::from_secs(60));
+        let mut byte = [0u8; 1];
+        let _ = socket.set_read_timeout(Some(Duration::from_secs(60)));
+        while matches!(socket.read(&mut byte), Ok(n) if n > 0) {}
+        *c.lock().unwrap() = Some(Instant::now());
     });
     let dir = folder("stall");
     std::fs::write(dir.join("a.wav"), wav_bytes(RATE, 0.5, 330.0, None)).unwrap();
@@ -337,6 +343,16 @@ fn a_stalled_server_holds_up_nothing() {
         "{:?}",
         asked.elapsed()
     );
+    // and the stalled connection is closed (its thread did not wait on for ever)
+    let end = Instant::now() + Duration::from_secs(3);
+    while Instant::now() < end && closed.lock().unwrap().is_none() {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let at = closed
+        .lock()
+        .unwrap()
+        .expect("the stalled connection stayed open");
+    assert!(at.duration_since(asked) < Duration::from_secs(2));
 }
 
 #[test]

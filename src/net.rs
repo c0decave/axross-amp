@@ -191,15 +191,139 @@ pub fn clean(text: &str) -> String {
         .collect()
 }
 
-fn agent(global: Option<Duration>) -> ureq::Agent {
-    ureq::Agent::config_builder()
+/// Flags that stop a connection: the whole stream's, and its body's.
+type Stops = [Arc<AtomicBool>; 2];
+
+fn stopped(stops: &Stops) -> bool {
+    stops.iter().any(|s| s.load(Ordering::Relaxed))
+}
+
+/// The agent for one connection: a server that sends nothing for [`STALL`]
+/// fails the read; a stop flag set ends a read within a quarter second and
+/// the connection with it (its socket closed - a stream let go is let go).
+fn agent(stops: Stops) -> ureq::Agent {
+    use ureq::unversioned::transport::{Connector, DefaultConnector};
+    let config = ureq::Agent::config_builder()
         .timeout_connect(Some(CONNECT_TIMEOUT))
         .timeout_recv_response(Some(CONNECT_TIMEOUT))
-        .timeout_global(global)
+        .timeout_per_read(Some(STALL))
         .http_status_as_error(true)
         .user_agent(USER_AGENT)
-        .build()
-        .into()
+        .build();
+    let connector = DefaultConnector::new().chain(Stoppable { stops });
+    ureq::Agent::with_parts(
+        config,
+        connector,
+        ureq::unversioned::resolver::DefaultResolver::default(),
+    )
+}
+
+use ureq::unversioned::transport::time::Duration as Wait;
+use ureq::unversioned::transport::{Buffers, ConnectionDetails, NextTimeout, Transport};
+
+fn exact(wait: Wait) -> Duration {
+    match wait {
+        Wait::Exact(d) => d,
+        Wait::NotHappening => Duration::MAX,
+    }
+}
+
+/// Wraps a connection so that its reads look at the stop flags.
+#[derive(Debug)]
+struct Stoppable {
+    stops: Stops,
+}
+
+impl ureq::unversioned::transport::Connector<Box<dyn Transport>> for Stoppable {
+    type Out = StoppableTransport;
+
+    fn connect(
+        &self,
+        _details: &ConnectionDetails,
+        chained: Option<Box<dyn Transport>>,
+    ) -> Result<Option<Self::Out>, ureq::Error> {
+        Ok(chained.map(|inner| StoppableTransport {
+            inner,
+            stops: self.stops.clone(),
+        }))
+    }
+}
+
+#[derive(Debug)]
+struct StoppableTransport {
+    inner: Box<dyn Transport>,
+    stops: Stops,
+}
+
+impl Transport for StoppableTransport {
+    fn buffers(&mut self) -> &mut dyn Buffers {
+        self.inner.buffers()
+    }
+
+    fn transmit_output(&mut self, amount: usize, timeout: NextTimeout) -> Result<(), ureq::Error> {
+        self.inner.transmit_output(amount, timeout)
+    }
+
+    /// A read in slices of a quarter second: between them the stop flags are
+    /// looked at; the time limit it was given stays the limit.
+    fn await_input(&mut self, timeout: NextTimeout) -> Result<bool, ureq::Error> {
+        let started = Instant::now();
+        let limit = exact(timeout.after).min(timeout.per_read.map(exact).unwrap_or(Duration::MAX));
+        loop {
+            if stopped(&self.stops) {
+                return Err(ureq::Error::Io(io::Error::other("stopped")));
+            }
+            let left = limit.saturating_sub(started.elapsed());
+            let slice = NextTimeout {
+                after: Wait::Exact(
+                    left.clamp(Duration::from_millis(1), Duration::from_millis(250)),
+                ),
+                per_read: None,
+                ..timeout
+            };
+            match self.inner.await_input(slice) {
+                Err(ureq::Error::Timeout(_)) if started.elapsed() < limit => continue,
+                other => return other,
+            }
+        }
+    }
+
+    fn is_open(&mut self) -> bool {
+        !stopped(&self.stops) && self.inner.is_open()
+    }
+
+    fn is_tls(&self) -> bool {
+        self.inner.is_tls()
+    }
+}
+
+/// A socket read in quarter seconds (the old SHOUTcast path): stopped by
+/// the flags, failed after [`STALL`] without a byte.
+struct StopRead {
+    socket: std::net::TcpStream,
+    stops: Stops,
+}
+
+impl Read for StopRead {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let started = Instant::now();
+        loop {
+            if stopped(&self.stops) {
+                return Err(io::Error::other("stopped"));
+            }
+            match self.socket.read(buf) {
+                Err(e)
+                    if matches!(
+                        e.kind(),
+                        io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                    ) && started.elapsed() < STALL =>
+                {
+                    continue;
+                }
+                other => return other,
+            }
+        }
+    }
 }
 
 /// An answer's head and a reader of its body.
@@ -217,8 +341,12 @@ impl Response {
     }
 }
 
-fn request(url: &str) -> Result<Response, String> {
-    match agent(None).get(url).header("Icy-MetaData", "1").call() {
+fn request(url: &str, stops: &Stops) -> Result<Response, String> {
+    match agent(stops.clone())
+        .get(url)
+        .header("Icy-MetaData", "1")
+        .call()
+    {
         Ok(response) => {
             let headers = response
                 .headers()
@@ -232,7 +360,7 @@ fn request(url: &str) -> Result<Response, String> {
         }
         // an answer that is no HTTP: an old SHOUTcast's "ICY 200 OK"
         Err(ureq::Error::Protocol(e)) if url.to_ascii_lowercase().starts_with("http://") => {
-            icy_request(url).map_err(|why| format!("{e} ({why})"))
+            icy_request(url, stops).map_err(|why| format!("{e} ({why})"))
         }
         Err(ureq::Error::StatusCode(code)) => Err(format!("the server answered {code}")),
         Err(e) => Err(e.to_string()),
@@ -240,7 +368,7 @@ fn request(url: &str) -> Result<Response, String> {
 }
 
 /// HTTP/1.0 by hand for a server that answers `ICY 200 OK`.
-fn icy_request(url: &str) -> Result<Response, String> {
+fn icy_request(url: &str, stops: &Stops) -> Result<Response, String> {
     let rest = &url["http://".len()..];
     let (authority, path) = match rest.find('/') {
         Some(i) => (&rest[..i], &rest[i..]),
@@ -296,9 +424,15 @@ fn icy_request(url: &str) -> Result<Response, String> {
         .filter_map(|l| l.split_once(':'))
         .map(|(n, v)| (n.trim().to_owned(), v.trim().to_owned()))
         .collect();
+    socket
+        .set_read_timeout(Some(Duration::from_millis(250)))
+        .map_err(|e| e.to_string())?;
     Ok(Response {
         headers,
-        body: Box::new(socket),
+        body: Box::new(StopRead {
+            socket,
+            stops: stops.clone(),
+        }),
     })
 }
 
@@ -340,7 +474,8 @@ pub fn open(
         if cancel.load(Ordering::Relaxed) {
             return Err("stopped".into());
         }
-        let response = request(&url)?;
+        let gone = Arc::new(AtomicBool::new(false));
+        let response = request(&url, &[cancel.clone(), gone.clone()])?;
         let content_type = response.header("content-type").map(|t| {
             t.split(';')
                 .next()
@@ -405,7 +540,6 @@ pub fn open(
         let (tx, rx) = crossbeam_channel::bounded(QUEUE);
         let titles: Titles = Arc::default();
         let error = Arc::new(Mutex::new(None));
-        let gone = Arc::new(AtomicBool::new(false));
         let (t, e, c, g) = (titles.clone(), error.clone(), cancel.clone(), gone.clone());
         let reader = response.body;
         thread::Builder::new()
