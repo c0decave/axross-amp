@@ -58,7 +58,12 @@ const CUT_MARGIN: u64 = 16_384;
 /// How often the output is tried again while there is none.
 const OUTPUT_RETRY: Duration = Duration::from_secs(5);
 /// Stereo frames of the most recent output the visualizations may read.
-pub const TAP_FRAMES: usize = 8192;
+pub const TAP_FRAMES: usize = 1 << 16;
+/// The most of the tap the pictures read at a time (the FFT, the scopes).
+pub const TAP_READ: usize = 8192;
+/// The output's buffer asked for (frames): small, so a pause, a seek or a
+/// stop are heard at once (PulseAudio's default is about 2 s).
+pub const OUTPUT_BUFFER: u32 = 1024;
 /// A radio that breaks off is connected again this often (waiting 1, 2, 4 s).
 pub const RECONNECTS: u32 = 3;
 /// Decoded chunks of a stream waiting for the output (about 1.5 s), and
@@ -289,6 +294,8 @@ pub struct RenderState {
     fade: f32,
     /// The ring's flushes honoured.
     flushes: u64,
+    /// Frames of silence handed over since the last sound.
+    silent: u64,
 }
 
 impl Default for RenderState {
@@ -297,6 +304,7 @@ impl Default for RenderState {
             gain: 0.0,
             fade: 0.0,
             flushes: 0,
+            silent: 0,
         }
     }
 }
@@ -342,8 +350,8 @@ impl Shared {
         let delay = self
             .latency
             .load(Ordering::Relaxed)
-            .min(TAP_FRAMES as u64 / 2);
-        self.tap.read_delayed(out, delay);
+            .min((TAP_FRAMES - TAP_READ) as u64);
+        self.tap.read_delayed(out, delay, TAP_READ as u64);
     }
 
     /// As when the output reports that its device is gone (tests).
@@ -393,6 +401,22 @@ impl Shared {
         self.ring.push(samples)
     }
 
+    /// [`Shared::render`] for an output whose sound is heard `latency`
+    /// frames after it is handed over (its buffer included): the position
+    /// and the pictures follow what is heard - also while paused, as the
+    /// last of the sound still plays out of the device.
+    pub fn render_at(
+        &self,
+        out: &mut [f32],
+        channels: usize,
+        state: &mut RenderState,
+        latency: u64,
+    ) {
+        self.render(out, channels, state);
+        // (silence handed over after the last sound carries none of it)
+        self.set_latency(latency.saturating_sub(state.silent));
+    }
+
     /// Fill `out` (interleaved, `channels` a frame) with what is to be heard:
     /// the stereo sound at the volume (ramped over the buffer: no click),
     /// both sides mixed for one channel, nothing on the channels past two.
@@ -439,6 +463,7 @@ impl Shared {
             };
             let (l, r) = match frame {
                 Some((l, r)) => {
+                    state.silent = 0;
                     self.tap.put(l, r);
                     let g = state.gain * state.fade;
                     (l * g, r * g)
@@ -448,6 +473,7 @@ impl Shared {
                     if !hold {
                         state.fade = 0.0;
                     }
+                    state.silent += 1;
                     (0.0, 0.0)
                 }
             };
@@ -579,13 +605,31 @@ fn open_output(
             Err(_) => format!("{:?}", host.id()),
         };
         let rate = config.sample_rate();
-        let result = match config.sample_format() {
-            cpal::SampleFormat::F32 => build::<f32>(&device, config.into(), shared.clone()),
-            cpal::SampleFormat::I16 => build::<i16>(&device, config.into(), shared.clone()),
-            cpal::SampleFormat::U16 => build::<u16>(&device, config.into(), shared.clone()),
-            cpal::SampleFormat::I32 => build::<i32>(&device, config.into(), shared.clone()),
-            other => Err(format!("sample format {other:?} not supported")),
+        let format = config.sample_format();
+        // a small buffer where the device takes one (else its own)
+        let small = match config.buffer_size() {
+            cpal::SupportedBufferSize::Range { min, max } => {
+                Some(cpal::BufferSize::Fixed(OUTPUT_BUFFER.clamp(*min, *max)))
+            }
+            cpal::SupportedBufferSize::Unknown => None,
         };
+        let sizes = small.into_iter().chain([cpal::BufferSize::Default]);
+        let mut result = Err(String::from("no buffer size"));
+        for size in sizes {
+            let mut stream_config: cpal::StreamConfig = config.into();
+            stream_config.buffer_size = size;
+            let s = shared.clone();
+            result = match format {
+                cpal::SampleFormat::F32 => build::<f32>(&device, stream_config, s),
+                cpal::SampleFormat::I16 => build::<i16>(&device, stream_config, s),
+                cpal::SampleFormat::U16 => build::<u16>(&device, stream_config, s),
+                cpal::SampleFormat::I32 => build::<i32>(&device, stream_config, s),
+                other => Err(format!("sample format {other:?} not supported")),
+            };
+            if result.is_ok() {
+                break;
+            }
+        }
         match result {
             Ok(stream) => {
                 if let Err(e) = stream.play() {
@@ -623,11 +667,12 @@ where
                 let ts = info.timestamp();
                 let ahead = ts.playback.duration_since(ts.callback).as_secs_f64();
                 let rate = shared.device_rate.load(Ordering::Relaxed) as f64;
-                let frames = (ahead * rate) as u64 + (data.len() / channels) as u64;
-                shared.set_latency(frames.min(rate as u64)); // (a second at most: sanity)
+                // (ten seconds at most: a timestamp gone wild)
+                let latency =
+                    ((ahead * rate) as u64).min(rate as u64 * 10) + (data.len() / channels) as u64;
                 for chunk in data.chunks_mut(piece) {
                     let mixed = &mut mixed[..chunk.len()];
-                    shared.render(mixed, channels, &mut state);
+                    shared.render_at(mixed, channels, &mut state, latency);
                     for (out, v) in chunk.iter_mut().zip(mixed.iter()) {
                         *out = T::from_sample(*v);
                     }
@@ -2745,6 +2790,7 @@ mod tests {
             gain: 1.0,
             fade: 1.0,
             flushes: 0,
+            silent: 0,
         };
         let mut out = vec![0.0f32; 1500 * 2];
         shared.render(&mut out, 2, &mut state);
@@ -2784,6 +2830,39 @@ mod tests {
             2399.0,
             "the frame heard now, not the last read"
         );
+        // a device half a second behind: while paused the last of the sound
+        // plays on out of it, the position following it, then standing
+        let shared = Shared::new();
+        shared.playing.store(true, Ordering::Relaxed);
+        let samples: Vec<f32> = (0..96_000)
+            .flat_map(|i| [(i % 100) as f32 / 200.0 + 0.1, 0.0])
+            .collect();
+        shared.push(&samples);
+        let mut state = RenderState::default();
+        let mut out = vec![0.0f32; 480 * 2];
+        for _ in 0..100 {
+            shared.render_at(&mut out, 2, &mut state, 24_000 + 480);
+        }
+        let at_pause = shared.position();
+        assert!(
+            (at_pause - (48_000.0 - 24_480.0) / 48_000.0).abs() < 0.001,
+            "{at_pause}"
+        );
+        shared.playing.store(false, Ordering::Relaxed);
+        for _ in 0..25 {
+            shared.render_at(&mut out, 2, &mut state, 24_000 + 480);
+        }
+        let mid = shared.position();
+        assert!(mid > at_pause + 0.2 && mid < at_pause + 0.4, "{mid}");
+        for _ in 0..100 {
+            shared.render_at(&mut out, 2, &mut state, 24_000 + 480);
+        }
+        let end = shared.position();
+        let read = shared.ring.read() as f64 / 48_000.0;
+        assert!(
+            (end - read).abs() < 0.001,
+            "{end} vs everything read {read}"
+        );
     }
 
     #[test]
@@ -2797,6 +2876,7 @@ mod tests {
             gain: 1.0,
             fade: 1.0,
             flushes: 0,
+            silent: 0,
         };
         let mut out = [9.0f32; 3];
         shared.render(&mut out, 1, &mut state);
