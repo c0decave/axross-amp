@@ -41,6 +41,8 @@ pub struct State {
     pub key: (usize, bool, f32),
     last_time: f64,
     picture_step: u64,
+    /// The size of the waterfall's picture (the mel's is another).
+    hd_picture: (usize, usize),
 }
 
 impl Default for State {
@@ -62,6 +64,7 @@ impl Default for State {
             key: (0, false, 0.0),
             last_time: 0.0,
             picture_step: 0,
+            hd_picture: (0, 0),
         }
     }
 }
@@ -1250,6 +1253,44 @@ fn pianoroll(f: &Frame<'_>, cv: &mut Canvas) {
 }
 
 // -- the mel spectrogram -------------------------------------------------------------
+
+/// The waterfall smooth, at high resolution: the fine spectrum's log bands
+/// across, a row a step, the newest at the bottom, in axross's waterfall
+/// colours (a picture the shader scales up smoothly).
+pub fn waterfall_hd(f: &Frame<'_>, state: &mut VizState) {
+    let (a, s, p) = (f.a, f.s, f.painter);
+    let fine = &a.fine;
+    let st = &mut state.analysis;
+    let steps = (a.time * 30.0) as u64;
+    if let Ok(mut picture) = state.gpu.picture(f.second).lock() {
+        let (w, h) = (fine::HD, fine::STEPS);
+        if picture.data.len() != w * h || st.hd_picture != (w, h) {
+            picture.data.clear();
+            picture.data.resize(w * h, 0);
+            picture.width = w as u32;
+            picture.height = h as u32;
+            st.hd_picture = (w, h);
+            st.picture_step = u64::MAX;
+        }
+        if st.picture_step != steps {
+            st.picture_step = steps;
+            for y in 0..h {
+                let row = fine.hd_row(h - 1 - y);
+                for (x, v) in row.iter().enumerate() {
+                    picture.data[y * w + x] = (v * 255.0) as u8;
+                }
+            }
+            picture.version = picture.version.wrapping_add(1);
+        }
+    }
+    let u = gpu::Uniforms::new(gpu::Shader::Spectrogram, a, s, fine.step_fraction())
+        .with_opacity(f.opacity);
+    let clip = f.rect.expand(4.0);
+    let (gpu, second, live, rect) = (&mut state.gpu, f.second, f.dt > 0.0, f.rect);
+    state.canvas.draw(p, |pen| {
+        gpu::paint(p, pen, gpu, rect, clip, u, true, second, live);
+    });
+}
 
 fn mel(f: &Frame<'_>, state: &mut VizState) {
     let (a, s, p) = (f.a, f.s, f.painter);

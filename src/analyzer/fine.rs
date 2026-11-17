@@ -13,6 +13,9 @@ pub const SIZE: usize = 8192;
 pub const BINS: usize = SIZE / 2 + 1;
 pub const KEYS: usize = 88;
 pub const MELS: usize = 64;
+/// Bands of the fine spectrogram (the waterfall's high resolution):
+/// log-spaced, 30 Hz..16 kHz.
+pub const HD: usize = 256;
 /// Steps of history kept (mel, chroma, keys).
 pub const STEPS: usize = 256;
 /// dBFS shown at the bottom of the scales.
@@ -73,12 +76,18 @@ pub struct Fine {
     /// The mel bands (30 Hz..16 kHz), 0..1 over -90..-10 dBFS.
     pub mel: [f32; MELS],
     mel_bands: Vec<MelBand>,
+    /// The fine spectrogram's bands now (0..1 over -70..-10 dBFS) and each
+    /// one's bins: a fractional bin (narrower than a bin: between two) or
+    /// a range of them.
+    pub hd: [f32; HD],
+    hd_bins: Vec<(f32, usize, usize)>,
     built_for: u32,
     key_bins: Vec<(usize, usize)>,
     /// Histories, a row a step, a ring: STEPS rows.
     mel_history: Vec<[f32; MELS]>,
     chroma_history: Vec<[f32; 12]>,
     key_history: Vec<[f32; KEYS]>,
+    hd_history: Vec<[f32; HD]>,
     head: usize,
     clock: f32,
     /// Steps of history this frame made.
@@ -120,11 +129,14 @@ impl Fine {
             chroma: [0.0; 12],
             mel: [0.0; MELS],
             mel_bands: Vec::new(),
+            hd: [0.0; HD],
+            hd_bins: Vec::with_capacity(HD),
             built_for: 0,
             key_bins: Vec::with_capacity(KEYS),
             mel_history: vec![[0.0; MELS]; STEPS],
             chroma_history: vec![[0.0; 12]; STEPS],
             key_history: vec![[0.0; KEYS]; STEPS],
+            hd_history: vec![[0.0; HD]; STEPS],
             head: 0,
             clock: 0.0,
             steps: 0,
@@ -176,6 +188,19 @@ impl Fine {
                 weights[near - first] = 1.0;
             }
             self.mel_bands.push(MelBand { first, weights });
+        }
+        // the fine spectrogram's bands: equal steps of the log of the
+        // frequency
+        self.hd_bins.clear();
+        let (lo, hi) = (30f32.ln(), top.ln());
+        for j in 0..HD {
+            let at = |k: f32| (lo + (hi - lo) * k / HD as f32).exp() / self.bin_hz;
+            let (a, b) = (at(j as f32), at(j as f32 + 1.0));
+            let (first, last) = (
+                (a.ceil() as usize).clamp(1, BINS - 1),
+                (b.floor() as usize).clamp(1, BINS - 1),
+            );
+            self.hd_bins.push(((a + b) / 2.0, first, last));
         }
     }
 
@@ -261,6 +286,22 @@ impl Fine {
             let db = 10.0 * p.max(1e-12).log10();
             self.mel[m] = ((db + 90.0) / 80.0).clamp(0.0, 1.0);
         }
+        for (v, (centre, first, last)) in self.hd.iter_mut().zip(&self.hd_bins) {
+            // wider than a bin: their mean; narrower: between the two
+            // nearest (smooth where the bins are coarse, the bass)
+            let p = if last > first {
+                self.power[*first..=*last].iter().sum::<f32>() / (last - first + 1) as f32
+            } else {
+                let k = centre.clamp(1.0, (BINS - 2) as f32);
+                let (i, t) = (k.floor() as usize, k.fract());
+                self.power[i] * (1.0 - t) + self.power[i + 1] * t
+            };
+            // (-70..-10 dBFS: a quiet noise floor dark, as a spectrogram)
+            // (a little smoothed in time: the noise's speckle calmed)
+            let db = 10.0 * p.max(1e-12).log10();
+            let now = ((db + 70.0) / 60.0).clamp(0.0, 1.0);
+            *v = now.max(*v * 0.5 + now * 0.5);
+        }
         self.step(dt);
     }
 
@@ -318,6 +359,7 @@ impl Fine {
             .iter_mut()
             .chain(self.chroma.iter_mut())
             .chain(self.mel.iter_mut())
+            .chain(self.hd.iter_mut())
         {
             *v *= keep;
         }
@@ -335,7 +377,13 @@ impl Fine {
             self.mel_history[self.head] = self.mel;
             self.chroma_history[self.head] = self.chroma;
             self.key_history[self.head] = self.keys;
+            self.hd_history[self.head] = self.hd;
         }
+    }
+
+    /// The fine spectrogram's row `age` steps ago.
+    pub fn hd_row(&self, age: usize) -> &[f32; HD] {
+        &self.hd_history[(self.head + STEPS - age % STEPS) % STEPS]
     }
 
     /// How far (0..1) the next step is.

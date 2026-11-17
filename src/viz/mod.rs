@@ -402,6 +402,17 @@ pub fn scheme(key: &str, custom: &std::collections::BTreeMap<String, String>) ->
 }
 
 /// A colour a share `t` of the way from `a` to `b`.
+/// An additive colour (premultiplied, alpha 0): it lights what is below.
+pub(crate) fn glow(c: Color32, k: f32) -> Color32 {
+    let k = k.clamp(0.0, 1.0);
+    Color32::from_rgba_premultiplied(
+        (c.r() as f32 * k) as u8,
+        (c.g() as f32 * k) as u8,
+        (c.b() as f32 * k) as u8,
+        0,
+    )
+}
+
 pub fn mix(a: Color32, b: Color32, t: f32) -> Color32 {
     let t = t.clamp(0.0, 1.0);
     let m = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t).round() as u8;
@@ -815,6 +826,9 @@ pub struct VizState {
     /// The face shown, and the one it is fading from (and how far, 0..1).
     shown: &'static str,
     fading: Option<(&'static str, f32)>,
+    /// The waterfall smooth, at high resolution (the fine spectrum's), not
+    /// in axross's bars.
+    pub waterfall_hd: bool,
 }
 
 /// Seconds a face takes to fade into the next.
@@ -906,6 +920,11 @@ pub fn draw(f: &Frame<'_>, key: &str, state: &mut VizState) {
     }
 }
 
+/// The feedback face's preset now (tests).
+pub fn feedback_preset(state: &VizState) -> usize {
+    generative::preset(&state.generative)
+}
+
 /// The faces fading: which is (tests).
 pub fn fading(state: &VizState) -> Option<&'static str> {
     state.fading.map(|(k, _)| k)
@@ -945,9 +964,11 @@ fn one(f: &Frame<'_>, key: &'static str, state: &mut VizState, opacity: f32, sec
 
 /// What the analysis must work out for face `key` and the one it fades from.
 pub fn needs_now(key: &str, state: &VizState) -> Needs {
+    let hd = |k: &str| state.waterfall_hd && k == "waterfall";
     let mut n = needs(key);
+    n.fine |= hd(key);
     if let Some((old, _)) = state.fading {
-        n.fine |= needs(old).fine;
+        n.fine |= needs(old).fine || hd(old);
     }
     n
 }

@@ -163,6 +163,8 @@ pub struct AmpSettings {
     /// The pictures' colours from the cover when there is one (the chosen
     /// scheme otherwise).
     pub cover_colours: bool,
+    /// The waterfall smooth, at high resolution (not axross's bars).
+    pub waterfall_hd: bool,
 }
 
 /// The loudness targets offered: LUFS and what aims at it.
@@ -182,6 +184,7 @@ impl Default for AmpSettings {
             loudness_target: -23.0,
             crossfade: 0.0,
             cover_colours: true,
+            waterfall_hd: false,
         }
     }
 }
@@ -232,6 +235,9 @@ pub fn read_amp(path: &Path) -> AmpSettings {
     if let Some(on) = map.get("cover_colours").and_then(Value::as_bool) {
         settings.cover_colours = on;
     }
+    if let Some(on) = map.get("waterfall_hd").and_then(Value::as_bool) {
+        settings.waterfall_hd = on;
+    }
     settings
 }
 
@@ -253,6 +259,7 @@ pub fn write_amp(path: &Path, settings: &AmpSettings) -> std::io::Result<()> {
     map.insert("loudness_target".into(), json!(settings.loudness_target));
     map.insert("crossfade".into(), json!(settings.crossfade));
     map.insert("cover_colours".into(), json!(settings.cover_colours));
+    map.insert("waterfall_hd".into(), json!(settings.waterfall_hd));
     write_object(path, &map)
 }
 
@@ -775,6 +782,7 @@ mod tests {
             loudness_target: -14.0,
             crossfade: 4.5,
             cover_colours: false,
+            waterfall_hd: true,
         };
         write_amp(&path, &settings).unwrap();
         let back = read_amp(&path);
@@ -782,6 +790,7 @@ mod tests {
         assert_eq!(back.loudness_target, -14.0);
         assert_eq!(back.crossfade, 4.5);
         assert!(!back.cover_colours);
+        assert!(back.waterfall_hd);
         assert!(AmpSettings::default().cover_colours);
         assert_eq!(back.replay_gain, "album");
         assert_eq!(back.preamp_db, 15.0);

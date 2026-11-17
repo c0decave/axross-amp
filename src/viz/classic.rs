@@ -5,14 +5,14 @@
 // (bars, peaks and their places go in step: an index reads best)
 #![allow(clippy::needless_range_loop)]
 
-use super::{Canvas, Frame, Pen, Scheme, VizState, mix, readable_on};
+use super::{Canvas, Frame, Pen, Scheme, VizState, glow, mix, readable_on};
 use crate::analyzer::Analyzer;
 use egui::{Align2, Color32, FontId, Pos2, Rect, pos2, vec2};
 use std::f32::consts::{PI, TAU};
 
 /// The starfield: stars, their drift in silence and with full bass, the
 /// nearest depth (axross's STAR_*).
-const STAR_COUNT: usize = 300;
+const STAR_COUNT: usize = 640;
 const STAR_DRIFT: f32 = 0.15;
 const STAR_BOOST: f32 = 1.2;
 const STAR_NEAR: f32 = 0.04;
@@ -49,6 +49,8 @@ const BELL_POINTS: usize = 25;
 /// The scopes: points of the stereo scope, the parts it fades in.
 const LISSAJOUS_POINTS: usize = 512;
 const LISSAJOUS_FADE: usize = 4;
+/// Frames of the Lissajous figure kept, fading, behind the newest.
+const LISSAJOUS_KEPT: usize = 6;
 /// The width of the traces (axross: one pixel; here a little more, as
 /// egui's lines are antialiased at their edges).
 const TRACE: f32 = 1.2;
@@ -62,6 +64,11 @@ pub struct State {
     /// The ring's bars, far ones first, for its bar count.
     ring_order: Vec<usize>,
     seed: u32,
+    /// The Lissajous figures before (x, y -1..1), LISSAJOUS_KEPT of
+    /// LISSAJOUS_POINTS, a ring; the next to write, how many there are.
+    figures: Vec<[f32; 2]>,
+    figure_at: usize,
+    figures_kept: usize,
 }
 
 impl State {
@@ -109,6 +116,10 @@ impl Area {
 }
 
 pub fn draw(f: &Frame<'_>, key: &str, state: &mut VizState) {
+    if key == "waterfall" && state.waterfall_hd {
+        super::analysis::waterfall_hd(f, state);
+        return;
+    }
     let g = Area::of(f.rect);
     let (a, s) = (f.a, f.s);
     let cv = &mut state.canvas;
@@ -128,7 +139,7 @@ pub fn draw(f: &Frame<'_>, key: &str, state: &mut VizState) {
         "ribbon" => ribbon(f, g, cv),
         "kaleidoscope" => kaleidoscope(f, g, cv),
         "scope" => scope(f, g, cv),
-        "lissajous" => lissajous(f, g, cv),
+        "lissajous" => lissajous(f, g, cv, st),
         "vu" => vu(f, g, cv),
         "starfield" => starfield(f, g, cv, st),
         _ => spectrum(f.painter, g, a, s, cv),
@@ -1020,11 +1031,35 @@ fn scope(f: &Frame<'_>, g: Area, cv: &mut Canvas) {
     });
 }
 
-fn lissajous(f: &Frame<'_>, g: Area, cv: &mut Canvas) {
+fn lissajous(f: &Frame<'_>, g: Area, cv: &mut Canvas, st: &mut State) {
     let (a, s) = (f.a, f.s);
     let (cx, cy) = (g.w / 2.0, g.h / 2.0);
     let reach = cx.min(cy) - 3.0;
     let diagonal = reach * std::f32::consts::FRAC_1_SQRT_2;
+    // the figure now (mid and side, -1..1), kept for the frames after
+    let count = a.stereo.len();
+    if st.figures.len() != LISSAJOUS_KEPT * LISSAJOUS_POINTS {
+        st.figures = vec![[0.0; 2]; LISSAJOUS_KEPT * LISSAJOUS_POINTS];
+        st.figures_kept = 0;
+    }
+    if count >= 2 && f.dt > 0.0 {
+        let root = std::f32::consts::FRAC_1_SQRT_2;
+        let at = st.figure_at * LISSAJOUS_POINTS;
+        for k in 0..LISSAJOUS_POINTS {
+            let [l, r] = a.stereo[k * (count - 1) / (LISSAJOUS_POINTS - 1)];
+            st.figures[at + k] = [
+                ((r - l) * root).clamp(-1.0, 1.0),
+                ((l + r) * root).clamp(-1.0, 1.0),
+            ];
+        }
+        st.figure_at = (st.figure_at + 1) % LISSAJOUS_KEPT;
+        st.figures_kept = (st.figures_kept + 1).min(LISSAJOUS_KEPT);
+    }
+    let figures = &st.figures;
+    let (newest, kept) = (
+        (st.figure_at + LISSAJOUS_KEPT - 1) % LISSAJOUS_KEPT,
+        st.figures_kept,
+    );
     cv.draw(f.painter, |pen| {
         let grid = s.grid();
         pen.segment(g.p(cx - reach, cy), g.p(cx + reach, cy), 1.0, grid);
@@ -1037,33 +1072,35 @@ fn lissajous(f: &Frame<'_>, g: Area, cv: &mut Canvas) {
                 grid,
             );
         }
-        let count = a.stereo.len();
-        if count < 2 {
+        if kept == 0 {
             return;
         }
-        // like a phosphor screen: the older part fades into the background
-        let root = std::f32::consts::FRAC_1_SQRT_2;
-        let point = |k: usize| {
-            let [l, r] = a.stereo[k * (count - 1) / (LISSAJOUS_POINTS - 1)];
-            let x = ((r - l) * root).clamp(-1.0, 1.0);
-            let y = ((l + r) * root).clamp(-1.0, 1.0);
+        let point = |figure: usize, k: usize| {
+            let [x, y] = figures[figure * LISSAJOUS_POINTS + k];
             g.p(cx + x * reach, cy - y * reach)
         };
+        // like a phosphor screen: the figures before still glow, fading,
+        // in the middle colour
+        for age in (1..kept).rev() {
+            let figure = (newest + LISSAJOUS_KEPT - age) % LISSAJOUS_KEPT;
+            pen.points.clear();
+            for k in 0..LISSAJOUS_POINTS {
+                pen.points.push(point(figure, k));
+            }
+            let fade = 1.0 - age as f32 / LISSAJOUS_KEPT as f32;
+            pen.line(1.0, mix(s.background, s.mid, 0.45 * fade * fade));
+        }
+        // the newest: its older part fading into the background, with a glow
         let size = (LISSAJOUS_POINTS - 1).div_ceil(LISSAJOUS_FADE);
         for part in 0..LISSAJOUS_FADE {
             let (start, stop) = (part * size, ((part + 1) * size + 1).min(LISSAJOUS_POINTS));
             pen.points.clear();
             for k in start..stop {
-                pen.points.push(point(k));
+                pen.points.push(point(newest, k));
             }
-            pen.line(
-                1.0,
-                mix(
-                    s.background,
-                    s.high,
-                    (part + 1) as f32 / LISSAJOUS_FADE as f32,
-                ),
-            );
+            let k = (part + 1) as f32 / LISSAJOUS_FADE as f32;
+            pen.line(4.0, glow(s.high, 0.14 * k));
+            pen.line(TRACE, mix(s.background, s.high, k));
         }
     });
     let font = FontId::proportional(12.0);
@@ -1164,7 +1201,16 @@ fn starfield(f: &Frame<'_>, g: Area, cv: &mut Canvas, st: &mut State) {
     }
     let (cx, cy) = (g.w / 2.0, g.h / 2.0);
     let stars = &st.stars;
+    // (how far a star's trail reaches back: further the faster they fly)
+    let trail = 0.02 + speed * 0.1;
     cv.draw(f.painter, |pen| {
+        // a faint glow where they come from, swelling with the bass
+        pen.radial(
+            g.p(cx, cy),
+            cx.min(cy) * (0.6 + 0.4 * a.bass),
+            glow(s.low, 0.06 + 0.12 * a.bass),
+            Color32::TRANSPARENT,
+        );
         for [x, y, z] in stars {
             let (colour, size) = match *z {
                 d if d >= 0.75 => (s.low, 1.0),
@@ -1173,12 +1219,28 @@ fn starfield(f: &Frame<'_>, g: Area, cv: &mut Canvas, st: &mut State) {
                 _ => (s.peak, 3.0),
             };
             let p = g.p(cx + x / z * cx, cy + y / z * cy);
-            if f.rect.expand(2.0).contains(p) {
-                if size > 2.0 {
-                    pen.circle(p, size / 2.0, colour);
-                } else {
-                    pen.rect(Rect::from_center_size(p, vec2(size, size)), colour);
-                }
+            if !f.rect.expand(2.0).contains(p) {
+                continue;
+            }
+            // its trail: where it was a moment ago, fading
+            let back = z + trail;
+            let q = g.p(cx + x / back * cx, cy + y / back * cy);
+            if (p - q).length() > 1.0 {
+                pen.quad(
+                    [
+                        q,
+                        q,
+                        p + (p - q).normalized().rot90() * size * 0.5,
+                        p - (p - q).normalized().rot90() * size * 0.5,
+                    ],
+                    [Color32::TRANSPARENT, Color32::TRANSPARENT, colour, colour],
+                );
+            }
+            if size > 2.0 {
+                pen.radial(p, size * 3.0, glow(colour, 0.35), Color32::TRANSPARENT);
+                pen.circle(p, size / 2.0, colour);
+            } else {
+                pen.rect(Rect::from_center_size(p, vec2(size, size)), colour);
             }
         }
     });

@@ -12,7 +12,7 @@
 #![allow(clippy::needless_range_loop)]
 
 use super::gpu::{self, Shader, Uniforms};
-use super::{Frame, Pen, VizState, mix, random};
+use super::{Frame, Pen, VizState, glow, mix, random};
 use crate::analyzer::Analyzer;
 use egui::{Color32, FontId, Pos2, Rect, Vec2, pos2, vec2};
 use std::f32::consts::{PI, TAU};
@@ -44,6 +44,15 @@ struct Building {
 }
 
 pub struct State {
+    /// The typography's rows behind the word: how far they have run.
+    marquee: f32,
+    /// The feedback face's preset, the one before it, how far the change
+    /// is (0..1), the beat it came on and the seconds since.
+    preset: usize,
+    preset_before: usize,
+    preset_blend: f32,
+    preset_beat: u64,
+    preset_age: f32,
     seed: u32,
     last_time: f64,
     clock: f32,
@@ -91,6 +100,12 @@ impl Default for State {
             sparks: Vec::with_capacity(SPARKS),
             last_beat: 0,
             since_ring: 0.0,
+            marquee: 0.0,
+            preset: 0,
+            preset_before: 0,
+            preset_blend: 1.0,
+            preset_beat: 0,
+            preset_age: 0.0,
             morph: (3, 4, 1.0),
             morph_turn: 0.0,
             spiro: (0.4, 0.4, 0.6),
@@ -156,17 +171,6 @@ pub fn draw(f: &Frame<'_>, key: &str, state: &mut VizState) {
     }
 }
 
-/// An additive colour (premultiplied, alpha 0): it lights what is below.
-fn glow(c: Color32, k: f32) -> Color32 {
-    let k = k.clamp(0.0, 1.0);
-    Color32::from_rgba_premultiplied(
-        (c.r() as f32 * k) as u8,
-        (c.g() as f32 * k) as u8,
-        (c.b() as f32 * k) as u8,
-        0,
-    )
-}
-
 /// A thin line from `a` to `b`, its colour from `ca` to `cb` (no feather:
 /// thousands of them a frame).
 fn streak(pen: &mut Pen<'_>, a: Pos2, b: Pos2, width: f32, ca: Color32, cb: Color32) {
@@ -207,16 +211,40 @@ fn shaded(f: &Frame<'_>, shader: Shader, state: &mut VizState, dt: f32) {
             picture = true;
         }
         Shader::Feedback => {
+            // a new preset each phrase (16 beats; 20 s without a beat),
+            // blended into over 2.5 s
+            st.preset_age += dt;
+            let phrase = a.beat.count >= st.preset_beat + 16;
+            if (phrase || st.preset_age > 20.0) && st.preset_blend >= 1.0 {
+                st.preset_before = st.preset;
+                st.preset = (st.preset + 1 + (st.random() * 2.0) as usize) % PRESETS.len();
+                st.preset_blend = 0.0;
+                st.preset_beat = a.beat.count;
+                st.preset_age = 0.0;
+            }
+            st.preset_blend = (st.preset_blend + dt / 2.5).min(1.0);
+            let b = st.preset_blend * st.preset_blend * (3.0 - 2.0 * st.preset_blend);
+            let (p0, p1) = (&PRESETS[st.preset_before], &PRESETS[st.preset]);
+            let lerp = |x: f32, y: f32| x + (y - x) * b;
             // the feedback's motion, a 60th of a second's worth scaled to
-            // this frame's (the same look at any frame rate): a slow turn
-            // that swings, a zoom the bass pulls, a swirl with the middle
+            // this frame's (the same look at any frame rate): a turn that
+            // swings, a zoom the bass pulls, a swirl with the middle
             let t = a.time as f32;
             let k = (dt * 60.0).clamp(0.0, 4.0);
-            let turn = (0.004 + 0.012 * (t * 0.13).sin() + 0.02 * a.beat.pulse) * k;
-            let zoom = 1.0 - (0.012 + 0.02 * a.bass) * k;
-            let swirl = (0.0015 + 0.004 * third(a, 1)) * k;
-            let decay = (0.955 + 0.03 * a.energy.min(1.0)).powf(k);
-            u = u.with_motion([turn, zoom, swirl, decay]);
+            let turn = (lerp(p0.turn, p1.turn)
+                + lerp(p0.swing, p1.swing) * (t * 0.13).sin()
+                + 0.02 * a.beat.pulse)
+                * k;
+            let zoom = 1.0 - (lerp(p0.zoom, p1.zoom) + lerp(p0.pull, p1.pull) * a.bass) * k;
+            let swirl = (lerp(p0.swirl, p1.swirl) + 0.004 * third(a, 1)) * k;
+            let decay = (lerp(p0.decay, p1.decay) + 0.03 * a.energy.min(1.0)).powf(k);
+            u = u
+                .with_motion([turn, zoom, swirl, decay])
+                .with_extra(1, [p0.wave, p1.wave, b, lerp(p0.warp, p1.warp)]);
+            u = u.with_extra(
+                2,
+                [lerp(p0.hue, p1.hue), lerp(p0.mirror, p1.mirror), 0.0, 0.0],
+            );
         }
         _ => {}
     }
@@ -227,6 +255,95 @@ fn shaded(f: &Frame<'_>, shader: Shader, state: &mut VizState, dt: f32) {
         gpu::paint(painter, pen, gpu, clip, clip, u, picture, second, live)
     });
 }
+
+pub fn preset(st: &State) -> usize {
+    st.preset
+}
+
+/// A look of the feedback face (MilkDrop's presets, a few of them): its
+/// motion (a 60th of a second's), the wave it draws, how its swirl folds,
+/// how fast its colours turn, and whether it is mirrored.
+struct Preset {
+    turn: f32,
+    swing: f32,
+    zoom: f32,
+    pull: f32,
+    swirl: f32,
+    decay: f32,
+    /// 0 a ring of the bands, 1 a scope's line, 2 a spiral, 3 orbits
+    wave: f32,
+    warp: f32,
+    hue: f32,
+    mirror: f32,
+}
+
+const PRESETS: [Preset; 5] = [
+    // a halo drawn inwards
+    Preset {
+        turn: 0.004,
+        swing: 0.012,
+        zoom: 0.012,
+        pull: 0.02,
+        swirl: 0.0015,
+        decay: 0.955,
+        wave: 0.0,
+        warp: 6.0,
+        hue: 0.07,
+        mirror: 0.0,
+    },
+    // a scope's line flowing outwards
+    Preset {
+        turn: -0.002,
+        swing: 0.006,
+        zoom: -0.008,
+        pull: -0.01,
+        swirl: 0.003,
+        decay: 0.95,
+        wave: 1.0,
+        warp: 3.0,
+        hue: 0.12,
+        mirror: 0.0,
+    },
+    // a vortex: spiral arms turning in
+    Preset {
+        turn: 0.02,
+        swing: 0.004,
+        zoom: 0.018,
+        pull: 0.015,
+        swirl: 0.001,
+        decay: 0.96,
+        wave: 2.0,
+        warp: 9.0,
+        hue: 0.05,
+        mirror: 0.0,
+    },
+    // orbits in a mirror
+    Preset {
+        turn: 0.006,
+        swing: 0.01,
+        zoom: 0.006,
+        pull: 0.02,
+        swirl: 0.006,
+        decay: 0.955,
+        wave: 3.0,
+        warp: 4.0,
+        hue: 0.1,
+        mirror: 1.0,
+    },
+    // a bloom: a ring pulled in hard, mirrored, swirling finely
+    Preset {
+        turn: 0.0,
+        swing: 0.008,
+        zoom: 0.025,
+        pull: 0.03,
+        swirl: 0.007,
+        decay: 0.95,
+        wave: 0.0,
+        warp: 12.0,
+        hue: 0.15,
+        mirror: 1.0,
+    },
+];
 
 /// Gray-Scott reaction-diffusion on a small grid: spots and stripes that
 /// grow, fed a little faster by the sound, a new seed at each beat.
@@ -530,12 +647,39 @@ fn synthwave(f: &Frame<'_>, pen: &mut Pen<'_>, st: &mut State, dt: f32) {
         let top = y0;
         let bottom = (y1 - (y1 - y0) * gap).min(horizon);
         let half = |y: f32| (radius * radius - (y - c.y) * (y - c.y)).max(0.0).sqrt();
-        let hh = half((top + bottom) / 2.0);
-        let t = (mid - (c.y - radius)) / (2.0 * radius);
-        pen.rect(
-            Rect::from_min_max(pos2(c.x - hh, top), pos2(c.x + hh, bottom)),
-            mix(s.peak, s.high, t.clamp(0.0, 1.0)),
-        );
+        let colour = |y: f32| {
+            let t = (y - (c.y - radius)) / (2.0 * radius);
+            mix(s.peak, s.high, t.clamp(0.0, 1.0))
+        };
+        // (the round edge followed in slices of a pixel or two, each a
+        // trapezoid with a pixel's soft edge: no steps)
+        let slices = ((bottom - top) / 2.0).ceil().max(1.0) as usize;
+        for k in 0..slices {
+            let ya = top + (bottom - top) * k as f32 / slices as f32;
+            let yb = top + (bottom - top) * (k + 1) as f32 / slices as f32;
+            let (wa, wb) = (half(ya), half(yb));
+            let (ca, cb) = (colour(ya), colour(yb));
+            pen.quad(
+                [
+                    pos2(c.x - wa, ya),
+                    pos2(c.x + wa, ya),
+                    pos2(c.x + wb, yb),
+                    pos2(c.x - wb, yb),
+                ],
+                [ca, ca, cb, cb],
+            );
+            for side in [-1.0f32, 1.0] {
+                pen.quad(
+                    [
+                        pos2(c.x + side * wa, ya),
+                        pos2(c.x + side * (wa + 1.0), ya),
+                        pos2(c.x + side * (wb + 1.0), yb),
+                        pos2(c.x + side * wb, yb),
+                    ],
+                    [ca, Color32::TRANSPARENT, Color32::TRANSPARENT, cb],
+                );
+            }
+        }
     }
     // mountains from the spectrum, mirrored round the middle
     let n = 48;
@@ -654,12 +798,22 @@ fn skyline(f: &Frame<'_>, pen: &mut Pen<'_>, st: &mut State) {
             }
         }
     }
-    // the sky and the moon
+    // the sky, its stars and the moon
     pen.vertical(
         Rect::from_min_max(r.min, pos2(r.right(), water)),
         s.background,
         mix(s.background, s.low, 0.35),
     );
+    let t = a.time as f32;
+    for k in 0..90u32 {
+        let x = r.left() + hash(k, 21) * w;
+        let y = r.top() + hash(k, 22) * (water - r.top()) * 0.6;
+        let twinkle = 0.5 + 0.5 * (t * (0.7 + 2.0 * hash(k, 23)) + k as f32).sin();
+        pen.rect(
+            Rect::from_center_size(pos2(x, y), vec2(1.2, 1.2)),
+            mix(s.background, s.peak, 0.15 + 0.45 * twinkle * hash(k, 24)),
+        );
+    }
     let moon = pos2(r.left() + w * 0.8, r.top() + h * 0.2);
     pen.radial(
         moon,
@@ -668,6 +822,20 @@ fn skyline(f: &Frame<'_>, pen: &mut Pen<'_>, st: &mut State) {
         Color32::TRANSPARENT,
     );
     pen.circle(moon, h * 0.055, mix(s.peak, s.high, 0.15));
+    // searchlights from behind the city, sweeping, brighter as it gets loud
+    for k in 0..3u32 {
+        let foot = pos2(r.left() + w * (0.2 + 0.3 * k as f32), water);
+        let angle = (t * (0.25 + 0.1 * k as f32) + k as f32 * 2.1).sin() * 0.55;
+        let reach = h * 1.1;
+        let dir = vec2(angle.sin(), -angle.cos());
+        let side = vec2(-dir.y, dir.x) * reach * 0.09;
+        let tip = foot + dir * reach;
+        let beam = glow(s.high, 0.05 + 0.18 * a.energy.min(1.0) + 0.1 * a.beat.pulse);
+        pen.quad(
+            [foot, foot, tip + side, tip - side],
+            [beam, beam, Color32::TRANSPARENT, Color32::TRANSPARENT],
+        );
+    }
     let step = (a.time * 6.0) as u32;
     let treble = third(a, 2);
     let draw_city = |pen: &mut Pen<'_>, mirror: bool| {
@@ -694,39 +862,108 @@ fn skyline(f: &Frame<'_>, pen: &mut Pen<'_>, st: &mut State) {
                 colour
             };
             pen.rect(body, colour);
-            if b.back || mirror {
+            if b.back {
+                // a few dim windows far off
+                if !mirror {
+                    for j in 0..((height - 10.0) / 9.0).max(0.0) as u32 {
+                        let lit = hash(b.seed * 131 + j, step / 12);
+                        if lit < 0.3 {
+                            let x = body.left() + 2.0 + lit * (b.width - 6.0).max(0.0) * 3.0;
+                            let y = body.top() + 6.0 + j as f32 * 9.0;
+                            pen.rect(
+                                Rect::from_min_size(
+                                    pos2(x.min(body.right() - 4.0), y),
+                                    vec2(2.0, 3.0),
+                                ),
+                                mix(s.background, s.high, 0.35),
+                            );
+                        }
+                    }
+                }
                 continue;
             }
             // the windows: more of them lit with the treble, flickering
             let (cols, rows) = (
-                ((b.width - 4.0) / 6.0) as u32,
-                ((height - 6.0) / 8.0) as u32,
+                ((b.width - 4.0) / 5.0) as u32,
+                ((height - 6.0) / 7.0) as u32,
             );
             for i in 0..cols {
                 for j in 0..rows {
                     let lit = hash(b.seed * 977 + i * 31 + j, step / 3 + (i + j) % 5);
                     if lit < 0.25 + 0.6 * treble * level.max(0.3) {
-                        let x = body.left() + 3.0 + i as f32 * 6.0;
-                        let y = body.bottom() - 6.0 - (j + 1) as f32 * 8.0 + 3.0;
+                        let x = body.left() + 3.0 + i as f32 * 5.0;
                         let c = if lit < 0.05 {
                             s.peak
                         } else {
                             s.at(0.55 + 0.45 * lit)
                         };
-                        pen.rect(Rect::from_min_size(pos2(x, y), vec2(3.0, 4.0)), c);
+                        if mirror {
+                            // (in the water: a streak that shivers)
+                            let y = body.top() + 2.0 + (j as f32 * 7.0) * 0.35;
+                            if y < body.bottom() {
+                                let shift = (y * 0.5 + t * 3.0).sin() * 1.5;
+                                pen.rect(
+                                    Rect::from_min_size(pos2(x + shift, y), vec2(2.5, 1.5)),
+                                    glow(c, 0.45),
+                                );
+                            }
+                        } else {
+                            let y = body.bottom() - 6.0 - (j + 1) as f32 * 7.0 + 3.0;
+                            pen.rect(Rect::from_min_size(pos2(x, y), vec2(2.5, 3.5)), c);
+                        }
                     }
                 }
+            }
+            if mirror {
+                continue;
+            }
+            // the roof's neon, lit by its band
+            let roof = s.at(0.4 + 0.6 * level);
+            let (l, rr) = (
+                pos2(body.left(), body.top()),
+                pos2(body.right(), body.top()),
+            );
+            pen.segment(l, rr, 6.0, glow(roof, 0.12 + 0.3 * level));
+            pen.segment(l, rr, 1.5, mix(s.background, roof, 0.4 + 0.6 * level));
+            // a mast on some, its light blinking on the beat
+            if b.seed % 3 == 0 && b.width > 22.0 {
+                let foot = pos2(body.center().x, body.top());
+                let tip = foot - vec2(0.0, 8.0 + 10.0 * hash(b.seed, 3));
+                pen.segment(foot, tip, 1.0, mix(s.background, s.low, 0.6));
+                let blink = if (a.beat.count + b.seed as u64).is_multiple_of(2) {
+                    a.beat.pulse
+                } else {
+                    0.15
+                };
+                pen.radial(
+                    tip,
+                    6.0,
+                    glow(s.high, 0.2 + 0.7 * blink),
+                    Color32::TRANSPARENT,
+                );
+                pen.circle(tip, 1.4, mix(s.background, s.high, 0.4 + 0.6 * blink));
             }
         }
     };
     draw_city(pen, false);
+    // the road along the water: lights coming and going
+    let speed = 40.0 + 220.0 * a.energy.min(1.0);
+    for k in 0..36u32 {
+        let way = if k % 2 == 0 { 1.0 } else { -1.0 };
+        let x = (hash(k, 31) * w + way * t * speed * (0.7 + 0.6 * hash(k, 32))).rem_euclid(w);
+        let c = if way > 0.0 { s.peak } else { s.high };
+        let y = water - 2.0 + if way > 0.0 { 0.0 } else { 1.5 };
+        pen.rect(
+            Rect::from_min_size(pos2(r.left() + x, y), vec2(3.0, 1.2)),
+            mix(s.background, c, 0.8),
+        );
+    }
     // the water: the city's reflection, broken into rippling lines
     pen.rect(
         Rect::from_min_max(pos2(r.left(), water), r.max),
         mix(s.background, s.low, 0.08),
     );
     draw_city(pen, true);
-    let t = a.time as f32;
     let mut y = water + 2.0;
     let mut k = 0;
     while y < r.bottom() {
@@ -1052,7 +1289,7 @@ fn beatrings(f: &Frame<'_>, pen: &mut Pen<'_>, st: &mut State, dt: f32) {
         let hue = st.random();
         let speed = 0.5 + 0.3 * st.random();
         st.rings.push([0.0, strength, hue, speed]);
-        for _ in 0..(16.0 * strength) as usize {
+        for _ in 0..(28.0 * strength) as usize {
             if st.sparks.len() == SPARKS {
                 st.sparks.remove(0);
             }
@@ -1072,42 +1309,64 @@ fn beatrings(f: &Frame<'_>, pen: &mut Pen<'_>, st: &mut State, dt: f32) {
         spark[4] += dt;
     }
     st.sparks.retain(|k| k[4] < 1.4);
-    // the spectrum round the middle, faint
-    let n = a.bars.len().max(1);
     let base = r.width().min(r.height()) * 0.14;
-    for i in 0..n {
-        let angle = i as f32 / n as f32 * TAU - PI / 2.0;
-        let u = Vec2::angled(angle);
-        let v = a.bars[i];
-        streak(
-            pen,
-            c + u * base,
-            c + u * (base + v * base * 1.6),
-            2.0,
-            mix(s.background, s.low, 0.2),
-            mix(s.background, s.at(v), 0.5),
-        );
+    let t = a.time as f32;
+    // a sonar's grid behind, turning slowly, brighter on the beat
+    let grid = glow(s.low, 0.07 + 0.08 * a.beat.pulse);
+    for k in 1..=7 {
+        pen.ring(c, base * k as f32 * 0.9, 1.0, grid);
     }
+    for k in 0..24 {
+        let u = Vec2::angled(k as f32 / 24.0 * TAU + t * 0.05);
+        pen.segment(c + u * base * 0.9, c + u * reach, 1.0, grid);
+    }
+    // the spectrum round the middle, mirrored left and right
+    let n = a.bars.len().max(1);
+    for i in 0..n {
+        let v = a.bars[i];
+        for side in [1.0f32, -1.0] {
+            let angle = -PI / 2.0 + side * (i as f32 + 0.5) / n as f32 * PI;
+            let u = Vec2::angled(angle);
+            streak(
+                pen,
+                c + u * base,
+                c + u * (base + v * base * 1.8),
+                2.5,
+                mix(s.background, s.low, 0.35),
+                mix(s.background, s.at(v), 0.9),
+            );
+        }
+    }
+    // each ring rippled by the spectrum round it as it goes out
     for ring in &st.rings {
         let [age, strength, hue, speed] = *ring;
         let life = 1.0 - age / 2.2;
         let radius = base + age * reach * speed;
-        let width = (2.0 + 10.0 * strength) * life;
+        let width = (1.5 + 8.0 * strength) * life;
         let colour = mix(s.background, s.at(0.3 + 0.7 * hue), life * life);
-        pen.ring(c, radius, width, colour);
-        pen.ring(
-            c,
-            radius,
-            width * 3.0,
-            glow(s.at(0.3 + 0.7 * hue), 0.12 * life),
-        );
+        pen.points.clear();
+        for k in 0..120 {
+            let angle = k as f32 / 120.0 * TAU;
+            let fold = (angle / PI - 1.0).abs();
+            let ripple = band(a, 1.0 - fold) * base * 0.35 * life * strength;
+            pen.points
+                .push(c + Vec2::angled(angle - PI / 2.0) * (radius + ripple));
+        }
+        pen.outline(width * 3.0, glow(s.at(0.3 + 0.7 * hue), 0.12 * life));
+        pen.outline(width, colour);
     }
+    // sparks with their trails
     let size = r.width().min(r.height()) * 0.5;
-    for [x, y, _, _, age] in &st.sparks {
+    for [x, y, vx, vy, age] in &st.sparks {
         let life = 1.0 - age / 1.4;
-        pen.circle(
-            c + vec2(*x, *y) * size,
-            1.0 + 2.0 * life,
+        let at = c + vec2(*x, *y) * size;
+        let tail = at - vec2(*vx, *vy) * size * 0.15;
+        streak(
+            pen,
+            tail,
+            at,
+            1.0 + 1.5 * life,
+            Color32::TRANSPARENT,
             mix(s.background, s.peak, life),
         );
     }
@@ -1161,11 +1420,35 @@ fn typography(f: &Frame<'_>, pen: &mut Pen<'_>, st: &mut State, dt: f32) {
     let uv = vec2(1.0 / atlas[0].max(1) as f32, 1.0 / atlas[1].max(1) as f32);
     let c = r.center();
     let t = a.time as f32;
+    // behind: the whole title in rows running both ways, faint, faster
+    // as it gets louder
+    st.marquee += dt * (18.0 + 90.0 * a.energy.min(1.0));
+    let small = FontId::proportional((base * 0.5).round().max(16.0));
+    let line = f
+        .painter
+        .layout_no_wrap(format!("{}  ·  ", f.title), small, Color32::WHITE);
+    let lw = line.size().x.max(40.0);
+    let rows = ((r.height() / (line.size().y * 1.25)).ceil() as i32).max(1);
+    for row in 0..rows {
+        let y = r.top() + (row as f32 + 0.5) * r.height() / rows as f32;
+        let way = if row % 2 == 0 { 1.0 } else { -1.0 };
+        let shift =
+            (st.marquee * way * (0.6 + 0.25 * row as f32) + row as f32 * 97.0).rem_euclid(lw);
+        let colour = glow(
+            if row % 2 == 0 { s.low } else { s.mid },
+            0.07 + 0.06 * a.beat.pulse,
+        );
+        let mut x = r.left() - lw + shift + lw / 2.0;
+        while x - lw / 2.0 < r.right() {
+            put_text(pen, &line, uv, pos2(x, y), 1.0, 0.0, colour, 0.0, 0);
+            x += lw;
+        }
+    }
     let fit = |g: &egui::Galley| {
         (r.width() * 0.84 / g.size().x.max(1.0)).min(r.height() * 0.5 / g.size().y.max(1.0))
     };
-    // the word before goes up and out as the new one comes up from below:
-    // each a word's height apart, never over each other
+    // the word before goes up and out as the new one comes up from below,
+    // a letter after another
     let travel = (st.word_age / 0.28).min(1.0);
     let ease = travel * travel * (3.0 - 2.0 * travel);
     let word = &st.words[st.word];
@@ -1184,32 +1467,39 @@ fn typography(f: &Frame<'_>, pen: &mut Pen<'_>, st: &mut State, dt: f32) {
         let colour = mix(s.background, s.mid, 1.0 - ease);
         put_text(pen, &old, uv, at, fit(&old), 0.0, colour, 0.0, 1);
     }
-    let at = c + vec2(0.0, (1.0 - ease) * height * 1.1);
     let tilt = (t * 0.6).sin() * 0.025;
-    // a glow behind, the word in the scheme's loud colour, its peak on the beat
-    put_text(
-        pen,
-        &galley,
-        uv,
-        at,
-        scale * 1.02,
-        tilt,
-        glow(s.mid, 0.35 * ease),
-        0.0,
-        2,
-    );
-    let colour = mix(mix(s.high, s.peak, 0.35), s.peak, a.beat.pulse * 0.8);
-    put_text(
-        pen,
-        &galley,
-        uv,
-        at,
-        scale,
-        tilt,
-        mix(s.background, colour, ease),
-        0.0,
-        3,
-    );
+    let letters = galley
+        .rows
+        .iter()
+        .map(|row| row.row.visuals.mesh.vertices.len() / 4)
+        .sum::<usize>()
+        .max(1) as f32;
+    let age = st.word_age;
+    let pulse = a.beat.pulse;
+    let arrive = move |glyph: u32| {
+        let k = ((age - (glyph as f32 - 1.0) * 0.035) / 0.25).clamp(0.0, 1.0);
+        let k = k * k * (3.0 - 2.0 * k);
+        let bounce = pulse * (glyph as f32 * 1.3 + t * 6.0).sin() * 0.06;
+        (vec2(0.0, ((1.0 - k) * 0.7 - bounce) * height), k)
+    };
+    // a glow behind, then the word: quiet to loud along it, its peak on
+    // the beat
+    put_glyphs(pen, &galley, uv, c, scale * 1.02, tilt, |glyph| {
+        let (lift, k) = arrive(glyph);
+        (lift, glow(s.mid, 0.35 * k))
+    });
+    put_glyphs(pen, &galley, uv, c, scale, tilt, |glyph| {
+        let (lift, k) = arrive(glyph);
+        let along = (glyph as f32 - 1.0) / (letters - 1.0).max(1.0);
+        let colour = mix(mix(s.high, s.peak, 0.35 * along), s.peak, pulse * 0.8);
+        (lift, mix(s.background, colour, k))
+    });
+    // a bar under it, as wide as it is loud
+    let wide = galley.size().x * scale * (0.25 + 0.75 * a.energy.min(1.0)) * ease;
+    let y = c.y + height * 0.55;
+    let (l, rr) = (pos2(c.x - wide / 2.0, y), pos2(c.x + wide / 2.0, y));
+    pen.segment(l, rr, 10.0, glow(s.mid, 0.15 + 0.25 * pulse));
+    pen.segment(l, rr, 3.0, mix(s.mid, s.peak, pulse * 0.6));
     // the spectrum as a line under it
     let y = r.bottom() - 6.0;
     let n = a.bars.len().max(1);
@@ -1237,25 +1527,43 @@ fn put_text(
     shake: f32,
     salt: u32,
 ) {
+    put_glyphs(pen, galley, uv, at, scale, angle, |glyph| {
+        let jitter = if shake > 0.0 {
+            vec2(hash(glyph, salt + 17) - 0.5, hash(glyph, salt + 29) - 0.5) * shake * 2.0
+        } else {
+            Vec2::ZERO
+        };
+        (jitter, colour)
+    });
+}
+
+/// A laid out word's glyphs into the mesh, each glyph (counted from 1)
+/// moved and coloured by `each`.
+fn put_glyphs(
+    pen: &mut Pen<'_>,
+    galley: &egui::Galley,
+    uv: Vec2,
+    at: Pos2,
+    scale: f32,
+    angle: f32,
+    each: impl Fn(u32) -> (Vec2, Color32),
+) {
     let centre = galley.rect.center();
     let (sin, cos) = angle.sin_cos();
     let mut glyph = 0u32;
+    let mut now = (Vec2::ZERO, Color32::TRANSPARENT);
     for row in &galley.rows {
         let mesh = &row.row.visuals.mesh;
         let base = pen.mesh.vertices.len() as u32;
         for (k, v) in mesh.vertices.iter().enumerate() {
             if k % 4 == 0 {
                 glyph += 1;
+                now = each(glyph);
             }
-            let jitter = if shake > 0.0 {
-                vec2(hash(glyph, salt + 17) - 0.5, hash(glyph, salt + 29) - 0.5) * shake * 2.0
-            } else {
-                Vec2::ZERO
-            };
-            let p = (v.pos + row.pos.to_vec2() - centre.to_vec2()).to_vec2() * scale + jitter;
+            let p = (v.pos + row.pos.to_vec2() - centre.to_vec2()).to_vec2() * scale + now.0;
             let mut vertex = *v;
             vertex.pos = at + vec2(p.x * cos - p.y * sin, p.x * sin + p.y * cos);
-            vertex.color = colour;
+            vertex.color = now.1;
             vertex.uv = pos2(v.uv.x * uv.x, v.uv.y * uv.y);
             pen.mesh.vertices.push(vertex);
         }

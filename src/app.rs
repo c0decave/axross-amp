@@ -1967,6 +1967,15 @@ impl App {
                 }
             });
         }
+        if ui
+            .checkbox(
+                &mut self.amp.waterfall_hd,
+                "Waterfall: smooth, high resolution",
+            )
+            .changed()
+        {
+            self.amp_dirty = true;
+        }
         ui.separator();
         let mut o = self.options.clone();
         ui.add(egui::Slider::new(&mut o.bars, 8..=128).text("Bars"));
@@ -2487,6 +2496,7 @@ impl App {
             )
         });
         let scheme = self.scheme();
+        self.viz_state.waterfall_hd = self.amp.waterfall_hd;
         let dt = self.last_frame.elapsed().as_secs_f32().clamp(0.0, 0.2);
         self.last_frame = Instant::now();
         let written = self.engine.shared.tap_into(&mut self.tap);

@@ -490,3 +490,71 @@ fn a_new_face_fades_in_over_the_one_before() {
         );
     }
 }
+
+#[test]
+fn the_waterfall_at_high_resolution_is_smooth() {
+    // the same sound in axross's bars and in the fine spectrum's bands:
+    // not in blocks of one colour (a bar's width, a row's height) but
+    // changing from pixel to pixel; by the GPU and by the CPU alike
+    let mut pictures = Vec::new();
+    for (hd, gpu) in [(false, true), (true, true), (true, false)] {
+        let mut h = faces::harness("waterfall", vec2(620.0, 300.0), gpu, 10.0);
+        h.state_mut().state.waterfall_hd = hd;
+        // (the history full: 256 steps at 30 a second)
+        for _ in 0..270 {
+            faces::frame(&mut h);
+        }
+        let picture = h.render().unwrap();
+        if hd && gpu {
+            picture.save(shots().join("waterfall-hd.png")).unwrap();
+        }
+        pictures.push(picture);
+    }
+    let measure = |img: &image::RgbaImage| {
+        let mut colours = std::collections::HashSet::new();
+        let (mut same, mut pairs) = (0usize, 0usize);
+        for y in (8..img.height() - 8).step_by(2) {
+            for x in 8..img.width() - 9 {
+                let (p, q) = (img.get_pixel(x, y), img.get_pixel(x + 1, y));
+                colours.insert([p[0] / 4, p[1] / 4, p[2] / 4]);
+                pairs += 1;
+                if p == q {
+                    same += 1;
+                }
+            }
+        }
+        (colours.len(), same as f32 / pairs as f32)
+    };
+    let (bars, hd) = (measure(&pictures[0]), measure(&pictures[1]));
+    println!("bars: {bars:?}, high resolution: {hd:?} (colours, neighbours alike)");
+    assert!(bars.1 > 0.8 && hd.1 < 0.3, "blocks: {bars:?} vs {hd:?}");
+    let similar = ssim(&pictures[1], &pictures[2]);
+    assert!(
+        similar > 0.8,
+        "the CPU's picture is not the GPU's: SSIM {similar}"
+    );
+}
+
+#[test]
+fn the_feedback_face_changes_its_preset_each_phrase() {
+    // a beat twice a second: a new preset after 16 of them (8 s), another
+    // after 16 more; drawn, each, by the GPU
+    let mut h = faces::harness("milkdrop", vec2(320.0, 180.0), true, 20.0);
+    let mut seen = vec![viz::feedback_preset(&h.state().state)];
+    for frame in 0..540 {
+        faces::frame(&mut h);
+        h.render().unwrap();
+        let now = viz::feedback_preset(&h.state().state);
+        if *seen.last().unwrap() != now {
+            seen.push(now);
+        }
+        if frame % 90 == 89 {
+            h.render()
+                .unwrap()
+                .save(shots().join(format!("milkdrop-{}.png", frame / 90)))
+                .unwrap();
+        }
+    }
+    println!("presets: {seen:?}");
+    assert!(seen.len() >= 3, "presets shown: {seen:?}");
+}

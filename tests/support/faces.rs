@@ -112,7 +112,7 @@ impl FaceApp {
             &self.options,
             1.0 / FPS,
             self.live,
-            viz::needs(self.key),
+            viz::needs_now(self.key, &self.state),
         );
     }
 

@@ -204,25 +204,34 @@ fn aurora(uv: vec2<f32>, aspect: f32) -> vec3<f32> {
     return c;
 }
 
-// Tunnel: rings coming at you, lit, the bands round them.
+// Tunnel: a dark tunnel of glowing lines coming at you - rings across it,
+// ribs along it, each lit by its band - a light at its end on the beat.
 fn tunnel(p: vec2<f32>) -> vec3<f32> {
     let t = u.t.x;
     let r = max(length(p), 1e-3);
     let a = atan2(p.y, p.x);
-    let depth = 0.4 / r + t * (0.6 + 1.4 * u.t.w);
-    let turn = a / TAU + 0.12 * sin(depth * 0.5 + u.m.x);
+    let depth = 0.45 / r + t * (0.7 + 1.6 * u.t.w);
+    let turn = a / TAU + 0.1 * sin(depth * 0.35 + u.m.x);
     // (folded round the circle: no seam where the angle wraps)
-    let level = band(abs(2.0 * fract(turn) - 1.0));
-    let ring = fract(depth * 1.5);
-    let seg = fract(turn * 12.0);
-    let groove = smoothstep(0.0, 0.08, ring) * smoothstep(1.0, 0.92, ring)
-        * smoothstep(0.0, 0.06, seg) * smoothstep(1.0, 0.94, seg);
-    let tile = cycle(floor(depth * 1.5) * 0.13 + level * 0.35);
-    let lit = 0.35 + 0.65 * level + 0.3 * u.t.y;
-    let fog = clamp(r * 1.9, 0.0, 1.0);
-    let edge = (1.0 - groove) * (0.4 + level);
-    let c = tile * groove * lit + colour(4) * edge * 0.55;
-    return mix(colour(0), c, fog) + colour(4) * pow(1.0 - fog, 6.0) * 0.4 * u.t.y;
+    let fold = abs(2.0 * fract(turn) - 1.0);
+    let level = band(fold);
+    // each line's distance in the picture's units: as thin far off as near
+    let rr = fract(depth * 3.0);
+    let ring_d = min(rr, 1.0 - rr) / 3.0 * r * r / 0.45;
+    let ss = fract(turn * 16.0);
+    let rib_d = min(ss, 1.0 - ss) / 16.0 * TAU * r;
+    let ring = exp(-ring_d / 0.010);
+    let rib = exp(-rib_d / 0.008);
+    // the walls between: dark, a checker of the scheme's tint
+    let checker = fract((floor(depth * 3.0) + floor(turn * 16.0)) * 0.5) * 2.0;
+    let wall = mix(colour(0), cycle(floor(depth * 3.0) * 0.04 + fold * 0.4), 0.10 + 0.22 * level)
+        * (0.75 + 0.25 * checker);
+    let line_colour = cycle(floor(depth * 3.0) * 0.04 + fold * 0.4 + 0.15);
+    let glow = ring * (0.35 + 1.1 * level + 0.5 * u.t.y) + rib * (0.2 + 0.8 * level);
+    let c = wall + line_colour * glow;
+    // into the dark far off, a light at the end
+    let fog = smoothstep(0.03, 0.6, r);
+    return mix(colour(0) * 0.6, c, fog) + colour(3) * exp(-r * 9.0) * (0.25 + 0.6 * u.t.y + 0.4 * u.t.z);
 }
 
 // Julia set: smooth escape colours and glowing orbit traps.
@@ -305,6 +314,20 @@ fn mel(uv: vec2<f32>) -> vec3<f32> {
     return magma(v);
 }
 
+// The waterfall at high resolution: the newest row at the bottom, moving
+// up between two steps; axross's waterfall colours.
+fn spectrogram(uv: vec2<f32>) -> vec3<f32> {
+    let size = vec2<f32>(textureDimensions(data));
+    let y = uv.y + u.face.z / size.y;
+    let v = textureSampleLevel(data, data_sampler, vec2<f32>(uv.x, y), 0.0).r;
+    if v < 0.15 {
+        return mix(colour(0), colour(1), v / 0.15);
+    } else if v < 0.6 {
+        return mix(colour(1), colour(2), (v - 0.15) / 0.45);
+    }
+    return mix(colour(2), colour(3), min((v - 0.6) / 0.4, 1.0));
+}
+
 // The goniometer's phosphor: what the beam drew, fading.
 fn phosphor(uv: vec2<f32>) -> vec3<f32> {
     let v = textureSampleLevel(data, data_sampler, uv, 0.0).r;
@@ -322,10 +345,14 @@ fn flyover(uv: vec2<f32>, aspect: f32, steps: i32) -> vec3<f32> {
     let t = u.t.x * (1.5 + 1.5 * u.t.z);
     let origin = vec3<f32>(0.0, 2.6, t);
     let dir = normalize(vec3<f32>(p.x, p.y - 0.18, 1.0));
-    let sky = mix(colour(0), mix(colour(2), colour(3), 0.5), clamp(0.35 - p.y, 0.0, 1.0) * 0.6);
+    // the night: dark above, a glow of the loud colour at the horizon
+    let horizon = mix(colour(0), colour(3), 0.35);
+    let sky = mix(horizon, colour(0) * 0.7, clamp((p.y + 0.12) * 2.2, 0.0, 1.0));
     let sun_dir = normalize(vec3<f32>(0.0, 0.12, 1.0));
-    let sun = pow(max(dot(dir, sun_dir), 0.0), 220.0) * (1.0 + 2.0 * u.t.y);
+    let facing = max(dot(dir, sun_dir), 0.0);
+    let sun = smoothstep(0.9975, 0.9985, facing);
     var d = 0.1;
+    var before = 0.1;
     var hit = false;
     var pos = origin;
     for (var k = 0; k < steps; k = k + 1) {
@@ -336,13 +363,38 @@ fn flyover(uv: vec2<f32>, aspect: f32, steps: i32) -> vec3<f32> {
             hit = true;
             break;
         }
+        before = d;
         d = d + max(gap * 0.45, 0.02 * d);
         if d > 40.0 {
             break;
         }
     }
+    if hit {
+        // (the surface itself, where the height above it is 0, found from
+        // the last two steps by the secant: no stairs of the steps' size)
+        var a0 = before;
+        var a1 = d;
+        var q = origin + dir * a0;
+        var g0 = q.y - terrain_height(q.x, q.z);
+        q = origin + dir * a1;
+        var g1 = q.y - terrain_height(q.x, q.z);
+        for (var k = 0; k < 4; k = k + 1) {
+            if abs(g1 - g0) < 1e-5 {
+                break;
+            }
+            let a2 = clamp(a1 - g1 * (a1 - a0) / (g1 - g0), before, d * 1.1);
+            a0 = a1;
+            g0 = g1;
+            a1 = a2;
+            q = origin + dir * a1;
+            g1 = q.y - terrain_height(q.x, q.z);
+        }
+        d = a1;
+        pos = origin + dir * d;
+    }
     if !hit {
-        return sky + colour(4) * sun + colour(3) * pow(max(dot(dir, sun_dir), 0.0), 12.0) * 0.25;
+        let disc = mix(colour(3), mix(colour(3), colour(4), 0.6), clamp((p.y - 0.05) * 6.0, 0.0, 1.0));
+        return mix(sky, disc, sun) + colour(3) * pow(facing, 40.0) * (0.35 + 0.4 * u.t.y);
     }
     let e = 0.05;
     let n = normalize(vec3<f32>(
@@ -352,11 +404,18 @@ fn flyover(uv: vec2<f32>, aspect: f32, steps: i32) -> vec3<f32> {
     ));
     let light = clamp(dot(n, normalize(vec3<f32>(0.3, 0.8, 0.6))), 0.0, 1.0);
     let height = clamp(pos.y / 3.0, 0.0, 1.0);
-    // contour lines on the land, in the loud colour
-    let contour = smoothstep(0.92, 1.0, fract(pos.y * 4.0)) * (0.3 + 0.7 * u.t.y);
-    let ground = palette(0.2 + 0.7 * height) * (0.25 + 0.85 * light) + colour(4) * contour * 0.4;
-    let fog = 1.0 - exp(-d * 0.06);
-    return mix(ground, sky, fog);
+    // dark land, lit from the side, the quiet colour on its heights
+    let land = mix(colour(0), colour(1), 0.15 + 0.45 * height) * (0.25 + 0.75 * light);
+    // a grid over it (lines as wide as a pixel far off), lit by the bands
+    let g = fract(vec2<f32>(pos.x, pos.z) * 0.5);
+    let gd = min(min(g.x, 1.0 - g.x), min(g.y, 1.0 - g.y)) * 2.0;
+    let grid = (1.0 - smoothstep(0.0, 0.008 + 0.005 * d, gd)) * exp(-d * 0.05);
+    let level = band(clamp(abs(pos.x) * 0.08, 0.0, 1.0));
+    let lines = mix(colour(2), colour(3), level) * grid * (0.3 + 0.9 * level + 0.4 * u.t.y);
+    // ridges catch the sun
+    let rim = colour(3) * pow(clamp(1.0 - n.y, 0.0, 1.0), 2.0) * 0.5 * (0.5 + level);
+    let fog = 1.0 - exp(-d * 0.09);
+    return mix(land + lines + rim, horizon, fog);
 }
 
 // Crystals: cells of a moving Voronoi pattern, each lit by its band, their
@@ -415,6 +474,7 @@ fn face_colour(uv: vec2<f32>, aspect: f32, pixel: f32) -> vec3<f32> {
         case 10: { c = smoke(uv, aspect); }
         case 11: { c = flyover(uv, aspect, 96); }
         case 12: { c = crystals(p); }
+        case 15: { c = spectrogram(uv); }
         default: { c = phosphor(uv); }
     }
     return clamp(c, vec3<f32>(0.0), vec3<f32>(1.0));
@@ -460,13 +520,52 @@ fn fs_main(in: Out) -> @location(0) vec4<f32> {
 // Its last frame (`data`), turned, zoomed and swirled a little, fading,
 // and a new layer over it: a ring of the bands and sparks on the beat.
 
+// One of the presets' waves: 0 a ring of the bands, 1 a scope's line,
+// 2 spiral arms, 3 orbiting lights.
+fn wave_layer(kind: i32, p: vec2<f32>, aspect: f32, t: f32) -> vec3<f32> {
+    let r = length(p);
+    let a = atan2(p.y, p.x);
+    let hue = u.extra[2].x;
+    if kind == 1 {
+        let x = clamp(abs(p.x) / (0.5 * aspect), 0.0, 1.0);
+        let level = band(x);
+        let y = (0.06 + 0.22 * level) * sin(p.x * 9.0 + t * 2.0);
+        let line = exp(-abs(p.y - y) * (150.0 - 60.0 * u.t.y)) * (0.4 + 0.9 * level);
+        return cycle(p.x * 0.4 + t * hue) * line;
+    } else if kind == 2 {
+        let level = band(abs(a) / 3.14159);
+        let arms = 0.5 + 0.5 * cos(3.0 * a - log(max(r, 1e-3)) * 5.0 + t * 1.5);
+        let lit = pow(arms, 24.0) * smoothstep(0.03, 0.12, r) * exp(-r * 2.5) * (0.5 + 1.2 * level);
+        return cycle(a / TAU + r + t * hue) * lit;
+    } else if kind == 3 {
+        var c = vec3<f32>(0.0);
+        for (var k = 0; k < 5; k = k + 1) {
+            let fk = f32(k);
+            let level = band((fk + 0.5) / 5.0);
+            let turn = t * (0.6 + 0.1 * fk) + fk * TAU / 5.0;
+            let centre = vec2<f32>(cos(turn), sin(turn)) * (0.22 + 0.15 * level);
+            let d = length(p - centre);
+            c = c + cycle(fk / 5.0 + t * hue) * exp(-d * (70.0 - 30.0 * u.t.y)) * (0.5 + level);
+        }
+        return c;
+    }
+    let level = band(abs(a) / 3.14159);
+    let ring = 0.18 + 0.22 * level + 0.06 * u.t.w;
+    let line = exp(-abs(r - ring) * (160.0 - 80.0 * u.t.y)) * (0.4 + 0.9 * level);
+    return cycle(a / TAU + t * hue) * line;
+}
+
 fn feedback(uv: vec2<f32>, aspect: f32) -> vec3<f32> {
     let t = u.t.x;
     let p = (uv - 0.5) * vec2<f32>(aspect, 1.0);
-    // the motion: u.extra[0] = turn, zoom, swirl, decay
+    // the motion: u.extra[0] = turn, zoom, swirl, decay; the preset:
+    // u.extra[1] = its wave, the last one's, how far between, the warp's
+    // fineness; u.extra[2] = the colours' turn, the mirror
     let motion = u.extra[0];
+    let look = u.extra[1];
     var q = rot(p, motion.x) * motion.y;
-    q = q + motion.z * vec2<f32>(sin(q.y * 6.0 + t), cos(q.x * 6.0 - t * 0.8));
+    q = q + motion.z * vec2<f32>(sin(q.y * look.w + t), cos(q.x * look.w - t * 0.8));
+    q = mix(q, vec2<f32>(abs(q.x), q.y), u.extra[2].y);
     let src = q / vec2<f32>(aspect, 1.0) + 0.5;
     var prev = textureSampleLevel(data, data_sampler, src, 0.0).rgb;
     // (outside the last picture: nothing)
@@ -474,13 +573,13 @@ fn feedback(uv: vec2<f32>, aspect: f32) -> vec3<f32> {
     prev = prev * inside * motion.w;
     // a slow turn of the colours as they fade
     prev = vec3<f32>(prev.r * 0.985 + prev.b * 0.012, prev.g * 0.99 + prev.r * 0.008, prev.b * 0.985 + prev.g * 0.012);
-    let r = length(p);
-    let a = atan2(p.y, p.x);
-    let level = band(abs(a) / 3.14159);
-    let ring = 0.18 + 0.22 * level + 0.06 * u.t.w;
-    let line = exp(-abs(r - ring) * (160.0 - 80.0 * u.t.y)) * (0.4 + 0.9 * level);
+    let wave = mix(
+        wave_layer(i32(look.x + 0.5), p, aspect, t),
+        wave_layer(i32(look.y + 0.5), p, aspect, t),
+        look.z
+    );
     let spark = smoothstep(0.996 - 0.01 * u.t.y, 1.0, hash(floor(uv * vec2<f32>(aspect, 1.0) * 90.0) + floor(t * 8.0)));
-    let layer = cycle(a / TAU + t * 0.07) * line + colour(4) * spark * u.t.y;
+    let layer = wave + colour(4) * spark * u.t.y;
     // (a floor below which it is black: 8 bits never fade to 0 by themselves)
     return clamp(max(prev - vec3<f32>(1.5 / 255.0), vec3<f32>(0.0)) + layer, vec3<f32>(0.0), vec3<f32>(1.0));
 }

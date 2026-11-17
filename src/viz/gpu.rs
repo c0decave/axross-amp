@@ -37,6 +37,8 @@ pub enum Shader {
     Flyover = 11,
     Crystals = 12,
     Phosphor = 13,
+    /// The waterfall at high resolution (its picture: rows of time).
+    Spectrogram = 15,
 }
 
 impl State {
@@ -166,6 +168,12 @@ impl Uniforms {
     /// The feedback face's motion this frame: turn, zoom, swirl, decay.
     pub fn with_motion(mut self, motion: [f32; 4]) -> Uniforms {
         self.v[18] = motion;
+        self
+    }
+
+    /// Per face numbers, `extra[k]` (k 1..7; 0 is the feedback's motion).
+    pub fn with_extra(mut self, k: usize, values: [f32; 4]) -> Uniforms {
+        self.v[18 + k.min(7)] = values;
         self
     }
 
@@ -1227,6 +1235,10 @@ pub fn shade(
         }
         11 => flyover(u, uv, aspect, 48),
         12 => crystals(u, p),
+        15 => {
+            let h = picture.map_or(1, |pic| pic.height.max(1)) as f32;
+            waterfall_colour(u, pic(uv[0], uv[1] + u.scroll() / h))
+        }
         _ => magma(pic(uv[0], uv[1]).max(0.0).powf(0.6) * 0.95),
     };
     [
@@ -1287,27 +1299,52 @@ fn fire(u: &Uniforms, uv: [f32; 2], aspect: f32) -> V3 {
     )
 }
 
+/// The waterfall's colours (axross's): the background, the quiet colour
+/// at 0.15, the middle at 0.6, the loud at 1.
+fn waterfall_colour(u: &Uniforms, v: f32) -> V3 {
+    if v < 0.15 {
+        mix3(u.colour(0), u.colour(1), v / 0.15)
+    } else if v < 0.6 {
+        mix3(u.colour(1), u.colour(2), (v - 0.15) / 0.45)
+    } else {
+        mix3(u.colour(2), u.colour(3), ((v - 0.6) / 0.4).min(1.0))
+    }
+}
+
 fn tunnel(u: &Uniforms, p: [f32; 2]) -> V3 {
+    use std::f32::consts::TAU;
     let t = u.time();
     let r = len2(p[0], p[1]).max(1e-3);
     let a = p[1].atan2(p[0]);
-    let depth = 0.4 / r + t * (0.6 + 1.4 * u.bass());
-    let turn = a / std::f32::consts::TAU + 0.12 * (depth * 0.5 + u.phase()).sin();
-    let level = u.band((2.0 * fract(turn) - 1.0).abs());
-    let ring = fract(depth * 1.5);
-    let seg = fract(turn * 12.0);
-    let groove = smoothstep(0.0, 0.08, ring)
-        * smoothstep(1.0, 0.92, ring)
-        * smoothstep(0.0, 0.06, seg)
-        * smoothstep(1.0, 0.94, seg);
-    let tile = cycle(u, (depth * 1.5).floor() * 0.13 + level * 0.35);
-    let lit = 0.35 + 0.65 * level + 0.3 * u.pulse();
-    let fog = (r * 1.9).clamp(0.0, 1.0);
-    let edge = (1.0 - groove) * (0.4 + level);
-    let col = add(scale(tile, groove * lit), scale(u.colour(4), edge * 0.55));
+    let depth = 0.45 / r + t * (0.7 + 1.6 * u.bass());
+    let turn = a / TAU + 0.1 * (depth * 0.35 + u.phase()).sin();
+    let fold = (2.0 * fract(turn) - 1.0).abs();
+    let level = u.band(fold);
+    let rr = fract(depth * 3.0);
+    let ring_d = rr.min(1.0 - rr) / 3.0 * r * r / 0.45;
+    let ss = fract(turn * 16.0);
+    let rib_d = ss.min(1.0 - ss) / 16.0 * TAU * r;
+    let ring = (-ring_d / 0.010).exp();
+    let rib = (-rib_d / 0.008).exp();
+    let checker = fract(((depth * 3.0).floor() + (turn * 16.0).floor()) * 0.5) * 2.0;
+    let wall = scale(
+        mix3(
+            u.colour(0),
+            cycle(u, (depth * 3.0).floor() * 0.04 + fold * 0.4),
+            0.10 + 0.22 * level,
+        ),
+        0.75 + 0.25 * checker,
+    );
+    let line_colour = cycle(u, (depth * 3.0).floor() * 0.04 + fold * 0.4 + 0.15);
+    let glow = ring * (0.35 + 1.1 * level + 0.5 * u.pulse()) + rib * (0.2 + 0.8 * level);
+    let c = add(wall, scale(line_colour, glow));
+    let fog = smoothstep(0.03, 0.6, r);
     add(
-        mix3(u.colour(0), col, fog),
-        scale(u.colour(4), (1.0 - fog).powi(6) * 0.4 * u.pulse()),
+        mix3(scale(u.colour(0), 0.6), c, fog),
+        scale(
+            u.colour(3),
+            (-r * 9.0).exp() * (0.25 + 0.6 * u.pulse() + 0.4 * u.energy()),
+        ),
     )
 }
 
@@ -1391,39 +1428,69 @@ fn flyover(u: &Uniforms, uv: [f32; 2], aspect: f32, steps: usize) -> V3 {
     let origin = [0.0, 2.6, t];
     let dl = len2(len2(p[0], p[1] - 0.18), 1.0);
     let dir = [p[0] / dl, (p[1] - 0.18) / dl, 1.0 / dl];
+    let horizon = mix3(u.colour(0), u.colour(3), 0.35);
     let sky = mix3(
-        u.colour(0),
-        mix3(u.colour(2), u.colour(3), 0.5),
-        (0.35 - p[1]).clamp(0.0, 1.0) * 0.6,
+        horizon,
+        scale(u.colour(0), 0.7),
+        ((p[1] + 0.12) * 2.2).clamp(0.0, 1.0),
     );
     let sl = len2(0.12, 1.0);
     let sun_dir = [0.0, 0.12 / sl, 1.0 / sl];
     let facing = (dir[0] * sun_dir[0] + dir[1] * sun_dir[1] + dir[2] * sun_dir[2]).max(0.0);
-    let sun = facing.powf(220.0) * (1.0 + 2.0 * u.pulse());
+    let sun = smoothstep(0.9975, 0.9985, facing);
     let mut d = 0.1f32;
+    let mut before = 0.1f32;
     let mut hit = false;
-    let mut pos = origin;
-    for _ in 0..steps {
-        pos = [
+    let at = |d: f32| {
+        [
             origin[0] + dir[0] * d,
             origin[1] + dir[1] * d,
             origin[2] + dir[2] * d,
-        ];
+        ]
+    };
+    let mut pos = origin;
+    for _ in 0..steps {
+        pos = at(d);
         let h = terrain_height(u, pos[0], pos[2]);
         let gap = pos[1] - h;
         if gap < 0.01 * d {
             hit = true;
             break;
         }
+        before = d;
         d += (gap * 0.45).max(0.02 * d);
         if d > 40.0 {
             break;
         }
     }
+    if hit {
+        let gap = |x: f32| {
+            let q = at(x);
+            q[1] - terrain_height(u, q[0], q[2])
+        };
+        let (mut a0, mut a1) = (before, d);
+        let (mut g0, mut g1) = (gap(a0), gap(a1));
+        for _ in 0..4 {
+            if (g1 - g0).abs() < 1e-5 {
+                break;
+            }
+            let a2 = (a1 - g1 * (a1 - a0) / (g1 - g0)).clamp(before, d * 1.1);
+            (a0, g0) = (a1, g1);
+            a1 = a2;
+            g1 = gap(a1);
+        }
+        d = a1;
+        pos = at(d);
+    }
     if !hit {
+        let disc = mix3(
+            u.colour(3),
+            mix3(u.colour(3), u.colour(4), 0.6),
+            ((p[1] - 0.05) * 6.0).clamp(0.0, 1.0),
+        );
         return add(
-            add(sky, scale(u.colour(4), sun)),
-            scale(u.colour(3), facing.powf(12.0) * 0.25),
+            mix3(sky, disc, sun),
+            scale(u.colour(3), facing.powf(40.0) * (0.35 + 0.4 * u.pulse())),
         );
     }
     let e = 0.05;
@@ -1433,16 +1500,28 @@ fn flyover(u: &Uniforms, uv: [f32; 2], aspect: f32, steps: usize) -> V3 {
         terrain_height(u, pos[0], pos[2] - e) - terrain_height(u, pos[0], pos[2] + e),
     ];
     let nl = len2(len2(n[0], n[1]), n[2]);
+    let n = [n[0] / nl, n[1] / nl, n[2] / nl];
     let ll = len2(len2(0.3, 0.8), 0.6);
-    let light = ((n[0] * 0.3 + n[1] * 0.8 + n[2] * 0.6) / (nl * ll)).clamp(0.0, 1.0);
+    let light = ((n[0] * 0.3 + n[1] * 0.8 + n[2] * 0.6) / ll).clamp(0.0, 1.0);
     let height = (pos[1] / 3.0).clamp(0.0, 1.0);
-    let contour = smoothstep(0.92, 1.0, fract(pos[1] * 4.0)) * (0.3 + 0.7 * u.pulse());
-    let ground = add(
-        scale(palette(u, 0.2 + 0.7 * height), 0.25 + 0.85 * light),
-        scale(u.colour(4), contour * 0.4),
+    let land = scale(
+        mix3(u.colour(0), u.colour(1), 0.15 + 0.45 * height),
+        0.25 + 0.75 * light,
     );
-    let fog = 1.0 - (-d * 0.06).exp();
-    mix3(ground, sky, fog)
+    let g = [fract(pos[0] * 0.5), fract(pos[2] * 0.5)];
+    let gd = g[0].min(1.0 - g[0]).min(g[1].min(1.0 - g[1])) * 2.0;
+    let grid = (1.0 - smoothstep(0.0, 0.008 + 0.005 * d, gd)) * (-d * 0.05).exp();
+    let level = u.band((pos[0].abs() * 0.08).clamp(0.0, 1.0));
+    let lines = scale(
+        mix3(u.colour(2), u.colour(3), level),
+        grid * (0.3 + 0.9 * level + 0.4 * u.pulse()),
+    );
+    let rim = scale(
+        u.colour(3),
+        (1.0 - n[1]).clamp(0.0, 1.0).powi(2) * 0.5 * (0.5 + level),
+    );
+    let fog = 1.0 - (-d * 0.09).exp();
+    mix3(add(add(land, lines), rim), horizon, fog)
 }
 
 fn crystals(u: &Uniforms, p: [f32; 2]) -> V3 {
@@ -1484,16 +1563,69 @@ fn crystals(u: &Uniforms, p: [f32; 2]) -> V3 {
 }
 
 /// The feedback face's next pixel from its last frame `last` (w x h).
+/// One of the presets' waves (faces.wgsl's `wave_layer`).
+fn wave_layer(u: &Uniforms, kind: i32, p: [f32; 2], aspect: f32, t: f32) -> V3 {
+    use std::f32::consts::{PI, TAU};
+    let r = len2(p[0], p[1]);
+    let a = p[1].atan2(p[0]);
+    let hue = u.extra(2)[0];
+    match kind {
+        1 => {
+            let x = (p[0].abs() / (0.5 * aspect)).clamp(0.0, 1.0);
+            let level = u.band(x);
+            let y = (0.06 + 0.22 * level) * (p[0] * 9.0 + t * 2.0).sin();
+            let line = (-(p[1] - y).abs() * (150.0 - 60.0 * u.pulse())).exp() * (0.4 + 0.9 * level);
+            scale(cycle(u, p[0] * 0.4 + t * hue), line)
+        }
+        2 => {
+            let level = u.band(a.abs() / PI);
+            let arms = 0.5 + 0.5 * (3.0 * a - r.max(1e-3).ln() * 5.0 + t * 1.5).cos();
+            let lit = arms.powf(24.0)
+                * smoothstep(0.03, 0.12, r)
+                * (-r * 2.5).exp()
+                * (0.5 + 1.2 * level);
+            scale(cycle(u, a / TAU + r + t * hue), lit)
+        }
+        3 => {
+            let mut c = [0.0; 3];
+            for k in 0..5 {
+                let fk = k as f32;
+                let level = u.band((fk + 0.5) / 5.0);
+                let turn = t * (0.6 + 0.1 * fk) + fk * TAU / 5.0;
+                let reach = 0.22 + 0.15 * level;
+                let d = len2(p[0] - turn.cos() * reach, p[1] - turn.sin() * reach);
+                c = add(
+                    c,
+                    scale(
+                        cycle(u, fk / 5.0 + t * hue),
+                        (-d * (70.0 - 30.0 * u.pulse())).exp() * (0.5 + level),
+                    ),
+                );
+            }
+            c
+        }
+        _ => {
+            let level = u.band(a.abs() / PI);
+            let ring = 0.18 + 0.22 * level + 0.06 * u.bass();
+            let line = (-(r - ring).abs() * (160.0 - 80.0 * u.pulse())).exp() * (0.4 + 0.9 * level);
+            scale(cycle(u, a / TAU + t * hue), line)
+        }
+    }
+}
+
 fn feedback_pixel(u: &Uniforms, uv: [f32; 2], aspect: f32, last: &[V3], w: usize, h: usize) -> V3 {
     let t = u.time();
     let p = [(uv[0] - 0.5) * aspect, uv[1] - 0.5];
     let motion = u.extra(0);
+    let look = u.extra(1);
     let mut q = rot(p, motion[0]);
     q = [q[0] * motion[1], q[1] * motion[1]];
     q = [
-        q[0] + motion[2] * (q[1] * 6.0 + t).sin(),
-        q[1] + motion[2] * (q[0] * 6.0 - t * 0.8).cos(),
+        q[0] + motion[2] * (q[1] * look[3] + t).sin(),
+        q[1] + motion[2] * (q[0] * look[3] - t * 0.8).cos(),
     ];
+    let mirror = u.extra(2)[1];
+    q[0] += (q[0].abs() - q[0]) * mirror;
     let src = [q[0] / aspect + 0.5, q[1] + 0.5];
     let mut prev = if (0.0..=1.0).contains(&src[0]) && (0.0..=1.0).contains(&src[1]) {
         sample(last, w, h, src)
@@ -1506,20 +1638,17 @@ fn feedback_pixel(u: &Uniforms, uv: [f32; 2], aspect: f32, last: &[V3], w: usize
         prev[1] * 0.99 + prev[0] * 0.008,
         prev[2] * 0.985 + prev[1] * 0.012,
     ];
-    let r = len2(p[0], p[1]);
-    let a = p[1].atan2(p[0]);
-    let level = u.band(a.abs() / std::f32::consts::PI);
-    let ring = 0.18 + 0.22 * level + 0.06 * u.bass();
-    let line = (-(r - ring).abs() * (160.0 - 80.0 * u.pulse())).exp() * (0.4 + 0.9 * level);
+    let wave = mix3(
+        wave_layer(u, (look[0] + 0.5) as i32, p, aspect, t),
+        wave_layer(u, (look[1] + 0.5) as i32, p, aspect, t),
+        look[2],
+    );
     let cell = [
         (uv[0] * aspect * 90.0).floor() + (t * 8.0).floor(),
         (uv[1] * 90.0).floor() + (t * 8.0).floor(),
     ];
     let spark = smoothstep(0.996 - 0.01 * u.pulse(), 1.0, hash(cell));
-    let layer = add(
-        scale(cycle(u, a / std::f32::consts::TAU + t * 0.07), line),
-        scale(u.colour(4), spark * u.pulse()),
-    );
+    let layer = add(wave, scale(u.colour(4), spark * u.pulse()));
     let floor = 1.5 / 255.0;
     let out = add(
         [
