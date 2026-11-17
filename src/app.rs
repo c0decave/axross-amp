@@ -473,6 +473,45 @@ impl App {
     }
 
     /// The message of the status line.
+    /// The output the engine plays on (or "no sound: why").
+    pub fn output(&self) -> &str {
+        &self.output
+    }
+
+    /// No output to play on: said above everything, with Retry (the engine
+    /// also tries again by itself every few seconds).
+    fn no_sound_banner(&mut self, ui: &mut Ui) {
+        let Some(why) = self.output.strip_prefix("no sound: ") else {
+            return;
+        };
+        let why = why.to_owned();
+        egui::Frame::new()
+            .fill(Color32::from_rgb(0x3a, 0x2a, 0x10))
+            .corner_radius(CornerRadius::same(8))
+            .inner_margin(8.0)
+            .show(ui, |ui| {
+                ui.set_min_width(ui.available_width());
+                ui.horizontal(|ui| {
+                    ui.add(
+                        egui::Label::new(
+                            RichText::new(format!("⚠ No sound: {why}"))
+                                .color(Color32::from_rgb(0xe3, 0xb3, 0x41)),
+                        )
+                        .wrap(),
+                    );
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if ui.button("Retry").clicked() {
+                            self.engine.send(Command::Output(
+                                (!self.output_choice.is_empty())
+                                    .then(|| self.output_choice.clone()),
+                            ));
+                        }
+                    });
+                });
+            });
+        ui.add_space(6.0);
+    }
+
     pub fn status(&self) -> &str {
         &self.status
     }
@@ -1103,6 +1142,14 @@ impl App {
                     self.duration = None;
                     self.stream_title.clear();
                     self.take_info(ctx, info);
+                    // the timer said: the end of the track (the next one was
+                    // already decoded behind it): it stops where it begins
+                    if self.sleep == Some(Sleep::EndOfTrack) {
+                        self.set_sleep(None);
+                        self.stop();
+                        self.status =
+                            "The sleep timer stopped the music at the end of the track.".into();
+                    }
                 }
                 Event::Ended { generation } if generation == self.generation => {
                     if self.sleep == Some(Sleep::EndOfTrack) {
@@ -1798,10 +1845,7 @@ impl App {
         let scheme = viz::scheme(&self.scheme_key, &self.custom_colours);
         let dt = self.last_frame.elapsed().as_secs_f32().clamp(0.0, 0.2);
         self.last_frame = Instant::now();
-        if let Ok(tap) = self.engine.shared.tap.lock() {
-            self.tap.clear();
-            self.tap.extend(tap.iter().copied());
-        }
+        self.engine.shared.tap.read_into(&mut self.tap);
         let rate = self
             .engine
             .shared
@@ -2578,6 +2622,7 @@ impl eframe::App for App {
                     }
                     Tab::Player => {}
                 }
+                self.no_sound_banner(ui);
                 if self.big_visual {
                     let h = ui.available_height() - 90.0;
                     self.visual(ui, h.max(120.0));
