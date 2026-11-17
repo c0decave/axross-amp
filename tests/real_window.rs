@@ -57,12 +57,24 @@ struct Run {
     slow: bool,
 }
 
-fn run(face: &'static str, shaders: Option<&str>, display: u32, home: &Path, music: &Path) -> Run {
+fn run(
+    face: &'static str,
+    shaders: Option<&str>,
+    size: (u32, u32),
+    display: u32,
+    home: &Path,
+    music: &Path,
+) -> Run {
     let config = home.join(".config/axross");
     std::fs::create_dir_all(&config).unwrap();
     std::fs::write(
         config.join("media_player.json"),
         format!(r#"{{"visualizer": "{face}", "volume": 100, "playlist_open": true}}"#),
+    )
+    .unwrap();
+    std::fs::write(
+        config.join("axross-amp.json"),
+        format!(r#"{{"window": [{}, {}]}}"#, size.0, size.1),
     )
     .unwrap();
     let fifo = home.join("sound.fifo");
@@ -134,13 +146,15 @@ fn run(face: &'static str, shaders: Option<&str>, display: u32, home: &Path, mus
     }
     let app = Killed(command.spawn().expect("the player starts"));
     let pid = app.0.id();
-    // playing: 2 s to settle, then 3 s counted
-    std::thread::sleep(Duration::from_secs(4));
+    // playing: 7 s to settle (the frame rate finds its budget), then 4 s
+    // counted
+    std::thread::sleep(Duration::from_secs(7));
     let (f0, c0, t0) = (frames(&stats), cpu_seconds(pid), Instant::now());
-    std::thread::sleep(Duration::from_secs(3));
+    std::thread::sleep(Duration::from_secs(4));
     let secs = t0.elapsed().as_secs_f64();
     let (f1, c1) = (frames(&stats), cpu_seconds(pid));
-    // the track (8 s) has ended: 3 s for the picture to fall to rest, 3 s counted
+    // the track (13 s) has ended: 3 s for the picture to fall to rest, 3 s
+    // counted
     std::thread::sleep(Duration::from_secs(5));
     let (c2, t2) = (cpu_seconds(pid), Instant::now());
     std::thread::sleep(Duration::from_secs(3));
@@ -172,7 +186,7 @@ fn in_a_real_window_it_keeps_its_frame_rate_and_rests_when_the_music_stops() {
     let _x = Killed(
         Command::new(xvfb)
             .arg(format!(":{display}"))
-            .args(["-screen", "0", "1024x900x24"])
+            .args(["-screen", "0", "1600x1200x24"])
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()
@@ -180,28 +194,35 @@ fn in_a_real_window_it_keeps_its_frame_rate_and_rests_when_the_music_stops() {
     );
     std::thread::sleep(Duration::from_secs(1));
     let music = home.join("music.wav");
-    player::write_chord(&music, 8);
+    player::write_chord(&music, 13);
     let mut report = Vec::new();
     // a bar face, a shader face as measured best, and the shader face drawn
     // by the CPU's thread (which once went on drawing at rest: 390 %)
-    for (face, shaders, name) in [
-        ("spectrum", None, "spectrum"),
-        ("plasma", None, "plasma"),
-        ("plasma", Some("0"), "plasma-cpu"),
+    let (small, large) = ((620, 860), (1200, 980));
+    for (face, shaders, size, name) in [
+        ("spectrum", None, small, "spectrum"),
+        ("plasma", None, small, "plasma"),
+        ("plasma", Some("0"), small, "plasma-cpu"),
+        ("cover", None, small, "cover"),
+        ("spectrum", None, large, "spectrum-large"),
+        ("milkdrop", None, large, "feedback-large"),
     ] {
-        let r = run(face, shaders, display, &home.join(name), &music);
+        let r = run(face, shaders, size, display, &home.join(name), &music);
         report.push(format!(
-            "{name}: {:.1} frames a second, {:.0} % CPU playing, {:.1} % at rest{}",
+            "{name} ({}x{}): {:.1} frames a second, {:.0} % CPU playing, {:.1} % at rest{}",
+            size.0,
+            size.1,
             r.fps,
             r.playing_cpu * 100.0,
             r.idle_cpu * 100.0,
-            if r.slow {
-                " (a slow renderer: 20 fps)"
-            } else {
-                ""
-            }
+            if r.slow { " (a slow renderer)" } else { "" }
         ));
-        let cap = if r.slow { 20.0 } else { 30.0 };
+        let cap = match (r.slow, face) {
+            (true, "cover") => 4.0,
+            (false, "cover") => 8.0,
+            (true, _) => 12.0,
+            _ => 30.0,
+        };
         assert!(r.fps > 3.0, "{}: it drew nothing ({report:?})", r.face);
         assert!(
             r.fps <= cap * 1.15,
@@ -209,10 +230,17 @@ fn in_a_real_window_it_keeps_its_frame_rate_and_rests_when_the_music_stops() {
             r.face
         );
         assert!(r.idle_cpu < 0.05, "{}: busy at rest ({report:?})", r.face);
-        // (llvmpipe draws the whole window on the CPU: a few cores' worth,
-        // not more)
+        // (llvmpipe draws the whole window on the CPU: the frame rate is
+        // lowered until it takes less than a core - as built for use; a
+        // debug build's own work is several times dearer: `cargo test
+        // --release --test real_window` holds it to the core)
+        let most = match (r.slow, cfg!(debug_assertions)) {
+            (true, false) => 1.0,
+            (true, true) => 1.5,
+            _ => 2.0,
+        };
         assert!(
-            r.playing_cpu < 2.6,
+            r.playing_cpu < most,
             "{}: {:.0} % CPU ({report:?})",
             r.face,
             r.playing_cpu * 100.0

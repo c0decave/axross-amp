@@ -102,7 +102,7 @@ fn device_rows(ui: &mut Ui, mixer: &Mixer, devices: &[Device], title: &str) {
                             ui.label(
                                 RichText::new("default")
                                     .small()
-                                    .color(Color32::from_rgb(0x4c, 0x9a, 0xff)),
+                                    .color(ui.visuals().hyperlink_color),
                             );
                         } else if ui.small_button("Make default").clicked() {
                             mixer.act(Action::Default {

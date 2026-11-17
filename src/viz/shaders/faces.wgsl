@@ -147,7 +147,7 @@ fn fire(uv: vec2<f32>, aspect: f32) -> vec3<f32> {
     let x = uv.x * aspect;
     let turb = fbm(vec2<f32>(x * 3.0, y * 2.0 - t * (1.6 + 1.2 * u.t.z)));
     let lick = fbm(vec2<f32>(x * 7.0 + 3.0, y * 4.0 - t * 3.2));
-    let height = 0.25 + 0.55 * band(uv.x * 0.7) + 0.2 * u.t.y;
+    let height = 0.5 + 0.4 * band(uv.x * 0.7) + 0.15 * u.t.y;
     let shape = 1.0 - y / max(height, 0.05);
     let heat = clamp(shape * 0.85 + (turb - 0.5) * 1.2 + (lick - 0.5) * 0.6 * (1.0 - y), 0.0, 1.0);
     // a fire's own colours: black, ember, flame, yellow, white
@@ -167,11 +167,11 @@ fn metaballs(p: vec2<f32>) -> vec3<f32> {
     for (var k = 0; k < 8; k = k + 1) {
         let fk = f32(k);
         let centre = vec2<f32>(
-            0.7 * sin(t * (0.5 + 0.13 * fk) + fk * 1.7),
-            0.4 * cos(t * (0.4 + 0.11 * fk) + fk * 2.3)
+            1.3 * sin(t * (0.5 + 0.13 * fk) + fk * 1.7),
+            0.6 * cos(t * (0.4 + 0.11 * fk) + fk * 2.3)
         );
         let level = band((fk + 0.5) / 8.0);
-        let r = 0.06 + 0.16 * level + 0.05 * u.t.y;
+        let r = 0.14 + 0.16 * level + 0.05 * u.t.y;
         let d = p - centre;
         let f = r * r / max(dot(d, d), 1e-4);
         field = field + f;
@@ -501,6 +501,10 @@ fn fs_main(in: Out) -> @location(0) vec4<f32> {
         if face == 13 {
             a = clamp(textureSampleLevel(data, data_sampler, uv, 0.0).r * 6.0, 0.0, 1.0);
             c = c * a;
+        } else {
+            // (a little noise below a step of 8 bits: no bands in slow
+            // gradients)
+            c = c + vec3<f32>((hash(floor(px)) - 0.5) / 255.0);
         }
     }
     // the background's rounded corners

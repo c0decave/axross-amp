@@ -103,16 +103,45 @@ pub enum Command {
     /// Fade a track into the next over this many seconds (0: none - gapless);
     /// never between two tracks of one album.
     Crossfade(f32),
+    /// A track chosen while another plays fades in over it (1 s).
+    FadeOnSkip(bool),
     Quit,
 }
 
 /// Whether the track `next` fades in over `current` (a crossfade of
 /// `secs`): not between two tracks of one album (an album plays gapless).
 pub fn crossfades(secs: f32, current: &TrackInfo, next: &TrackInfo) -> bool {
+    crossfades_between(secs, ("", current), ("", next))
+}
+
+/// As [`crossfades`], with the tracks' paths: two files of one folder in
+/// order (track numbers one after the other, or untagged, the names in
+/// order: an untagged album's rips) are an album too.
+pub fn crossfades_between(
+    secs: f32,
+    (current_path, current): (&str, &TrackInfo),
+    (next_path, next): (&str, &TrackInfo),
+) -> bool {
     let same_album = !current.album.is_empty()
         && current.album == next.album
         && current.album_artist == next.album_artist;
-    secs > 0.0 && !same_album
+    let folder = |p: &str| std::path::Path::new(p).parent().map(|d| d.to_path_buf());
+    let same_folder = !current_path.is_empty()
+        && !crate::playlist::is_stream(current_path)
+        && folder(current_path) == folder(next_path);
+    let in_order = match (current.track_number, next.track_number) {
+        (Some(a), Some(b)) => b == a + 1,
+        _ => {
+            let name = |p: &str| {
+                std::path::Path::new(p)
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_lowercase())
+                    .unwrap_or_default()
+            };
+            name(next_path) > name(current_path)
+        }
+    };
+    secs > 0.0 && !same_album && !(same_folder && in_order)
 }
 
 /// The track fading out under the next one: its source, its resampler,
@@ -233,6 +262,8 @@ pub struct TrackInfo {
     pub rate: u32,
     pub channels: usize,
     pub bits: Option<u32>,
+    /// The mean bit rate (kbit/s): the file's size over its length.
+    pub bitrate: Option<u32>,
     pub codec: String,
     /// ReplayGain from the tags (dB, and the peak as a factor of full scale).
     pub track_gain: Option<f32>,
@@ -284,6 +315,10 @@ pub struct Art {
     pub height: u32,
     pub rgba: Vec<u8>,
     pub png: Vec<u8>,
+    /// The cover large (up to 1024 px), where it is larger than the small
+    /// one: for the cover as the picture, the card on a large or HiDPI
+    /// window. Width, height, RGBA.
+    pub large: Option<(u32, u32, Vec<u8>)>,
 }
 
 /// The cover of `info` made small, the large one let go.
@@ -295,6 +330,10 @@ fn make_art(info: &mut TrackInfo) {
         return;
     };
     let small = image.thumbnail(256, 256).to_rgba8();
+    let large = (image.width().max(image.height()) > 256).then(|| {
+        let large = image.thumbnail(1024, 1024).to_rgba8();
+        (large.width(), large.height(), large.into_raw())
+    });
     let mut png = Vec::new();
     let encoded = image::DynamicImage::ImageRgba8(small.clone())
         .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png);
@@ -303,6 +342,7 @@ fn make_art(info: &mut TrackInfo) {
         height: small.height(),
         rgba: small.into_raw(),
         png: if encoded.is_ok() { png } else { Vec::new() },
+        large,
     }));
 }
 
@@ -1438,6 +1478,12 @@ fn open_media(
     if let Some(length) = edit.and_then(|(_, l)| l) {
         info.duration = Some(length as f64 / rate as f64);
     }
+    if seekable
+        && let (Ok(meta), Some(secs)) = (std::fs::metadata(path), info.duration)
+        && secs > 0.5
+    {
+        info.bitrate = Some((meta.len() as f64 * 8.0 / secs / 1000.0).round() as u32);
+    }
     let decoding = Decoding {
         format,
         decoder,
@@ -1991,6 +2037,7 @@ enum Control {
 /// long to open hold up only that thread - the ring is filled, commands
 /// are taken all the while.
 struct FileSource {
+    path: String,
     rx: Receiver<Feed>,
     ctl: Sender<Control>,
     /// Frames handed over and not yet taken (the thread reads ahead to its
@@ -2024,9 +2071,10 @@ impl FileSource {
         let queued = Arc::new(AtomicUsize::new(0));
         let stop = Arc::new(AtomicBool::new(false));
         let (q, st) = (queued.clone(), stop.clone());
+        let file = path.clone();
         let spawned = thread::Builder::new()
             .name("amp-read".into())
-            .spawn(move || read_file(path, generation, start_ms, loudness, tx, controls, q, st));
+            .spawn(move || read_file(file, generation, start_ms, loudness, tx, controls, q, st));
         let (failed_tx, failed_rx) = crossbeam_channel::bounded(1);
         let rx = match spawned {
             Ok(_) => rx,
@@ -2036,6 +2084,7 @@ impl FileSource {
             }
         };
         FileSource {
+            path,
             rx,
             ctl,
             queued,
@@ -2200,20 +2249,27 @@ struct Player {
     /// The track decoded behind which the next one begins (its source:
     /// None in a crossfade, where it is fading), the next, its info.
     ending: Option<(Option<FileSource>, Queued, TrackInfo)>,
-    /// A crossfade's length (s; 0: gapless) and the track fading out.
+    /// A crossfade's length (s; 0: gapless), whether a track chosen while
+    /// another plays fades in over it (1 s), and the track fading out.
     crossfade: f32,
+    fade_on_skip: bool,
     fading: Option<Fading>,
     /// The queued track, opened and read ahead on its own thread.
     prepared: Option<(Queued, FileSource)>,
     /// A file's sound to the output's rate - one resampler on across a
     /// gapless join (the same rate: not even the filter's edge between them).
     resampler: Resampler,
-    /// After the resampler, where a track plays at another rate than its
-    /// own: its peaks between samples become samples (a hot master's go
-    /// over full scale) - held below RESAMPLED_DB instead of clipped.
+    /// The output's limiter, always in the path (its 4 ms of delay never
+    /// come and go), holding the peaks below RESAMPLED_DB wherever the sound
+    /// may go over full scale: resampled (the peaks between samples become
+    /// samples), two tracks in a crossfade (their sum), the equalizer
+    /// raising a band. Elsewhere the samples go through bit for bit.
     out_limiter: crate::limiter::Limiter,
-    /// The queued track's first sound is the next to go into the ring.
+    /// The queued track's first sound is the next to go into the ring; and
+    /// how far after it the new track counts as begun (a crossfade's
+    /// middle: the meters start the new track there).
     pending_boundary: bool,
+    mark_after: u64,
     /// Equalized and not yet taken by the ring (it was full).
     carry: Vec<f32>,
     /// An output to play on (else nothing plays), and when it was last tried.
@@ -2443,9 +2499,33 @@ impl Player {
                 play,
                 generation,
             } => {
+                // a track chosen while another plays: that one fades out
+                // under it over a second (when asked for), from where it is
+                // heard
+                let playing = self.shared.playing.load(Ordering::Relaxed);
+                let fades = self.fade_on_skip
+                    && play
+                    && playing
+                    && !crate::playlist::is_stream(&path)
+                    && matches!(&self.current, Some(Source::File(f)) if f.rate > 0 && !f.end && f.info.as_ref().is_some_and(|i| i.seekable));
+                let heard = self.shared.position();
+                let old = if fades {
+                    match self.current.take() {
+                        Some(Source::File(f)) => Some(f),
+                        other => {
+                            self.current = other;
+                            None
+                        }
+                    }
+                } else {
+                    None
+                };
                 self.reset();
-                // (the new track's sound begins where the ring goes on)
-                self.shared.mark_track(self.shared.end_of_buffer());
+                // (the new track's sound begins where the ring goes on; in a
+                // fade, counted from its middle)
+                let total = self.out_rate as usize;
+                let after = if old.is_some() { total as u64 / 2 } else { 0 };
+                self.shared.mark_track(self.shared.end_of_buffer() + after);
                 if crate::playlist::is_stream(&path) {
                     self.current = Some(Source::Stream(start_stream(
                         path,
@@ -2467,6 +2547,18 @@ impl Player {
                     start_ms,
                     self.loudness,
                 )));
+                if let Some(mut old) = old {
+                    old.seek(heard);
+                    let resampler = Resampler::new(old.rate.max(1), self.out_rate);
+                    self.fading = Some(Fading {
+                        src: old,
+                        resampler,
+                        buf: Vec::new(),
+                        total,
+                        done: 0,
+                        ended: false,
+                    });
+                }
                 let play = play && self.may_play();
                 self.shared.playing.store(play, Ordering::Relaxed);
             }
@@ -2534,6 +2626,7 @@ impl Player {
                 }
             }
             Command::Crossfade(secs) => self.crossfade = secs.clamp(0.0, 12.0),
+            Command::FadeOnSkip(on) => self.fade_on_skip = on,
             Command::Output(device) => {
                 self.losses.clear();
                 self.reopen(device);
@@ -2630,7 +2723,7 @@ impl Player {
             return;
         }
         let next_info = next.info.as_deref().cloned().unwrap_or_default();
-        if !crossfades(self.crossfade, info, &next_info) {
+        if !crossfades_between(self.crossfade, (&f.path, info), (&next.path, &next_info)) {
             return;
         }
         let Some((queued, next)) = self.prepared.take() else {
@@ -2652,9 +2745,12 @@ impl Player {
             done: 0,
             ended: false,
         });
+        let total = ((left * self.out_rate as f64) as usize).max(1);
         self.ending = Some((None, queued, next_info));
-        // (the next track is heard from the fade's start)
+        // (the next track is heard from the fade's start; the meters count
+        // it from the fade's middle, where it is the louder)
         self.pending_boundary = true;
+        self.mark_after = total as u64 / 2;
     }
 
     /// The track fading out read ahead of the one fading in (enough for
@@ -2720,20 +2816,18 @@ impl Player {
         }
     }
 
-    /// The chunk just resampled through the output's limiter, where the
-    /// track is played at another rate (or the limiter is already in the
-    /// path); at the track's own rate it is untouched.
-    fn limit_resampled(&mut self) {
+    /// The chunk through the output's limiter: holding its peaks where the
+    /// sound may go over full scale (resampled, `fading` - two tracks
+    /// summed - or the equalizer raising a band), else bit for bit.
+    fn limit_output(&mut self, fading: bool) {
         let resampling = self.resampler.from != self.resampler.to;
-        if resampling || self.out_limiter.active {
-            if !self.out_limiter.active {
-                self.out_limiter = crate::limiter::Limiter::with_ceiling(
-                    self.out_rate,
-                    crate::limiter::RESAMPLED_DB,
-                );
-            }
-            self.out_limiter.process(&mut self.chunk);
+        let raised = self.eq.enabled && self.gains.0.iter().any(|g| *g > 0.0);
+        if !self.out_limiter.active {
+            self.out_limiter =
+                crate::limiter::Limiter::with_ceiling(self.out_rate, crate::limiter::RESAMPLED_DB);
         }
+        self.out_limiter
+            .process_holding(&mut self.chunk, resampling || fading || raised);
     }
 
     /// A file being opened: opened (told, also while nothing plays), or failed.
@@ -2883,13 +2977,15 @@ impl Player {
                         // the queued track's first sound: heard from here
                         let at = self.shared.end_of_buffer();
                         self.shared.boundary.store(at, Ordering::Relaxed);
-                        self.shared.mark_track(at);
+                        self.shared
+                            .mark_track(at + std::mem::take(&mut self.mark_after));
                     }
                     self.chunk.clear();
                     self.resampler.process(&samples, &mut self.chunk);
+                    let fading = self.fading.is_some();
                     self.mix_fading();
                     self.eq.process(&mut self.chunk);
-                    self.limit_resampled();
+                    self.limit_output(fading);
                     let n = self.shared.push(&self.chunk);
                     self.carry.extend_from_slice(&self.chunk[n * 2..]);
                     moved = true;
@@ -2936,10 +3032,9 @@ impl Player {
             let mut tail = Vec::new();
             self.resampler.flush(&mut tail);
             self.eq.process(&mut tail);
-            if self.out_limiter.active {
-                self.out_limiter.process(&mut tail);
-                self.out_limiter.flush(&mut tail);
-            }
+            let resampling = self.resampler.from != self.resampler.to;
+            self.out_limiter.process_holding(&mut tail, resampling);
+            self.out_limiter.flush(&mut tail);
             self.carry.extend_from_slice(&tail);
             if let Some(Source::File(f)) = self.current.as_mut() {
                 f.finished = true;
@@ -3040,11 +3135,13 @@ fn run(
         losses: Vec::new(),
         ending: None,
         crossfade: 0.0,
+        fade_on_skip: false,
         fading: None,
         prepared: None,
         resampler: Resampler::new(48_000, 48_000),
         out_limiter: crate::limiter::Limiter::with_ceiling(48_000, crate::limiter::RESAMPLED_DB),
         pending_boundary: false,
+        mark_after: 0,
         carry: Vec::new(),
         output_ok: false,
         output_tried: Instant::now(),
@@ -3092,6 +3189,40 @@ fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_large_cover_is_kept_large_for_the_picture() {
+        // a 1500 px cover: 256 px for the list and the colours, 1024 px for
+        // the cover as the picture (it was stretched from 256: blurred)
+        let image = image::RgbaImage::from_fn(1500, 1500, |x, y| {
+            image::Rgba([(x % 256) as u8, (y % 256) as u8, 90, 255])
+        });
+        let mut png = Vec::new();
+        image::DynamicImage::ImageRgba8(image)
+            .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+            .unwrap();
+        let mut info = TrackInfo {
+            cover: Some(png),
+            ..Default::default()
+        };
+        make_art(&mut info);
+        let art = info.art.expect("art");
+        assert_eq!((art.width, art.height), (256, 256));
+        let (w, h, rgba) = art.large.as_ref().expect("a large one");
+        assert_eq!((*w, *h, rgba.len()), (1024, 1024, 1024 * 1024 * 4));
+        // a small cover: no large copy of it
+        let image = image::RgbaImage::from_pixel(200, 200, image::Rgba([1, 2, 3, 255]));
+        let mut png = Vec::new();
+        image::DynamicImage::ImageRgba8(image)
+            .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+            .unwrap();
+        let mut info = TrackInfo {
+            cover: Some(png),
+            ..Default::default()
+        };
+        make_art(&mut info);
+        assert!(info.art.expect("art").large.is_none());
+    }
 
     fn tone(hz: f64, rate: u32, frames: usize) -> Vec<f32> {
         // (the phase in f64: f32's grows too coarse over a second at 96 kHz)

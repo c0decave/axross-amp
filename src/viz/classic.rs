@@ -12,7 +12,9 @@ use std::f32::consts::{PI, TAU};
 
 /// The starfield: stars, their drift in silence and with full bass, the
 /// nearest depth (axross's STAR_*).
-const STAR_COUNT: usize = 640;
+const STAR_COUNT: usize = 300;
+/// Stars of the starfield with trails (an option; axross's has 300 dots).
+const STARS_DENSE: usize = 640;
 const STAR_DRIFT: f32 = 0.15;
 const STAR_BOOST: f32 = 1.2;
 const STAR_NEAR: f32 = 0.04;
@@ -69,6 +71,18 @@ pub struct State {
     figures: Vec<[f32; 2]>,
     figure_at: usize,
     figures_kept: usize,
+    /// The scopes' gain: their highest sample lately (falling slowly), so
+    /// that quiet or near-mono music still fills them.
+    scope_peak: f32,
+    figure_peak: f32,
+}
+
+/// A scope's gain for the highest sample lately `peak` (kept up to date,
+/// falling over a few seconds): that peak at 90 % of the height, at most
+/// 8 times louder, never smaller than as it is.
+fn auto_gain(peak: &mut f32, now: f32, dt: f32) -> f32 {
+    *peak = now.max(*peak * (-dt / 3.0).exp()).max(1e-4);
+    (0.9 / *peak).clamp(1.0, 8.0)
 }
 
 impl State {
@@ -78,9 +92,13 @@ impl State {
 
     /// The same stars every time (tests).
     pub fn reset_stars(&mut self, seed: u32) {
+        self.reset_stars_n(seed, STAR_COUNT);
+    }
+
+    fn reset_stars_n(&mut self, seed: u32, count: usize) {
         self.seed = seed;
         self.stars.clear();
-        for _ in 0..STAR_COUNT {
+        for _ in 0..count {
             let x = self.random() * 2.0 - 1.0;
             let y = self.random() * 2.0 - 1.0;
             let z = STAR_NEAR + self.random() * (1.0 - STAR_NEAR);
@@ -122,6 +140,7 @@ pub fn draw(f: &Frame<'_>, key: &str, state: &mut VizState) {
     }
     let g = Area::of(f.rect);
     let (a, s) = (f.a, f.s);
+    let trails = state.classic_plus;
     let cv = &mut state.canvas;
     let st = &mut state.classic;
     match key {
@@ -138,10 +157,10 @@ pub fn draw(f: &Frame<'_>, key: &str, state: &mut VizState) {
         "bells" => bells(f, g, cv),
         "ribbon" => ribbon(f, g, cv),
         "kaleidoscope" => kaleidoscope(f, g, cv),
-        "scope" => scope(f, g, cv),
-        "lissajous" => lissajous(f, g, cv, st),
+        "scope" => scope(f, g, cv, st),
+        "lissajous" => lissajous(f, g, cv, st, trails),
         "vu" => vu(f, g, cv),
-        "starfield" => starfield(f, g, cv, st),
+        "starfield" => starfield(f, g, cv, st, trails),
         _ => spectrum(f.painter, g, a, s, cv),
     }
 }
@@ -1002,10 +1021,12 @@ fn kaleidoscope(f: &Frame<'_>, g: Area, cv: &mut Canvas) {
     });
 }
 
-fn scope(f: &Frame<'_>, g: Area, cv: &mut Canvas) {
+fn scope(f: &Frame<'_>, g: Area, cv: &mut Canvas, st: &mut State) {
     let (a, s) = (f.a, f.s);
     let mid = g.h / 2.0;
     let n = a.mono.len();
+    let loudest = a.mono.iter().fold(0.0f32, |m, v| m.max(v.abs()));
+    let gain = auto_gain(&mut st.scope_peak, loudest, f.dt);
     cv.draw(f.painter, |pen| {
         pen.rect(g.r(0.0, mid - 0.5, g.w, 1.0), s.grid());
         if n < 4 {
@@ -1021,7 +1042,7 @@ fn scope(f: &Frame<'_>, g: Area, cv: &mut Canvas) {
         pen.points.clear();
         for p in 0..points {
             let k = p * (shown.len() - 1) / (points - 1);
-            let v = shown[k].clamp(-1.0, 1.0);
+            let v = (shown[k] * gain).clamp(-1.0, 1.0);
             pen.points.push(g.p(
                 p as f32 / (points - 1) as f32 * (g.w - 1.0),
                 mid - v * (mid - 2.0),
@@ -1031,7 +1052,7 @@ fn scope(f: &Frame<'_>, g: Area, cv: &mut Canvas) {
     });
 }
 
-fn lissajous(f: &Frame<'_>, g: Area, cv: &mut Canvas, st: &mut State) {
+fn lissajous(f: &Frame<'_>, g: Area, cv: &mut Canvas, st: &mut State, trails: bool) {
     let (a, s) = (f.a, f.s);
     let (cx, cy) = (g.w / 2.0, g.h / 2.0);
     let reach = cx.min(cy) - 3.0;
@@ -1042,8 +1063,14 @@ fn lissajous(f: &Frame<'_>, g: Area, cv: &mut Canvas, st: &mut State) {
         st.figures = vec![[0.0; 2]; LISSAJOUS_KEPT * LISSAJOUS_POINTS];
         st.figures_kept = 0;
     }
+    let loudest = a
+        .stereo
+        .iter()
+        .fold(0.0f32, |m, [l, r]| m.max((l + r).abs()).max((l - r).abs()))
+        * std::f32::consts::FRAC_1_SQRT_2;
+    let gain = auto_gain(&mut st.figure_peak, loudest, f.dt);
     if count >= 2 && f.dt > 0.0 {
-        let root = std::f32::consts::FRAC_1_SQRT_2;
+        let root = std::f32::consts::FRAC_1_SQRT_2 * gain;
         let at = st.figure_at * LISSAJOUS_POINTS;
         for k in 0..LISSAJOUS_POINTS {
             let [l, r] = a.stereo[k * (count - 1) / (LISSAJOUS_POINTS - 1)];
@@ -1075,6 +1102,9 @@ fn lissajous(f: &Frame<'_>, g: Area, cv: &mut Canvas, st: &mut State) {
         if kept == 0 {
             return;
         }
+        // (as axross draws it: the newest alone; with trails, the ones
+        // before too)
+        let kept = if trails { kept } else { 1 };
         let point = |figure: usize, k: usize| {
             let [x, y] = figures[figure * LISSAJOUS_POINTS + k];
             g.p(cx + x * reach, cy - y * reach)
@@ -1099,7 +1129,9 @@ fn lissajous(f: &Frame<'_>, g: Area, cv: &mut Canvas, st: &mut State) {
                 pen.points.push(point(newest, k));
             }
             let k = (part + 1) as f32 / LISSAJOUS_FADE as f32;
-            pen.line(4.0, glow(s.high, 0.14 * k));
+            if trails {
+                pen.line(4.0, glow(s.high, 0.14 * k));
+            }
             pen.line(TRACE, mix(s.background, s.high, k));
         }
     });
@@ -1181,14 +1213,15 @@ fn vu(f: &Frame<'_>, g: Area, cv: &mut Canvas) {
     }
 }
 
-fn starfield(f: &Frame<'_>, g: Area, cv: &mut Canvas, st: &mut State) {
+fn starfield(f: &Frame<'_>, g: Area, cv: &mut Canvas, st: &mut State, trails: bool) {
     let (a, s) = (f.a, f.s);
-    if st.stars.len() != STAR_COUNT {
-        st.reset_stars(1);
+    let count = if trails { STARS_DENSE } else { STAR_COUNT };
+    if st.stars.len() != count {
+        st.reset_stars_n(1, count);
     }
     // nearer, faster with the bass; one that leaves the picture starts afar
     let speed = STAR_DRIFT + STAR_BOOST * a.bass;
-    for k in 0..STAR_COUNT {
+    for k in 0..count {
         let [x, y, z] = st.stars[k];
         let z = z - speed * f.dt;
         if z <= STAR_NEAR || x.abs() > z * 1.2 || y.abs() > z * 1.2 {
@@ -1201,6 +1234,29 @@ fn starfield(f: &Frame<'_>, g: Area, cv: &mut Canvas, st: &mut State) {
     }
     let (cx, cy) = (g.w / 2.0, g.h / 2.0);
     let stars = &st.stars;
+    let colour_of = |z: f32| match z {
+        d if d >= 0.75 => (s.low, 1.0),
+        d if d >= 0.5 => (s.mid, 1.6),
+        d if d >= 0.25 => (s.high, 2.2),
+        _ => (s.peak, 3.0),
+    };
+    if !trails {
+        // axross's: dots, larger and louder in colour as they come nearer
+        cv.draw(f.painter, |pen| {
+            for [x, y, z] in stars {
+                let (colour, size) = colour_of(*z);
+                let p = g.p(cx + x / z * cx, cy + y / z * cy);
+                if f.rect.expand(2.0).contains(p) {
+                    if size > 2.0 {
+                        pen.circle(p, size / 2.0, colour);
+                    } else {
+                        pen.rect(Rect::from_center_size(p, vec2(size, size)), colour);
+                    }
+                }
+            }
+        });
+        return;
+    }
     // (how far a star's trail reaches back: further the faster they fly)
     let trail = 0.02 + speed * 0.1;
     cv.draw(f.painter, |pen| {
@@ -1212,12 +1268,7 @@ fn starfield(f: &Frame<'_>, g: Area, cv: &mut Canvas, st: &mut State) {
             Color32::TRANSPARENT,
         );
         for [x, y, z] in stars {
-            let (colour, size) = match *z {
-                d if d >= 0.75 => (s.low, 1.0),
-                d if d >= 0.5 => (s.mid, 1.6),
-                d if d >= 0.25 => (s.high, 2.2),
-                _ => (s.peak, 3.0),
-            };
+            let (colour, size) = colour_of(*z);
             let p = g.p(cx + x / z * cx, cy + y / z * cy);
             if !f.rect.expand(2.0).contains(p) {
                 continue;

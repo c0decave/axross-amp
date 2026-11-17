@@ -15,7 +15,8 @@ fn a_right_click_on_the_picture_offers_its_options() {
     let mut h = harness(&dir, files);
     assert!(until(&mut h, 5.0, |a| a.is_loaded()));
     settle(&mut h, 2);
-    let centre = Pos2::new(310.0, 250.0);
+    // (the picture's middle, wherever the card above leaves it)
+    let centre = picture_centre(&h);
     h.hover_at(centre);
     h.run_steps(1);
     for pressed in [true, false] {
@@ -26,11 +27,9 @@ fn a_right_click_on_the_picture_offers_its_options() {
             modifiers: Default::default(),
         });
     }
-    settle(&mut h, 2);
-    h.get_by_role_and_label(egui::accesskit::Role::Button, "Visualization")
-        .click();
-    settle(&mut h, 2);
-    // the faces in their groups, side by side
+    // (the menu finds its place in the window over a few frames)
+    settle(&mut h, 6);
+    // the faces in their groups, side by side, in the menu itself
     h.get_by_label("3D ring").click();
     settle(&mut h, 2);
     assert_eq!(h.state().mode(), "ring");
@@ -44,20 +43,28 @@ fn a_right_click_on_the_picture_offers_its_options() {
             modifiers: Default::default(),
         });
     }
-    settle(&mut h, 2);
-    h.get_by_role_and_label(egui::accesskit::Role::Button, "Visualization")
-        .click();
-    settle(&mut h, 2);
+    settle(&mut h, 6);
     h.get_by_label("Kinetic typography").click();
     settle(&mut h, 2);
     assert_eq!(h.state().mode(), "typography");
     // the colours of the window itself
     h.get_by_label("⚙").click();
     settle(&mut h, 2);
+    let colours = h
+        .get_by_role_and_label(egui::accesskit::Role::Button, "Colours")
+        .rect();
+    h.hover_at(colours.center());
+    settle(&mut h, 2);
+    if h.query_by_label("Follow the theme").is_none() {
+        h.get_by_role_and_label(egui::accesskit::Role::Button, "Colours")
+            .click();
+        settle(&mut h, 3);
+    }
     h.get_by_label("Follow the theme").click();
     settle(&mut h, 2);
     assert_eq!(h.state().snapshot().visual_scheme, "theme");
-    // the playlist folded away from the menu
+    // the playlist folded away from the menu (above the colours' menu:
+    // not under it)
     if h.query_by_label("Show the playlist").is_none() {
         h.get_by_label("⚙").click();
         settle(&mut h, 2);
@@ -126,4 +133,28 @@ fn the_overview_shows_the_track_and_a_click_goes_there() {
     // and the face stays (no step to the next)
     settle(&mut h, 30);
     assert_eq!(h.state().mode(), "overview");
+}
+
+/// The middle of the picture (its accessible name says what it shows).
+fn picture_centre(h: &egui_kittest::Harness<'_, axross_amp::app::App>) -> Pos2 {
+    use egui_kittest::kittest::Queryable;
+    h.get_by_label_contains("Visualization: ").rect().center()
+}
+
+#[test]
+fn the_menus_lowest_rows_take_their_clicks() {
+    // the faces' menu taller than the window was moved about from frame to
+    // frame, and its lowest rows missed their clicks
+    let dir = folder("visual-lowest");
+    let files = tracks(&dir, &["a.wav"], 3.0);
+    let mut h = harness(&dir, files);
+    assert!(until(&mut h, 5.0, |a| a.is_loaded()));
+    settle(&mut h, 2);
+    h.get_by_label("⚙").click();
+    settle(&mut h, 3);
+    let r = h.get_by_label("Show the playlist").rect();
+    assert!(r.bottom() < 860.0, "{r:?}");
+    h.get_by_label("Show the playlist").click();
+    settle(&mut h, 2);
+    assert!(!h.state().snapshot().playlist_open, "the click was missed");
 }

@@ -165,6 +165,11 @@ pub struct AmpSettings {
     pub cover_colours: bool,
     /// The waterfall smooth, at high resolution (not axross's bars).
     pub waterfall_hd: bool,
+    /// A track chosen while another plays fades in over it (1 s).
+    pub fade_on_skip: bool,
+    /// The starfield and the stereo scope with trails and glow (not as
+    /// axross draws them).
+    pub classic_plus: bool,
 }
 
 /// The loudness targets offered: LUFS and what aims at it.
@@ -184,7 +189,9 @@ impl Default for AmpSettings {
             loudness_target: -23.0,
             crossfade: 0.0,
             cover_colours: true,
-            waterfall_hd: false,
+            waterfall_hd: true,
+            fade_on_skip: false,
+            classic_plus: false,
         }
     }
 }
@@ -238,6 +245,12 @@ pub fn read_amp(path: &Path) -> AmpSettings {
     if let Some(on) = map.get("waterfall_hd").and_then(Value::as_bool) {
         settings.waterfall_hd = on;
     }
+    if let Some(on) = map.get("fade_on_skip").and_then(Value::as_bool) {
+        settings.fade_on_skip = on;
+    }
+    if let Some(on) = map.get("classic_plus").and_then(Value::as_bool) {
+        settings.classic_plus = on;
+    }
     settings
 }
 
@@ -260,6 +273,8 @@ pub fn write_amp(path: &Path, settings: &AmpSettings) -> std::io::Result<()> {
     map.insert("crossfade".into(), json!(settings.crossfade));
     map.insert("cover_colours".into(), json!(settings.cover_colours));
     map.insert("waterfall_hd".into(), json!(settings.waterfall_hd));
+    map.insert("fade_on_skip".into(), json!(settings.fade_on_skip));
+    map.insert("classic_plus".into(), json!(settings.classic_plus));
     write_object(path, &map)
 }
 
@@ -782,7 +797,9 @@ mod tests {
             loudness_target: -14.0,
             crossfade: 4.5,
             cover_colours: false,
-            waterfall_hd: true,
+            waterfall_hd: false,
+            fade_on_skip: true,
+            classic_plus: true,
         };
         write_amp(&path, &settings).unwrap();
         let back = read_amp(&path);
@@ -790,7 +807,10 @@ mod tests {
         assert_eq!(back.loudness_target, -14.0);
         assert_eq!(back.crossfade, 4.5);
         assert!(!back.cover_colours);
-        assert!(back.waterfall_hd);
+        assert!(!back.waterfall_hd);
+        assert!(back.fade_on_skip && back.classic_plus);
+        let fresh = AmpSettings::default();
+        assert!(fresh.waterfall_hd && !fresh.classic_plus && !fresh.fade_on_skip);
         assert!(AmpSettings::default().cover_colours);
         assert_eq!(back.replay_gain, "album");
         assert_eq!(back.preamp_db, 15.0);

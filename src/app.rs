@@ -24,7 +24,13 @@ const SAVE_EVERY: Duration = Duration::from_secs(3);
 /// How long a message stays in the status line.
 const STATUS_FOR: Duration = Duration::from_secs(8);
 /// The frame rate's cap on a slow (software) renderer.
-const SLOW_FPS: f32 = 20.0;
+const SLOW_FPS: f32 = 12.0;
+/// On a slow renderer, the share of a core the window may take while it
+/// plays: the frame rate is lowered (to MIN_SLOW_FPS) to keep within it.
+const SLOW_BUDGET_CORES: f64 = 0.6;
+const MIN_SLOW_FPS: f32 = 3.0;
+/// A calm face (the cover) needs few frames: its glow moves slowly.
+const CALM_FPS: f32 = 8.0;
 const POSITION_EVERY: Duration = Duration::from_secs(30);
 /// The equalizer is written this long after its last change (axross's 250 ms).
 const EQ_SETTLE: Duration = Duration::from_millis(250);
@@ -44,6 +50,8 @@ pub struct App {
     playlist: Playlist,
     info: TrackInfo,
     cover: Option<TextureHandle>,
+    /// The cover large (smoothly scaled: mipmaps), where there is one.
+    cover_large: Option<TextureHandle>,
     /// The pictures' colours from the cover (when it has colour).
     cover_scheme: Option<viz::Scheme>,
     /// The accent: from the cover (its strongest colour, readable on the
@@ -64,8 +72,13 @@ pub struct App {
     eq_open: bool,
     /// The lower part shows the equalizer (else the playlist).
     eq_page: bool,
-    /// A slow renderer (software): the picture at most SLOW_FPS frames a second.
+    /// A slow renderer (software): the picture at most SLOW_FPS frames a
+    /// second, and fewer as a frame costs more (a large window): the rate
+    /// the CPU's budget allows, measured (when, CPU seconds, frames).
     slow: bool,
+    budget_fps: f32,
+    cost_from: Option<(Instant, f64, u64)>,
+    frames_drawn: u64,
     /// Tests (AMP_STATS=FILE): frames drawn, written there now and then.
     stats: Option<(PathBuf, u64, Instant)>,
     playlist_open: bool,
@@ -342,6 +355,7 @@ impl App {
         let amp = state::read_amp(&amp_path);
         engine.send(Command::Loudness(loudness(&amp)));
         engine.send(Command::Crossfade(amp.crossfade));
+        engine.send(Command::FadeOnSkip(amp.fade_on_skip));
         engine.shared.set_volume(volume_curve(saved.volume));
         let output = state::read_output(&audio_path);
         if !output.is_empty() {
@@ -383,6 +397,10 @@ impl App {
                 viz_state.gpu.ms_per_pixel = choice.gpu_ms_per_pixel;
             }
             slow = choice.slow_for(gpu);
+            if slow {
+                // (about 400 x 225: a large window costs no more)
+                viz_state.gpu.max_pixels = 90_000.0;
+            }
             eprintln!(
                 "axross-amp: shader faces on the {} ({:.2e} ms a pixel on the GPU, {:.2e} on the CPU){}",
                 if gpu { "GPU" } else { "CPU" },
@@ -400,6 +418,7 @@ impl App {
             playlist,
             info: TrackInfo::default(),
             cover: None,
+            cover_large: None,
             cover_scheme: None,
             accent: ACCENT,
             analyzer: Analyzer::new(),
@@ -416,6 +435,9 @@ impl App {
             eq_open: saved.equalizer_open,
             eq_page: false,
             slow,
+            budget_fps: SLOW_FPS,
+            cost_from: None,
+            frames_drawn: 0,
             stats: std::env::var_os("AMP_STATS").map(|p| (PathBuf::from(p), 0, Instant::now())),
             playlist_open: saved.playlist_open,
             big_visual: false,
@@ -844,6 +866,7 @@ impl App {
         self.select(Some(index));
         self.info = TrackInfo::default();
         self.cover = None;
+        self.cover_large = None;
         self.cover_scheme = None;
         self.stream_title.clear();
         self.notice.clear();
@@ -918,6 +941,15 @@ impl App {
             self.playlist.version += 1;
         }
         self.cover = info.art.as_deref().map(|art| cover_texture(ctx, art));
+        self.cover_large =
+            info.art
+                .as_deref()
+                .and_then(|art| art.large.as_ref())
+                .map(|(w, h, rgba)| {
+                    let image =
+                        egui::ColorImage::from_rgba_unmultiplied([*w as usize, *h as usize], rgba);
+                    ctx.load_texture("cover-large", image, smooth_texture())
+                });
         self.cover_scheme = info
             .art
             .as_deref()
@@ -1056,6 +1088,13 @@ impl App {
                 self.amp.crossfade = secs;
                 self.amp_dirty = true;
                 self.engine.send(Command::Crossfade(secs));
+            }
+            if ui
+                .checkbox(&mut self.amp.fade_on_skip, "Fade when changing track (1 s)")
+                .changed()
+            {
+                self.amp_dirty = true;
+                self.engine.send(Command::FadeOnSkip(self.amp.fade_on_skip));
             }
         });
         ui.menu_button("Loudness target", |ui| {
@@ -1205,7 +1244,11 @@ impl App {
                         put("Station", i.station.clone());
                         put("Station's genre", i.station_genre.clone());
                         put("Length", i.duration.map(clock).unwrap_or_default());
-                        put("Format", format_line(&i.codec, i.rate, i.channels, i.bits));
+                        let mut format = format_line(&i.codec, i.rate, i.channels, i.bits);
+                        if let Some(kbps) = i.bitrate {
+                            format.push_str(&format!(", {kbps} kbit/s"));
+                        }
+                        put("Format", format);
                         let gain = |g: Option<f32>, p: Option<f32>| match (g, p) {
                             (Some(g), Some(p)) => format!("{g:+.2} dB, peak {p:.3}"),
                             (Some(g), None) => format!("{g:+.2} dB"),
@@ -1895,36 +1938,64 @@ impl App {
     /// the face, the colours (the custom ones edited here), the options,
     /// full screen, the playlist shown or not - axross's context menu.
     fn visual_menu(&mut self, ui: &mut Ui) {
-        ui.menu_button("Visualization", |ui| {
-            // the groups side by side: every face at a glance, no menu in a menu
-            ui.horizontal_top(|ui| {
-                for group in [
-                    viz::Group::Classic,
-                    viz::Group::Analysis,
-                    viz::Group::Generative,
-                ] {
-                    ui.vertical(|ui| {
-                        ui.label(RichText::new(group.name()).strong().color(MUTED));
-                        for face in viz::FACES.iter().filter(|f| f.group == group) {
-                            if ui.radio(self.mode == face.key, face.name).clicked() {
-                                self.mode = face.key;
-                                self.dirty = true;
-                                ui.close();
+        ui.label(RichText::new("Visualization").strong());
+        // the groups side by side: every face at a glance, in the menu itself
+        // (a submenu this wide lay over its own menu); scrolled in a low window
+        // (the whole menu within the window, else it is moved about and
+        // its lower rows miss their clicks: rows close together, the grid
+        // scrolled where the window is low)
+        let most = (ui.ctx().content_rect().height() - 300.0).max(160.0);
+        egui::ScrollArea::vertical()
+            .max_height(most)
+            .show(ui, |ui| {
+                ui.spacing_mut().item_spacing.y = 1.0;
+                ui.spacing_mut().interact_size.y = 18.0;
+                ui.horizontal_top(|ui| {
+                    for group in [
+                        viz::Group::Classic,
+                        viz::Group::Analysis,
+                        viz::Group::Generative,
+                    ] {
+                        ui.vertical(|ui| {
+                            ui.label(RichText::new(group.name()).strong().color(MUTED));
+                            for face in viz::FACES.iter().filter(|f| f.group == group) {
+                                if ui.radio(self.mode == face.key, face.name).clicked() {
+                                    self.mode = face.key;
+                                    self.dirty = true;
+                                    ui.close();
+                                }
                             }
-                        }
-                        if group == viz::Group::Analysis {
-                            ui.add_space(8.0);
-                            if ui.radio(self.mode == "off", "Off").clicked() {
-                                self.mode = "off";
-                                self.dirty = true;
-                                ui.close();
+                            if group == viz::Group::Analysis {
+                                ui.add_space(8.0);
+                                if ui.radio(self.mode == "off", "Off").clicked() {
+                                    self.mode = "off";
+                                    self.dirty = true;
+                                    ui.close();
+                                }
                             }
-                        }
-                    });
-                }
+                        });
+                    }
+                });
             });
+        ui.separator();
+        let mut full = self.fullscreen;
+        if ui.checkbox(&mut full, "Full screen (F11)").changed() {
+            self.set_fullscreen(ui.ctx(), full);
+            ui.close();
+        }
+        let mut list = self.playlist_open;
+        if ui.checkbox(&mut list, "Show the playlist").changed() {
+            self.show_playlist(ui.ctx(), list);
+        }
+        // (last: their menus open over nothing of this one but themselves)
+        ui.separator();
+        ui.horizontal(|ui| {
+            ui.menu_button("Colours", |ui| self.colours_menu(ui));
+            ui.menu_button("Options", |ui| self.options_menu(ui));
         });
-        ui.label(RichText::new("Colours").strong());
+    }
+
+    fn colours_menu(&mut self, ui: &mut Ui) {
         if ui
             .checkbox(
                 &mut self.amp.cover_colours,
@@ -1967,10 +2038,22 @@ impl App {
                 }
             });
         }
+    }
+
+    fn options_menu(&mut self, ui: &mut Ui) {
         if ui
             .checkbox(
                 &mut self.amp.waterfall_hd,
-                "Waterfall: smooth, high resolution",
+                "Waterfall: smooth, high resolution (else axross's bars)",
+            )
+            .changed()
+        {
+            self.amp_dirty = true;
+        }
+        if ui
+            .checkbox(
+                &mut self.amp.classic_plus,
+                "Starfield and stereo scope: trails and glow (else as axross draws them)",
             )
             .changed()
         {
@@ -1986,16 +2069,6 @@ impl App {
         if o != self.options {
             self.options = o.clamped();
             self.dirty = true;
-        }
-        ui.separator();
-        let mut full = self.fullscreen;
-        if ui.checkbox(&mut full, "Full screen (F11)").changed() {
-            self.set_fullscreen(ui.ctx(), full);
-            ui.close();
-        }
-        let mut list = self.playlist_open;
-        if ui.checkbox(&mut list, "Show the playlist").changed() {
-            self.show_playlist(ui.ctx(), list);
         }
     }
 
@@ -2026,8 +2099,10 @@ impl App {
             .show(ui, |ui| {
                 ui.set_min_width(ui.available_width());
                 ui.horizontal(|ui| {
-                    let size = vec2(84.0, 84.0);
-                    if let Some(texture) = &self.cover {
+                    // (the cover as large as the window allows: 120..200 px)
+                    let side = (ui.available_width() * 0.22).clamp(120.0, 200.0);
+                    let size = vec2(side, side);
+                    if let Some(texture) = self.cover_large.as_ref().or(self.cover.as_ref()) {
                         ui.add(
                             egui::Image::new(texture)
                                 .fit_to_exact_size(size)
@@ -2076,12 +2151,9 @@ impl App {
                         }
                         if self.info.rate > 0 {
                             ui.label(
-                                RichText::new(format!(
-                                    "{} · {} Hz · {} ch",
-                                    self.info.codec, self.info.rate, self.info.channels
-                                ))
-                                .size(11.5)
-                                .color(MUTED),
+                                RichText::new(card_format(&self.info))
+                                    .size(11.5)
+                                    .color(MUTED),
                             );
                         }
                     });
@@ -2126,10 +2198,16 @@ impl App {
         let builder = egui::UiBuilder::new()
             .max_rect(zone.shrink(20.0))
             .layout(Layout::top_down(Align::Center));
+        // (a low window: no note, no keys - the buttons inside the edge)
+        let low = zone.height() < 460.0;
         ui.scope_builder(builder, |ui| {
-            ui.add_space((zone.height() * 0.18 - 40.0).max(8.0));
-            ui.label(RichText::new("♫").size(56.0).color(self.accent));
-            ui.add_space(4.0);
+            if low {
+                ui.add_space(4.0);
+            } else {
+                ui.add_space((zone.height() * 0.18 - 40.0).max(8.0));
+                ui.label(RichText::new("♫").size(56.0).color(self.accent));
+                ui.add_space(4.0);
+            }
             ui.label(
                 RichText::new("Drop music here")
                     .font(bold(22.0))
@@ -2174,6 +2252,9 @@ impl App {
                 });
             } else {
                 buttons(ui, self);
+            }
+            if low {
+                return;
             }
             ui.add_space(22.0);
             let keys = [
@@ -2426,8 +2507,43 @@ impl App {
     }
 
     fn fps_cap(&self) -> f32 {
-        let fps = self.options.fps.clamp(10, 60) as f32;
-        if self.slow { fps.min(SLOW_FPS) } else { fps }
+        let mut fps = self.options.fps.clamp(10, 60) as f32;
+        if self.slow {
+            fps = fps.min(SLOW_FPS).min(self.budget_fps);
+        }
+        if viz::find(self.mode).is_some_and(|f| f.calm) {
+            fps = fps.min(if self.slow { CALM_FPS / 2.0 } else { CALM_FPS });
+        }
+        fps
+    }
+
+    /// On a slow renderer, while it plays: what a frame has cost the
+    /// process lately (CPU seconds), and the frame rate that keeps the
+    /// window within its budget.
+    fn govern(&mut self) {
+        self.frames_drawn += 1;
+        if !self.slow || !self.playing() {
+            self.cost_from = None;
+            return;
+        }
+        let Some(cpu) = viz::gpu::process_cpu() else {
+            return;
+        };
+        match self.cost_from {
+            None => self.cost_from = Some((Instant::now(), cpu, self.frames_drawn)),
+            Some((when, before, frames)) if when.elapsed() > Duration::from_secs(2) => {
+                let drawn = self.frames_drawn - frames;
+                if drawn > 4 {
+                    let per_frame = (cpu - before) / drawn as f64;
+                    let fits = (SLOW_BUDGET_CORES / per_frame.max(1e-4)) as f32;
+                    // (towards it, not at once: a busy moment is no trend)
+                    let target = fits.clamp(MIN_SLOW_FPS, SLOW_FPS);
+                    self.budget_fps += (target - self.budget_fps) * 0.6;
+                }
+                self.cost_from = Some((Instant::now(), cpu, self.frames_drawn));
+            }
+            Some(_) => {}
+        }
     }
 
     /// Paused in a track: the picture holds still (stopped, it falls to rest).
@@ -2509,6 +2625,7 @@ impl App {
         });
         let scheme = self.scheme();
         self.viz_state.waterfall_hd = self.amp.waterfall_hd;
+        self.viz_state.classic_plus = self.amp.classic_plus;
         let dt = self.last_frame.elapsed().as_secs_f32().clamp(0.0, 0.2);
         self.last_frame = Instant::now();
         let written = self.engine.shared.tap_into(&mut self.tap);
@@ -2560,7 +2677,11 @@ impl App {
             opacity: 1.0,
             second: false,
             loudness_target: self.amp.loudness_target,
-            cover: self.cover.as_ref().map(|t| (t.id(), t.size_vec2())),
+            cover: self
+                .cover_large
+                .as_ref()
+                .or(self.cover.as_ref())
+                .map(|t| (t.id(), t.size_vec2())),
         };
         self.viz_state.gpu.interval = 1.0 / self.fps_cap();
         viz::draw(&frame, self.mode, &mut self.viz_state);
@@ -3605,6 +3726,7 @@ impl eframe::App for App {
                 let _ = std::fs::write(&*path, format!("frames {frames}\n"));
             }
         }
+        self.govern();
         let fps = self.fps_cap();
         // the picture moves while there is sound, and as long as it falls to
         // rest; off, the clock moves once a second; idle, nothing is drawn
@@ -3735,7 +3857,15 @@ pub fn clock(secs: f64) -> String {
 fn cover_texture(ctx: &egui::Context, art: &crate::engine::Art) -> TextureHandle {
     let size = [art.width as usize, art.height as usize];
     let colour = egui::ColorImage::from_rgba_unmultiplied(size, &art.rgba);
-    ctx.load_texture("cover", colour, egui::TextureOptions::LINEAR)
+    ctx.load_texture("cover", colour, smooth_texture())
+}
+
+/// Linear both ways, with mipmaps: smooth made larger and made smaller.
+fn smooth_texture() -> egui::TextureOptions {
+    egui::TextureOptions {
+        mipmap_mode: Some(egui::TextureFilter::Linear),
+        ..egui::TextureOptions::LINEAR
+    }
 }
 
 /// The look: dark, rounded, one blue accent.
@@ -3761,6 +3891,12 @@ fn style(ctx: &egui::Context) {
     visuals.widgets.hovered.weak_bg_fill = Color32::from_rgb(0x30, 0x36, 0x3d);
     visuals.slider_trailing_fill = true;
     ctx.set_visuals(visuals);
+    // small text readable (egui's is 9 px): 11 px on every tab
+    ctx.all_styles_mut(|style| {
+        style
+            .text_styles
+            .insert(egui::TextStyle::Small, egui::FontId::proportional(11.0));
+    });
     // Hack (the monospace font) as the last fallback of the proportional
     // one: a character the others lack is drawn, not a box.
     let mut fonts = egui::FontDefinitions::default();
@@ -3844,6 +3980,27 @@ fn format_line(codec: &str, rate: u32, channels: usize, bits: Option<u32>) -> St
     format!("{codec}, {rate} Hz, {channels} channel{s}{bits}")
 }
 
+/// The card's line of a track's format: its codec, the bits (where the
+/// codec has them and does not say them) or the bit rate, the rate in kHz,
+/// the channels: "FLAC · 24-bit · 96 kHz · 2 ch", "MP3 · 192 kbps ·
+/// 44.1 kHz · 2 ch".
+fn card_format(i: &crate::engine::TrackInfo) -> String {
+    let mut parts = vec![i.codec.clone()];
+    match (i.bits, i.bitrate) {
+        (Some(b), _) if !i.codec.contains(&format!("{b}-bit")) => parts.push(format!("{b}-bit")),
+        (None, Some(kbps)) => parts.push(format!("{kbps} kbps")),
+        _ => {}
+    }
+    let khz = i.rate as f32 / 1000.0;
+    parts.push(if khz.fract() == 0.0 {
+        format!("{khz:.0} kHz")
+    } else {
+        format!("{khz:.1} kHz")
+    });
+    parts.push(format!("{} ch", i.channels));
+    parts.join(" · ")
+}
+
 /// White or near-black, whichever reads better on `fill`.
 fn ink_on(fill: Color32) -> Color32 {
     let dark = Color32::from_rgb(0x0d, 0x11, 0x17);
@@ -3871,6 +4028,30 @@ fn faces_list(ui: &mut Ui, mode: &mut &'static str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_card_says_the_bits_or_the_bit_rate() {
+        let info = |codec: &str, rate, bits, bitrate| crate::engine::TrackInfo {
+            codec: codec.into(),
+            rate,
+            channels: 2,
+            bits,
+            bitrate,
+            ..Default::default()
+        };
+        assert_eq!(
+            card_format(&info("FLAC", 96_000, Some(24), Some(2900))),
+            "FLAC · 24-bit · 96 kHz · 2 ch"
+        );
+        assert_eq!(
+            card_format(&info("MP3", 44_100, None, Some(192))),
+            "MP3 · 192 kbps · 44.1 kHz · 2 ch"
+        );
+        assert_eq!(
+            card_format(&info("PCM 16-bit", 48_000, Some(16), Some(1536))),
+            "PCM 16-bit · 48 kHz · 2 ch"
+        );
+    }
 
     #[test]
     fn the_format_says_the_bits_once() {
@@ -3906,6 +4087,7 @@ mod tests {
                 height: 64,
                 rgba,
                 png: Vec::new(),
+                large: None,
             }
         };
         let ground = Color32::from_rgb(0x0d, 0x11, 0x17);

@@ -48,15 +48,18 @@ for i in range(0, d16.shape[1], fs):
     for p in s.encode(fr): c.mux(p)
 for p in s.encode(): c.mux(p)
 c.close()
-# the cover: a dusk gradient with a sun
-img = Image.new("RGB", (300, 300))
+# the cover: a dusk gradient with a sun, 1200 px (drawn at twice that and
+# made smaller: smooth edges)
+S = 2400
+img = Image.new("RGB", (S, S))
 dr = ImageDraw.Draw(img)
-for y in range(300):
-    k = y / 299
-    dr.line([(0, y), (300, y)], fill=(int(40 + 200*k), int(30 + 80*k*k), int(90 + 40*(1-k))))
-dr.ellipse((100, 140, 200, 240), fill=(255, 196, 92))
-for y in range(200, 300, 12):
-    dr.rectangle((0, y, 300, y + 5), fill=(40, 24, 64))
+for y in range(S):
+    k = y / (S - 1)
+    dr.line([(0, y), (S, y)], fill=(int(40 + 200*k), int(30 + 80*k*k), int(90 + 40*(1-k))))
+dr.ellipse((S/3, S*0.467, S*2/3, S*0.8), fill=(255, 196, 92))
+for y in range(int(S*2/3), S, S // 25):
+    dr.rectangle((0, y, S, y + S // 60), fill=(40, 24, 64))
+img = img.resize((1200, 1200), Image.LANCZOS)
 buf = io.BytesIO(); img.save(buf, "PNG"); png = buf.getvalue()
 def frame(fid, body):
     return fid + struct.pack(">I", len(body)) + b"\0\0" + body

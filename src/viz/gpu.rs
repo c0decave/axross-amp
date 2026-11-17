@@ -235,6 +235,9 @@ pub struct State {
     /// start): the faces are drawn as small as keeps them within
     /// GPU_BUDGET_MS a frame. 0: as they are.
     pub ms_per_pixel: f32,
+    /// The most pixels a shader face is drawn in (a software renderer: the
+    /// window's size does not make it dearer); 0: no bound.
+    pub max_pixels: f32,
 }
 
 impl Default for State {
@@ -249,6 +252,7 @@ impl Default for State {
             scale: 1.0,
             interval: 1.0 / 30.0,
             ms_per_pixel: 0.0,
+            max_pixels: 0.0,
         }
     }
 }
@@ -759,14 +763,21 @@ pub fn paint(
                 picture: picture.then(|| state.pictures[usize::from(second)].clone()),
                 slot: state.pair * 2 + usize::from(second),
                 size: (rect.width(), rect.height()),
-                scale: if state.ms_per_pixel > 0.0 {
+                scale: {
                     let pixels = (rect.width() * rect.height()).max(1.0)
                         * painter.ctx().pixels_per_point().powi(2);
-                    (GPU_BUDGET_MS / (state.ms_per_pixel * pixels))
-                        .sqrt()
-                        .clamp(0.25, 1.0)
-                } else {
-                    state.scale
+                    let by_time = if state.ms_per_pixel > 0.0 {
+                        (GPU_BUDGET_MS / (state.ms_per_pixel * pixels))
+                            .sqrt()
+                            .clamp(0.25, 1.0)
+                    } else {
+                        state.scale
+                    };
+                    if state.max_pixels > 0.0 {
+                        by_time.min((state.max_pixels / pixels).sqrt().max(0.2))
+                    } else {
+                        by_time
+                    }
                 },
             },
         ));
@@ -987,7 +998,9 @@ fn draw(job: &Job, feedback: &mut [V3]) -> Vec<Color32> {
                             to(a),
                         )
                     } else {
-                        Color32::from_rgb(to(c[0]), to(c[1]), to(c[2]))
+                        // (dithered, as the shader: no bands)
+                        let d = (hash([x as f32, y as f32]) - 0.5) / 255.0;
+                        Color32::from_rgb(to(c[0] + d), to(c[1] + d), to(c[2] + d))
                     };
                 }
             });
@@ -1147,11 +1160,11 @@ pub fn shade(
             for k in 0..8 {
                 let fk = k as f32;
                 let centre = [
-                    0.7 * (t * (0.5 + 0.13 * fk) + fk * 1.7).sin(),
-                    0.4 * (t * (0.4 + 0.11 * fk) + fk * 2.3).cos(),
+                    1.3 * (t * (0.5 + 0.13 * fk) + fk * 1.7).sin(),
+                    0.6 * (t * (0.4 + 0.11 * fk) + fk * 2.3).cos(),
                 ];
                 let level = u.band((fk + 0.5) / 8.0);
-                let r = 0.06 + 0.16 * level + 0.05 * u.pulse();
+                let r = 0.14 + 0.16 * level + 0.05 * u.pulse();
                 let d = [p[0] - centre[0], p[1] - centre[1]];
                 let f = r * r / (d[0] * d[0] + d[1] * d[1]).max(1e-4);
                 field += f;
@@ -1280,7 +1293,7 @@ fn fire(u: &Uniforms, uv: [f32; 2], aspect: f32) -> V3 {
     let x = uv[0] * aspect;
     let turb = fbm([x * 3.0, y * 2.0 - t * (1.6 + 1.2 * u.energy())]);
     let lick = fbm([x * 7.0 + 3.0, y * 4.0 - t * 3.2]);
-    let height = 0.25 + 0.55 * u.band(uv[0] * 0.7) + 0.2 * u.pulse();
+    let height = 0.5 + 0.4 * u.band(uv[0] * 0.7) + 0.15 * u.pulse();
     let shape = 1.0 - y / height.max(0.05);
     let heat = (shape * 0.85 + (turb - 0.5) * 1.2 + (lick - 0.5) * 0.6 * (1.0 - y)).clamp(0.0, 1.0);
     let h = heat.powf(1.4);
@@ -1743,7 +1756,7 @@ pub fn choose(render_state: &egui_wgpu::RenderState) -> Choice {
 }
 
 /// The CPU seconds this process has used, where the system tells (Linux).
-fn process_cpu() -> Option<f64> {
+pub fn process_cpu() -> Option<f64> {
     let stat = std::fs::read_to_string("/proc/self/stat").ok()?;
     let rest = stat.rsplit(')').next()?;
     let fields: Vec<&str> = rest.split_whitespace().collect();

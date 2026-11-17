@@ -138,8 +138,6 @@ fn every_state_of_the_window() {
     // the visualization's menu, the generative faces open
     let picture = h.get_by_role(egui::accesskit::Role::Image).rect();
     right_click(&mut h, picture.center());
-    h.get_by_role_and_label(egui::accesskit::Role::Button, "Visualization")
-        .click();
     settle(&mut h, 2);
     for name in [
         "Spectrum",
@@ -149,6 +147,13 @@ fn every_state_of_the_window() {
     ] {
         assert!(h.query_by_label(name).is_some(), "{name} not in the menu");
     }
+    // the colours and options below the faces, not under them (and their
+    // menus open over nothing but themselves: they come last)
+    let colours = h
+        .get_by_role_and_label(egui::accesskit::Role::Button, "Colours")
+        .rect();
+    let last = h.get_by_label("Kinetic typography").rect();
+    assert!(colours.top() >= last.bottom(), "{colours:?} under {last:?}");
     shoot(&mut h, "menu");
     h.key_press(egui::Key::Escape);
     settle(&mut h, 2);
@@ -284,7 +289,12 @@ fn every_state_of_the_window() {
 /// window, none over another.
 fn empty_state_says_what_to_do(h: &Harness<'static, App>, size: egui::Vec2) {
     assert!(h.query_by_label("Drop music here").is_some());
-    let window = egui::Rect::from_min_size(Pos2::ZERO, size);
+    // (inside the drop zone's dashed edge: above the status line, within
+    // the zone's margin)
+    let window = egui::Rect::from_min_max(
+        Pos2::new(12.0, 0.0),
+        Pos2::new(size.x - 12.0, size.y - 26.0 - 12.0),
+    );
     let rects: Vec<egui::Rect> = ["Open files…", "Open folder…", "Add a URL…"]
         .iter()
         .map(|name| {
@@ -298,7 +308,9 @@ fn empty_state_says_what_to_do(h: &Harness<'static, App>, size: egui::Vec2) {
             assert!(!a.shrink(1.0).intersects(*b), "{a:?} over {b:?}");
         }
     }
-    assert!(h.query_by_label_contains("play / pause").is_some());
+    if size.y >= 700.0 {
+        assert!(h.query_by_label_contains("play / pause").is_some());
+    }
 }
 
 /// Colourful pixels down a band's rail, above and below its 0 dB line

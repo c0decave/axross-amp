@@ -763,21 +763,34 @@ fn tone(hz: f32, secs: f32) -> Vec<f32> {
 
 #[test]
 fn a_crossfade_fades_one_track_into_the_next() {
+    // (two folders: two files of one folder in order are an album's)
     let dir = folder("crossfade");
+    std::fs::create_dir_all(dir.join("other")).unwrap();
     std::fs::write(dir.join("a.wav"), wav_of(RATE, &tone(440.0, 3.0))).unwrap();
-    std::fs::write(dir.join("b.wav"), wav_of(RATE, &tone(660.0, 3.0))).unwrap();
+    std::fs::write(dir.join("other/b.wav"), wav_of(RATE, &tone(660.0, 3.0))).unwrap();
     let path = |n: &str| dir.join(n).to_string_lossy().into_owned();
     let engine = Engine::start_headless(|| {});
     engine.shared.set_volume(1.0);
     engine.send(Command::Crossfade(1.0));
     load(&engine, &path("a.wav"), 1);
     engine.send(Command::Queue(Some(Queued {
-        path: path("b.wav"),
+        path: path("other/b.wav"),
         generation: 2,
     })));
     let mut output = Output::new();
     let mut events = Vec::new();
-    output.play(&engine, 6.0, |_, e| events.push(describe(e)));
+    // (where the meters start each track: the first's start, the second's
+    // in the fade's middle - not at its start, where the first is louder)
+    output.play(&engine, 0.6, |_, e| events.push(describe(e)));
+    let (first, count) = engine.shared.track_start();
+    output.play(&engine, 5.4, |_, e| events.push(describe(e)));
+    let (second, count2) = engine.shared.track_start();
+    assert_eq!(count2, count + 1, "{events:?}");
+    let begun = (second - first) as f32 / RATE as f32;
+    assert!(
+        (begun - 2.5).abs() < 0.1,
+        "the second counted from {begun} s, not the fade's middle (2.5 s)"
+    );
     assert!(events.contains(&"advanced 2".to_owned()), "{events:?}");
     assert!(events.contains(&"ended 2".to_owned()), "{events:?}");
     let heard = heard_from_start(&output.heard);
@@ -828,4 +841,213 @@ fn an_album_plays_gapless_even_with_a_crossfade_set() {
         "untagged tracks fade"
     );
     assert!(!crossfades(0.0, &track("Blue"), &track("Red")), "off");
+    // untagged rips of one album: one folder, in order - no fade
+    use axross_amp::engine::crossfades_between;
+    let numbered = |n: u64| TrackInfo {
+        track_number: Some(n),
+        ..Default::default()
+    };
+    let none = TrackInfo::default();
+    assert!(!crossfades_between(
+        4.0,
+        ("/live/01 intro.flac", &none),
+        ("/live/02 song.flac", &none)
+    ));
+    assert!(!crossfades_between(
+        4.0,
+        ("/live/x.flac", &numbered(3)),
+        ("/live/y.flac", &numbered(4))
+    ));
+    assert!(crossfades_between(
+        4.0,
+        ("/live/x.flac", &numbered(3)),
+        ("/live/y.flac", &numbered(7))
+    ));
+    assert!(crossfades_between(
+        4.0,
+        ("/a/02 song.flac", &none),
+        ("/b/01 other.flac", &none)
+    ));
+    assert!(
+        crossfades_between(4.0, ("/live/02 b.flac", &none), ("/live/01 a.flac", &none)),
+        "backwards in the folder: not an album's order"
+    );
+}
+
+/// The true peak by 8x oversampling (a long windowed sinc between the
+/// samples): finer than BS.1770's 4x filter, which reads broadband sound low.
+fn true_peak_8x(frames: &[f32]) -> f32 {
+    const HALF: i64 = 48;
+    let n = frames.len() as i64 / 2;
+    let mut peak = 0.0f32;
+    for c in 0..2 {
+        let x = |i: i64| {
+            if (0..n).contains(&i) {
+                frames[(2 * i + c) as usize] as f64
+            } else {
+                0.0
+            }
+        };
+        // (not within the filter's reach of the excerpt's cut ends: a cut
+        // rings)
+        for i in HALF..n - HALF {
+            peak = peak.max(x(i).abs() as f32);
+            for k in 1..8 {
+                let f = k as f64 / 8.0;
+                let mut v = 0.0f64;
+                for j in -HALF + 1..=HALF {
+                    let d = j as f64 - f;
+                    let sinc = (std::f64::consts::PI * d).sin() / (std::f64::consts::PI * d);
+                    let w = 0.5 + 0.5 * (std::f64::consts::PI * d / HALF as f64).cos();
+                    v += x(i + j) * sinc * w;
+                }
+                peak = peak.max(v.abs() as f32);
+            }
+        }
+    }
+    20.0 * peak.max(1e-9).log10()
+}
+
+#[test]
+fn a_crossfade_of_two_hot_masters_is_held_below_full_scale() {
+    // two loud, dense masters at -0.3 dBFS (most of their samples near the
+    // top, as a modern master's): an equal power fade sums them to up to
+    // 1.41 times that in its middle - held at -0.3 dBTP by the output's
+    // limiter; before the fade, bit for bit
+    let dir = folder("hot-fade");
+    std::fs::create_dir_all(dir.join("b")).unwrap();
+    let loud = |hz: f32| -> Vec<f32> {
+        let top = 10f32.powf(-0.3 / 20.0);
+        (0..3 * RATE as usize)
+            .flat_map(|i| {
+                let t = i as f32 / RATE as f32;
+                let v = (4.0 * (t * hz * std::f32::consts::TAU).sin()).tanh() / 4f32.tanh();
+                let v = ((v * top) * 32767.0).round() / 32767.0;
+                [v, v]
+            })
+            .collect()
+    };
+    let master = loud(110.0);
+    std::fs::write(dir.join("a.wav"), wav_of(RATE, &master)).unwrap();
+    std::fs::write(dir.join("b/b.wav"), wav_of(RATE, &loud(165.0))).unwrap();
+    let path = |n: &str| dir.join(n).to_string_lossy().into_owned();
+    let engine = Engine::start_headless(|| {});
+    engine.shared.set_volume(1.0);
+    engine.send(Command::Crossfade(2.0));
+    load(&engine, &path("a.wav"), 1);
+    engine.send(Command::Queue(Some(Queued {
+        path: path("b/b.wav"),
+        generation: 2,
+    })));
+    let mut output = Output::new();
+    output.play(&engine, 5.5, |_, _| {});
+    let heard = heard_from_start(&output.heard);
+    let highest = heard.iter().fold(0.0f32, |m, v| m.max(v.abs()));
+    let at_full = heard.iter().filter(|v| v.abs() >= 0.999).count();
+    assert!(
+        highest < 0.98 && at_full == 0,
+        "a sample at {highest} ({at_full} at full scale)"
+    );
+    let fade = &heard[(0.9 * RATE as f32) as usize * 2..(3.2 * RATE as f32) as usize * 2];
+    let tp = true_peak_8x(fade);
+    assert!(tp <= -0.25, "{tp} dBTP in the fade (8x)");
+    // before it, the first master as it is (only 4 ms later)
+    let want: Vec<f32> = master
+        .iter()
+        .map(|v| ((v * 32767.0).round() as i16) as f32 / 32768.0)
+        .collect();
+    let from = 2 * 4096;
+    let compared = &heard[from..from + 2 * 20_000];
+    let shift = (0..400)
+        .min_by_key(|k| {
+            let w = &want[from + 2 * k..from + 2 * k + 64];
+            (compared[..64]
+                .iter()
+                .zip(w)
+                .map(|(a, b)| (a - b).abs())
+                .sum::<f32>()
+                * 1e6) as u64
+        })
+        .unwrap();
+    let want = &want[from + 2 * shift..from + 2 * shift + 2 * 20_000];
+    let differ = compared.iter().zip(want).filter(|(a, b)| a != b).count();
+    assert_eq!(differ, 0, "{differ} samples changed before the fade");
+}
+
+#[test]
+fn a_dense_master_resampled_stays_below_its_ceiling_measured_8x() {
+    // broadband sound peaking at -0.1 dBFS at 44.1 kHz on a 48 kHz output:
+    // what the 4x filter reads low, an 8x look finds; held at -0.3 dBTP
+    let dir = folder("dense");
+    let rate = 44_100u32;
+    let mut seed = 99u32;
+    let mut raw: Vec<f32> = (0..rate as usize)
+        .flat_map(|i| {
+            let t = i as f32 / rate as f32;
+            let tones: f32 = (1..40)
+                .map(|k| (t * 517.0 * k as f32 * std::f32::consts::TAU + k as f32 * 1.7).sin())
+                .sum::<f32>()
+                / 12.0;
+            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            let noise = (seed >> 9) as f32 / (1u32 << 23) as f32 - 0.5;
+            let v = tones + noise;
+            [v, v * 0.95]
+        })
+        .collect();
+    let peak = raw.iter().fold(0.0f32, |m, v| m.max(v.abs()));
+    for v in &mut raw {
+        *v = ((*v / peak * 10f32.powf(-0.1 / 20.0)) * 32767.0).round() / 32767.0;
+    }
+    std::fs::write(dir.join("dense.wav"), wav_of(rate, &raw)).unwrap();
+    let engine = Engine::start_headless(|| {});
+    engine.shared.set_volume(1.0);
+    load(&engine, &dir.join("dense.wav").to_string_lossy(), 1);
+    let mut output = Output::new();
+    output.play(&engine, 1.4, |_, _| {});
+    let heard = heard_from_start(&output.heard);
+    let part = &heard[(0.2 * RATE as f32) as usize * 2..(0.9 * RATE as f32) as usize * 2];
+    let tp = true_peak_8x(part);
+    assert!(tp <= -0.25, "{tp} dBTP (8x)");
+}
+
+#[test]
+fn a_track_chosen_while_another_plays_fades_in_over_it_when_asked() {
+    let dir = folder("skip-fade");
+    std::fs::create_dir_all(dir.join("b")).unwrap();
+    std::fs::write(dir.join("a.wav"), wav_of(RATE, &tone(440.0, 6.0))).unwrap();
+    std::fs::write(dir.join("b/b.wav"), wav_of(RATE, &tone(660.0, 4.0))).unwrap();
+    let path = |n: &str| dir.join(n).to_string_lossy().into_owned();
+    // both: a cut (off) and a fade of a second (on)
+    for on in [false, true] {
+        let engine = Engine::start_headless(|| {});
+        engine.shared.set_volume(1.0);
+        engine.send(Command::FadeOnSkip(on));
+        load(&engine, &path("a.wav"), 1);
+        let mut output = Output::new();
+        output.play(&engine, 1.5, |_, _| {});
+        load(&engine, &path("b/b.wav"), 2);
+        output.play(&engine, 2.0, |_, _| {});
+        let heard = &output.heard;
+        let window = |k: usize| &heard[k * 2400 * 2..(k + 1) * 2400 * 2];
+        // where the second is first heard (50 ms windows)
+        let first = (0..heard.len() / 4800)
+            .find(|k| power_at(window(*k), 660.0) > 1e-4)
+            .expect("the second heard");
+        // 0.3 s on: both (a fade) or only the second (a cut)
+        let (a, b) = (
+            power_at(window(first + 6), 440.0),
+            power_at(window(first + 6), 660.0),
+        );
+        if on {
+            assert!(a > 0.1 * b && b > 0.1 * a, "fading: both {a} {b}");
+        } else {
+            assert!(b > 100.0 * a, "cut: only the second {a} {b}");
+        }
+        // and a second later only the second
+        let (a, b) = (
+            power_at(window(first + 24), 440.0),
+            power_at(window(first + 24), 660.0),
+        );
+        assert!(b > 100.0 * a, "after: {a} {b} ({on})");
+    }
 }

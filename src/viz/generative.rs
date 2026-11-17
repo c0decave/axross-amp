@@ -260,7 +260,7 @@ pub fn preset(st: &State) -> usize {
     st.preset
 }
 
-/// A look of the feedback face (MilkDrop's presets, a few of them): its
+/// A look of the feedback face (five looks of its own - not MilkDrop's presets): its
 /// motion (a 60th of a second's), the wave it draws, how its swirl folds,
 /// how fast its colours turn, and whether it is mirrored.
 struct Preset {
@@ -1480,7 +1480,7 @@ fn typography(f: &Frame<'_>, pen: &mut Pen<'_>, st: &mut State, dt: f32) {
         let k = ((age - (glyph as f32 - 1.0) * 0.035) / 0.25).clamp(0.0, 1.0);
         let k = k * k * (3.0 - 2.0 * k);
         let bounce = pulse * (glyph as f32 * 1.3 + t * 6.0).sin() * 0.06;
-        (vec2(0.0, ((1.0 - k) * 0.7 - bounce) * height), k)
+        (vec2(0.0, ((1.0 - k) * 0.3 - bounce) * height), k)
     };
     // a glow behind, then the word: quiet to loud along it, its peak on
     // the beat
@@ -1494,9 +1494,10 @@ fn typography(f: &Frame<'_>, pen: &mut Pen<'_>, st: &mut State, dt: f32) {
         let colour = mix(mix(s.high, s.peak, 0.35 * along), s.peak, pulse * 0.8);
         (lift, mix(s.background, colour, k))
     });
-    // a bar under it, as wide as it is loud
+    // a bar under it, as wide as it is loud - below its letters' feet
+    // (and their descenders), once the word has come
     let wide = galley.size().x * scale * (0.25 + 0.75 * a.energy.min(1.0)) * ease;
-    let y = c.y + height * 0.55;
+    let y = c.y + height * 0.62;
     let (l, rr) = (pos2(c.x - wide / 2.0, y), pos2(c.x + wide / 2.0, y));
     pen.segment(l, rr, 10.0, glow(s.mid, 0.15 + 0.25 * pulse));
     pen.segment(l, rr, 3.0, mix(s.mid, s.peak, pulse * 0.6));

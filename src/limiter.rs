@@ -58,8 +58,9 @@ impl Limiter {
             gain: 1.0,
             // back to unity with a time constant of 80 ms
             release: 1.0 - (-1.0 / (0.08 * rate as f32)).exp(),
-            // (aiming 0.05 dB lower: the filter's estimate is within that)
-            ceiling: 10f32.powf((ceiling_db - 0.05) / 20.0),
+            // (aiming 0.35 dB lower: BS.1770's 4x filter reads broadband
+            // sound up to about that low, as an 8x look shows)
+            ceiling: 10f32.powf((ceiling_db - 0.35) / 20.0),
             active: false,
         }
     }
@@ -107,13 +108,21 @@ impl Limiter {
     /// Interleaved stereo in place: what comes out is the look-ahead
     /// behind what went in (the first call gives that many fewer frames).
     pub fn process(&mut self, samples: &mut Vec<f32>) {
+        self.process_holding(samples, true);
+    }
+
+    /// As [`Limiter::process`], the peaks held only while `hold` (else the
+    /// sound goes through as it is, only delayed - bit for bit once the
+    /// gain is back at unity): in the path all along, so that its delay
+    /// does not come and go, holding where the sound may go over.
+    pub fn process_holding(&mut self, samples: &mut Vec<f32>, hold: bool) {
         self.active = true;
         let frames = samples.len() / 2;
         let mut written = 0;
         for k in 0..frames {
             let (l, r) = (samples[2 * k], samples[2 * k + 1]);
             let peak = self.peak(l, r);
-            let need = if peak > self.ceiling {
+            let need = if hold && peak > self.ceiling {
                 self.ceiling / peak
             } else {
                 1.0

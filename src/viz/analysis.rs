@@ -123,8 +123,15 @@ fn record(a: &Analyzer, st: &mut State, dt: f32) {
     }
 }
 
+/// A label, never smaller than 11 px (readable).
 fn label(p: &Painter, at: Pos2, align: Align2, text: impl ToString, size: f32, colour: Color32) {
-    p.text(at, align, text, FontId::proportional(size), colour);
+    p.text(
+        at,
+        align,
+        text,
+        FontId::proportional(size.max(11.0)),
+        colour,
+    );
 }
 
 fn mono_label(
@@ -135,7 +142,7 @@ fn mono_label(
     size: f32,
     colour: Color32,
 ) {
-    p.text(at, align, text, FontId::monospace(size), colour);
+    p.text(at, align, text, FontId::monospace(size.max(11.0)), colour);
 }
 
 /// "-14.2", "-inf" (the font has no real minus nor infinity).
@@ -266,10 +273,17 @@ fn analyzer(f: &Frame<'_>, cv: &mut Canvas) {
             } else {
                 format!("{hz}")
             };
+            // (at the right edge, ending there: not cut off)
+            let x = x_of(hz);
+            let align = if x > plot.right() - 14.0 {
+                Align2::RIGHT_TOP
+            } else {
+                Align2::CENTER_TOP
+            };
             label(
                 p,
-                pos2(x_of(hz), plot.bottom() + 2.0),
-                Align2::CENTER_TOP,
+                pos2(x.min(plot.right()), plot.bottom() + 2.0),
+                align,
                 text,
                 small,
                 s.text(),

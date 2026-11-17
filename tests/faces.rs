@@ -558,3 +558,112 @@ fn the_feedback_face_changes_its_preset_each_phrase() {
     println!("presets: {seen:?}");
     assert!(seen.len() >= 3, "presets shown: {seen:?}");
 }
+
+#[test]
+fn slow_gradients_are_dithered_not_banded() {
+    // the aurora's sky and glow change slowly: in 8 bits they stood in bands
+    // (runs of one value, then a step); dithered, a pixel's neighbours
+    // differ - by the GPU and by the CPU
+    for gpu in [true, false] {
+        let mut h = faces::harness("aurora", vec2(320.0, 180.0), gpu, 2.0);
+        for _ in 0..30 {
+            faces::frame(&mut h);
+            h.render().unwrap();
+        }
+        let img = h.render().unwrap();
+        // (where the picture is smooth - neighbours within 2 of each other
+        // in each channel - how often they are the very same: in bands
+        // nearly always, dithered much less)
+        let (mut smooth, mut same) = (0usize, 0usize);
+        for y in (10..img.height() - 10).step_by(2) {
+            for x in 11..img.width() - 10 {
+                let (p, q) = (img.get_pixel(x, y), img.get_pixel(x - 1, y));
+                if (0..3).all(|c| (p[c] as i32 - q[c] as i32).abs() <= 2) {
+                    smooth += 1;
+                    if p == q {
+                        same += 1;
+                    }
+                }
+            }
+        }
+        let mean = same as f32 / smooth.max(1) as f32;
+
+        assert!(
+            mean < 0.38,
+            "{mean} of smooth neighbours the same (gpu {gpu}): banded"
+        );
+    }
+}
+
+/// How much of the picture's height (rows) and width (columns) holds
+/// something drawn in colour (not the background, not a grey grid line).
+fn extent(img: &image::RgbaImage, background: image::Rgba<u8>) -> (f32, f32) {
+    let (w, h) = (img.width(), img.height());
+    let mut rows = vec![false; h as usize];
+    let mut cols = vec![false; w as usize];
+    for y in 6..h - 6 {
+        for x in 6..w - 6 {
+            let p = img.get_pixel(x, y);
+            let (max, min) = (p[0].max(p[1]).max(p[2]), p[0].min(p[1]).min(p[2]));
+            if far(p, &background) && (max - min) > 40 {
+                rows[y as usize] = true;
+                cols[x as usize] = true;
+            }
+        }
+    }
+    let share = |v: &[bool]| v.iter().filter(|b| **b).count() as f32 / (v.len() - 12) as f32;
+    (share(&rows), share(&cols))
+}
+
+#[test]
+fn quiet_music_still_fills_the_picture() {
+    // music five times quieter than the test signal, the scopes' nearly
+    // mono: the fire still rises, the metaballs spread across, the scopes
+    // (their gain found) still fill their frame
+    let background = {
+        let s = viz::scheme("classic", &Default::default()).background;
+        image::Rgba([s.r(), s.g(), s.b(), 255])
+    };
+    let mut report = Vec::new();
+    for (key, rows, cols) in [
+        ("fire", 0.65, 0.0),
+        ("metaballs", 0.0, 0.5),
+        ("scope", 0.4, 0.0),
+        ("lissajous", 0.4, 0.0),
+    ] {
+        let mut h = faces::harness(key, vec2(620.0, 300.0), true, 3.0);
+        for f in h.state_mut().sound.chunks_mut(2) {
+            f[0] *= 0.2;
+            f[1] = f[0] * 0.97;
+        }
+        for _ in 0..75 {
+            faces::frame(&mut h);
+        }
+        let img = h.render().unwrap();
+        img.save(shots().join(format!("{key}-quiet.png"))).unwrap();
+        let (r, c) = extent(&img, background);
+        report.push(format!("{key}: rows {r:.2}, columns {c:.2}"));
+        assert!(r >= rows && c >= cols, "{report:?}");
+    }
+    println!("{}", report.join("\n"));
+}
+
+#[test]
+fn the_starfield_is_axrosss_unless_asked() {
+    // axross's starfield: dots, 300 of them; trails and glow only as an
+    // option - far more of the picture lit
+    let mut lit = Vec::new();
+    for plus in [false, true] {
+        let mut h = faces::harness("starfield", vec2(620.0, 300.0), true, 3.0);
+        h.state_mut().state.classic_plus = plus;
+        for _ in 0..60 {
+            faces::frame(&mut h);
+        }
+        let img = h.render().unwrap();
+        let background = img.get_pixel(310, 3);
+        let n = img.pixels().filter(|p| far(p, background)).count();
+        lit.push(n as f32 / (620.0 * 300.0));
+    }
+    assert!(lit[0] < 0.03, "axross's dots: {lit:?}");
+    assert!(lit[1] > lit[0] * 2.0, "the trails: {lit:?}");
+}

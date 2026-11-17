@@ -130,7 +130,8 @@ fn buttons_keys_equalizer_playlist_url_and_dropped_files() {
 
     // a click on the picture: the next face (once it cannot be a double-click);
     // a double-click: large and back, the face unchanged
-    let centre = Pos2::new(310.0, 250.0);
+    // (the picture's middle, wherever the card above leaves it)
+    let centre = picture_centre(&harness);
     let click = |h: &mut Harness<'_, App>| {
         h.event(Event::PointerButton {
             pos: centre,
@@ -273,4 +274,10 @@ fn buttons_keys_equalizer_playlist_url_and_dropped_files() {
     assert_eq!(saved.tracks.len(), before.tracks.len(), "{saved:?}");
     assert_eq!(saved.repeat, "off");
     assert!(!saved.shuffle);
+}
+
+/// The middle of the picture (its accessible name says what it shows).
+fn picture_centre(h: &egui_kittest::Harness<'_, axross_amp::app::App>) -> Pos2 {
+    use egui_kittest::kittest::Queryable;
+    h.get_by_label_contains("Visualization: ").rect().center()
 }
