@@ -1972,11 +1972,14 @@ impl App {
                         );
                         if !by.is_empty() {
                             ui.add(
-                                egui::Label::new(RichText::new(by).size(14.0).color(self.accent))
-                                    .truncate(),
+                                egui::Label::new(
+                                    RichText::new(by.clone()).size(14.0).color(self.accent),
+                                )
+                                .truncate(),
                             );
                         }
-                        if !self.info.album.is_empty() {
+                        // (the album, unless the line above names it)
+                        if !self.info.album.is_empty() && !by.contains(&self.info.album) {
                             ui.add(
                                 egui::Label::new(RichText::new(&self.info.album).color(MUTED))
                                     .truncate(),

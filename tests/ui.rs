@@ -170,6 +170,10 @@ fn the_readme_picture() {
         headless_audio: true,
     };
     let args = vec![track.to_string_lossy().into_owned()];
+    // (the shaders on wgpu even where it is a software rasterizer: the
+    // README shows them as a GPU draws them)
+    // SAFETY: set before the window is made; the other test reads nothing of it
+    unsafe { std::env::set_var("AMP_GPU_SHADERS", "1") };
     let mut harness = Harness::builder()
         .with_size(egui::vec2(620.0, 860.0))
         .wgpu()
@@ -209,7 +213,9 @@ fn the_readme_picture() {
                 .send(axross_amp::engine::Command::Seek(14.0));
         }
         harness.state_mut().set_mode(key);
-        let end = std::time::Instant::now() + std::time::Duration::from_millis(1800);
+        // (the overview once the whole track is read)
+        let wait = if key == "overview" { 15_000 } else { 1800 };
+        let end = std::time::Instant::now() + std::time::Duration::from_millis(wait);
         while std::time::Instant::now() < end {
             harness
                 .state()
@@ -217,8 +223,20 @@ fn the_readme_picture() {
                 .shared
                 .render(&mut buf, 2, &mut state);
             harness.run_steps(1);
+            if key == "milkdrop" {
+                // (its feedback moves on as it is rendered)
+                harness.render().unwrap();
+            }
             std::thread::sleep(std::time::Duration::from_millis(10));
+            if key == "overview"
+                && harness.state().overview_read() >= 1.0
+                && end.duration_since(std::time::Instant::now()).as_millis() < 13_000
+            {
+                break;
+            }
         }
+        harness.event(egui::Event::PointerGone);
+        harness.run_steps(1);
         let image = harness.render().unwrap();
         let r = harness
             .get_by_role_and_label(
