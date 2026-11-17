@@ -267,7 +267,8 @@ fn analyzer(f: &Frame<'_>, cv: &mut Canvas) {
     });
     let small = 10.0;
     for hz in grid_hz {
-        if hz <= top_hz {
+        // (not 20 Hz: at the corner, under the lowest level's name)
+        if hz <= top_hz && hz > 20.0 {
             let text = if hz >= 1000.0 {
                 format!("{}k", hz / 1000.0)
             } else {
@@ -443,10 +444,7 @@ fn loudness(f: &Frame<'_>, cv: &mut Canvas, st: &State) {
         // EBU R128's target
         let y = y_of(f.loudness_target);
         pen.rect(
-            Rect::from_x_y_ranges(
-                meters.left() - 6.0..=meters.right() + 4.0,
-                y - 1.0..=y + 1.0,
-            ),
+            Rect::from_x_y_ranges(meters.left() - 6.0..=meters.right(), y - 1.0..=y + 1.0),
             s.peak.gamma_multiply(0.8),
         );
         // the short-term loudness of the last minute
@@ -1365,10 +1363,11 @@ fn mel(f: &Frame<'_>, state: &mut VizState) {
         );
     }
     let seconds = fine::STEPS as f32 / 30.0;
+    // (at the top: at the foot it touched the lowest band's name)
     label(
         p,
-        pos2(plot.left() + 3.0, plot.bottom() - 2.0),
-        Align2::LEFT_BOTTOM,
+        pos2(plot.left() + 4.0, plot.top() + 3.0),
+        Align2::LEFT_TOP,
         format!("-{seconds:.1} s"),
         10.0,
         s.peak,

@@ -178,6 +178,8 @@ fn the_readme_picture() {
         .with_size(egui::vec2(620.0, 860.0))
         .wgpu()
         .build_eframe(move |cc| App::with_setup(cc, args.clone(), setup.clone()));
+    // (the faces at full resolution, as a GPU draws them)
+    harness.state_mut().full_resolution();
     let mut state = RenderState::default();
     let mut buf = vec![0.0f32; 480 * 2];
     let end = std::time::Instant::now() + std::time::Duration::from_secs(9);

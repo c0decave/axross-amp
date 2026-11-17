@@ -8,6 +8,7 @@
 Needs PyQt6 (QT_QPA_PLATFORM=offscreen without a display).
 """
 
+import re
 import sys
 from pathlib import Path
 
@@ -20,6 +21,13 @@ AXROSS = [
     "ridges", "terrain", "ring", "bells", "ribbon", "kaleidoscope", "scope", "lissajous",
     "vu", "starfield",
 ]
+# the faces' names as the menu says them (src/viz/mod.rs: face("key", "Name", ...))
+NAMES = dict(
+    re.findall(
+        r'face\("([a-z]+)", "([^"]+)"',
+        (Path(__file__).resolve().parent.parent / "src/viz/mod.rs").read_text(),
+    )
+)
 BACKGROUND = QColor("#0d1117")
 TEXT = QColor("#e6edf3")
 LABEL = 22
@@ -73,14 +81,15 @@ def main() -> None:
         width = int(sys.argv[5]) if len(sys.argv) > 5 else 400
         cells = []
         for key in AXROSS:
-            cells.append((f"{key} - axross (Python, Qt)", scaled(python / f"{key}.png", width)))
-            cells.append((f"{key} - axross-amp (Rust, egui)", scaled(rust / f"{key}.png", width)))
+            name = NAMES.get(key, key)
+            cells.append((f"{name} - axross (Python, Qt)", scaled(python / f"{key}.png", width)))
+            cells.append((f"{name} - axross-amp (Rust, egui)", scaled(rust / f"{key}.png", width)))
         sheet(cells, 4, width, out, "The same signal, the same scheme: axross's faces and axross-amp's")
     else:
         rust, out = Path(sys.argv[2]), Path(sys.argv[3])
         keys = sys.argv[4:]
         width = 300
-        cells = [(key, scaled(rust / f"{key}.png", width)) for key in keys]
+        cells = [(NAMES.get(key, key), scaled(rust / f"{key}.png", width)) for key in keys]
         sheet(cells, 4, width, out)
     app.quit()
 

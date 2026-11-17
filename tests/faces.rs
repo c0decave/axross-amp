@@ -727,3 +727,63 @@ fn the_cover_face_without_a_cover_is_a_picture_not_a_flat_square() {
         / total;
     assert!(flat < 0.15, "{flat} of the picture one (light) colour");
 }
+
+/// The sizes of every piece of text in `shapes` (galleys' sections), and
+/// where each text lies.
+fn text_sizes(shapes: &[egui::epaint::ClippedShape], out: &mut Vec<(f32, String, egui::Rect)>) {
+    fn walk(shape: &egui::Shape, out: &mut Vec<(f32, String, egui::Rect)>) {
+        match shape {
+            egui::Shape::Text(t) => {
+                let rect = t.galley.rect.translate(t.pos.to_vec2());
+                for s in &t.galley.job.sections {
+                    let text =
+                        t.galley.job.text[s.byte_range.start.0..s.byte_range.end.0].to_owned();
+                    if !text.trim().is_empty() {
+                        out.push((s.format.font_id.size, text, rect));
+                    }
+                }
+            }
+            egui::Shape::Vec(v) => v.iter().for_each(|s| walk(s, out)),
+            _ => {}
+        }
+    }
+    for c in shapes {
+        walk(&c.shape, out);
+    }
+}
+
+#[test]
+fn no_face_writes_smaller_than_11_px_nor_text_over_text() {
+    // labels of 7 to 10.5 px were hard to read: 11 px at least, everywhere;
+    // and no label over another (the mel's "-8.5 s" touched its "100")
+    let mut small = Vec::new();
+    for face in FACES.iter().filter(|f| f.group != Group::Off) {
+        let mut h = faces::harness(face.key, vec2(620.0, 300.0), true, 2.0);
+        if face.key == "overview" {
+            let o = overview_of(&h.state().sound);
+            h.state_mut().overview = Some(o);
+        }
+        for _ in 0..30 {
+            faces::frame(&mut h);
+        }
+        let mut sizes = Vec::new();
+        text_sizes(&h.output().shapes, &mut sizes);
+        for (size, text, _) in &sizes {
+            if *size < 10.99 {
+                small.push(format!("{}: {text:?} at {size} px", face.key));
+            }
+        }
+        // (the analysis faces: their labels are what they are for; the
+        // typography's words go over each other by design)
+        if face.group == Group::Analysis {
+            for (i, (_, a, ra)) in sizes.iter().enumerate() {
+                for (_, b, rb) in &sizes[i + 1..] {
+                    if ra.shrink(1.0).intersects(rb.shrink(1.0)) {
+                        small.push(format!("{}: {a:?} over {b:?}", face.key));
+                    }
+                }
+            }
+        }
+    }
+    assert!(small.is_empty(), "{small:#?}");
+}

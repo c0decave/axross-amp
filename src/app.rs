@@ -682,6 +682,15 @@ impl App {
     }
 
     /// Whether the visualization is shown large.
+    /// The shader faces at the window's full resolution even on a slow
+    /// renderer (the README's pictures).
+    #[doc(hidden)]
+    pub fn full_resolution(&mut self) {
+        self.viz_state.gpu.max_pixels = 0.0;
+        self.viz_state.gpu.ms_per_pixel = 0.0;
+        self.viz_state.gpu.scale = 1.0;
+    }
+
     /// How the pictures move: "calm" or "intense" (tests).
     pub fn motion(&self) -> &str {
         &self.amp.motion
@@ -3178,7 +3187,7 @@ impl App {
                             } else {
                                 format!("{db:+.0}")
                             },
-                            egui::FontId::proportional(10.5),
+                            egui::FontId::proportional(11.0),
                             MUTED,
                         );
                     }
