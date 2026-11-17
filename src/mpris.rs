@@ -404,7 +404,7 @@ pub struct Mpris {
 /// What [`Mpris::claim`] found on the bus.
 pub enum Claim {
     /// The name is this program's: the player on the bus.
-    Mine(Mpris),
+    Mine(Box<Mpris>),
     /// Another player holds it and took the files handed over.
     Handed,
     /// No bus (why).
@@ -471,7 +471,7 @@ impl Mpris {
         }
         let cell = OnceLock::new();
         let _ = cell.set(conn);
-        Claim::Mine(Mpris {
+        Claim::Mine(Box::new(Mpris {
             conn: Arc::new(cell),
             state,
             told: Snapshot::default(),
@@ -479,7 +479,7 @@ impl Mpris {
             error: Arc::default(),
             waker,
             engine,
-        })
+        }))
     }
 
     /// Keep a player claimed before the window for the window to take.
@@ -514,7 +514,7 @@ impl Mpris {
         wake: impl Fn() + Send + Sync + 'static,
     ) -> Mpris {
         let mpris = match Mpris::claim(address, None) {
-            Claim::Mine(m) => m,
+            Claim::Mine(m) => *m,
             Claim::Handed | Claim::NoBus(_) => Mpris {
                 conn: Arc::new(OnceLock::new()),
                 state: Arc::default(),

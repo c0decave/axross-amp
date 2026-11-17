@@ -46,7 +46,7 @@ fn main() -> eframe::Result {
         use axross_amp::mpris::{Claim, Mpris};
         match Mpris::claim(None, (!new_instance).then_some(&files[..])) {
             Claim::Handed => return Ok(()),
-            Claim::Mine(mpris) => Mpris::prepare(mpris),
+            Claim::Mine(mpris) => Mpris::prepare(*mpris),
             Claim::NoBus(_) => {}
         }
     }

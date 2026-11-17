@@ -236,7 +236,7 @@ fn starts_at_the_same_moment_make_one_player() {
     let mut handed = 0;
     for claim in claims {
         match claim {
-            Claim::Mine(m) => mine.push(m),
+            Claim::Mine(m) => mine.push(*m),
             Claim::Handed => handed += 1,
             Claim::NoBus(why) => panic!("{why}"),
         }
