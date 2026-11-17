@@ -93,3 +93,31 @@ fn a_tracks_details_and_the_window_size_kept() {
     let kept = axross_amp::state::read_amp(&dir.join("config/axross-amp.json"));
     assert_eq!(kept.window, Some([700.0, 900.0]));
 }
+
+#[test]
+fn an_equalizer_slider_dragged_is_one_write_off_the_window() {
+    // (each frame of a drag wrote, fsynced and renamed audio.json on the
+    // window's thread)
+    let dir = folder("eq-writes");
+    let files = tracks(&dir, &["a.wav"], 1.0);
+    let mut h = harness(&dir, files);
+    assert!(until(&mut h, 5.0, |a| a.is_loaded()));
+    // (the state written after the start is behind us: what is written now is the equalizer)
+    std::thread::sleep(Duration::from_millis(3200));
+    settle(&mut h, 5);
+    std::thread::sleep(Duration::from_millis(200));
+    let before = h.state().files_written();
+    for step in 0..20 {
+        h.get_by_label("Equalizer 1k")
+            .set_value_accesskit(step as f64 * 0.5);
+        h.run_steps(1);
+    }
+    let during = h.state().files_written() - before;
+    assert_eq!(during, 0, "written while the slider moved");
+    std::thread::sleep(Duration::from_millis(300));
+    settle(&mut h, 5);
+    std::thread::sleep(Duration::from_millis(100));
+    assert_eq!(h.state().files_written() - before, 1);
+    let audio = std::fs::read_to_string(dir.join("config/audio.json")).unwrap();
+    assert!(audio.contains("9.5"), "{audio}");
+}

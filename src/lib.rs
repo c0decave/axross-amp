@@ -17,5 +17,6 @@ pub mod mpris;
 pub mod net;
 pub mod playlist;
 pub mod ring;
+pub mod saver;
 pub mod state;
 pub mod viz;

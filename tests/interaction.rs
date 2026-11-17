@@ -176,8 +176,15 @@ fn buttons_keys_equalizer_playlist_url_and_dropped_files() {
     harness.get_by_label("Rock").click();
     settle(&mut harness, 4);
     assert_eq!(harness.state().equalizer_settings().preset, "Rock");
-    let audio = std::fs::read_to_string(home.join(".config/axross/audio.json"))
-        .expect("audio.json written");
+    // (written a quarter second after the last change, by the writer thread)
+    let mut audio = String::new();
+    for _ in 0..100 {
+        settle(&mut harness, 1);
+        audio = std::fs::read_to_string(home.join(".config/axross/audio.json")).unwrap_or_default();
+        if audio.contains("\"Rock\"") {
+            break;
+        }
+    }
     assert!(
         audio.contains("\"Rock\"") && audio.contains("eq_gains"),
         "{audio}"

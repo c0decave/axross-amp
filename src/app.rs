@@ -20,6 +20,8 @@ const MUTED: Color32 = Color32::from_rgb(0x8b, 0x94, 0x9e);
 const PANEL: Color32 = Color32::from_rgb(0x16, 0x1b, 0x22);
 const SAVE_EVERY: Duration = Duration::from_secs(3);
 const POSITION_EVERY: Duration = Duration::from_secs(30);
+/// The equalizer is written this long after its last change (axross's 250 ms).
+const EQ_SETTLE: Duration = Duration::from_millis(250);
 /// A track that could not be played (axross's red).
 const BROKEN: Color32 = Color32::from_rgb(0xe0, 0x5a, 0x4b);
 
@@ -91,14 +93,12 @@ pub struct App {
     eq_dirty: bool,
     last_save: Instant,
     last_frame: Instant,
-    state_path: PathBuf,
     tab: Tab,
     mixer_page: crate::mixer_ui::MixerPage,
     #[cfg(target_os = "linux")]
     bluetooth_page: crate::bluetooth_ui::BluetoothPage,
     /// The output device chosen for the player ("" the default).
     output_choice: String,
-    audio_path: PathBuf,
     gate: KeyGate,
     /// The mouse wheel's movement not yet a notch; a row to scroll to.
     wheel: f32,
@@ -118,8 +118,10 @@ pub struct App {
     /// What only this program keeps (window, ReplayGain), where, and
     /// whether it changed.
     amp: state::AmpSettings,
-    amp_path: PathBuf,
     amp_dirty: bool,
+    /// Writes the files on a thread of its own; when the equalizer changed last.
+    saver: crate::saver::Saver,
+    eq_changed: Instant,
     /// The sleep timer (not kept, as axross).
     sleep: Option<Sleep>,
     /// The track details shown (a window).
@@ -342,13 +344,11 @@ impl App {
             eq_dirty: false,
             last_save: Instant::now(),
             last_frame: Instant::now(),
-            state_path,
             tab: Tab::Player,
             mixer_page: Default::default(),
             #[cfg(target_os = "linux")]
             bluetooth_page: Default::default(),
             output_choice: output,
-            audio_path,
             gate: KeyGate::default(),
             wheel: 0.0,
             scroll_to: None,
@@ -363,8 +363,12 @@ impl App {
             visible_for: (String::new(), u64::MAX),
             ctx: cc.egui_ctx.clone(),
             amp,
-            amp_path,
             amp_dirty: false,
+            saver: crate::saver::Saver::start(
+                setup.config_dir.clone(),
+                state::read_base(&setup.config_dir.join(state::STATE_FILE)),
+            ),
+            eq_changed: Instant::now(),
             sleep: None,
             details: None,
             fullscreen: false,
@@ -420,9 +424,7 @@ impl App {
             PlayerChange::Output(id) => {
                 self.engine
                     .send(Command::Output((!id.is_empty()).then(|| id.clone())));
-                if let Err(e) = state::write_output(&self.audio_path, &id) {
-                    self.status = format!("Cannot save the output: {e}");
-                }
+                self.saver.save(crate::saver::Job::Output(id.clone()));
                 self.output_choice = id;
             }
             PlayerChange::Volume(v) => self.set_volume(v),
@@ -1103,6 +1105,7 @@ impl App {
             enabled: self.eq.enabled,
         });
         self.eq_dirty = true;
+        self.eq_changed = Instant::now();
     }
 
     fn handle_events(&mut self, ctx: &egui::Context) {
@@ -1202,36 +1205,45 @@ impl App {
         }
     }
 
+    /// Hand what changed to the writer thread: the player's state at most
+    /// every few seconds (and every 30 s while playing: the position), the
+    /// equalizer a quarter second after its last change (a slider dragged
+    /// is one write), this program's settings; `force`: everything, and
+    /// wait until it is written (the window closes).
     fn save(&mut self, force: bool) {
+        for why in self.saver.errors() {
+            self.status = why;
+        }
         let due = self.last_save.elapsed() >= SAVE_EVERY;
         // while playing, the position is kept every 30 s (as axross: a crash
         // or a power cut loses no more)
         if self.playing() && self.last_save.elapsed() >= POSITION_EVERY {
             self.dirty = true;
         }
-        if !(force || (self.dirty && due) || self.eq_dirty || (self.amp_dirty && due)) {
-            return;
-        }
         if force || (self.dirty && due) {
-            let state = self.snapshot();
-            if let Err(e) = state::write_state(&self.state_path, &state) {
-                self.status = format!("Cannot save the player state: {e}");
-            }
+            self.saver.save(crate::saver::Job::State(self.snapshot()));
             self.dirty = false;
             self.last_save = Instant::now();
         }
-        if self.eq_dirty {
-            if let Err(e) = state::write_eq(&self.audio_path, &self.eq) {
-                self.status = format!("Cannot save the equalizer: {e}");
-            }
+        if self.eq_dirty && (force || self.eq_changed.elapsed() >= EQ_SETTLE) {
+            self.saver.save(crate::saver::Job::Eq(self.eq.clone()));
             self.eq_dirty = false;
         }
-        if self.amp_dirty && (force || self.last_save.elapsed() >= SAVE_EVERY) {
-            if let Err(e) = state::write_amp(&self.amp_path, &self.amp) {
-                self.status = format!("Cannot save the settings: {e}");
-            }
+        if self.amp_dirty && (force || due) {
+            self.saver.save(crate::saver::Job::Amp(self.amp.clone()));
             self.amp_dirty = false;
         }
+        if self.eq_dirty {
+            self.ctx.request_repaint_after(EQ_SETTLE);
+        }
+        if force {
+            self.saver.flush(Duration::from_secs(5));
+        }
+    }
+
+    /// Files the writer thread wrote (tests).
+    pub fn files_written(&self) -> usize {
+        self.saver.writes()
     }
 
     /// What would be saved now (also for tests).

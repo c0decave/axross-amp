@@ -344,14 +344,78 @@ pub fn is_hex_colour(text: &str) -> bool {
 }
 
 pub fn write_state(path: &Path, state: &PlayerState) -> std::io::Result<()> {
-    let mut map = read_object(path); // keys of the Python player kept
+    write_state_merged(path, state, &mut None).map(|_| ())
+}
+
+/// The file as it is now (what was read last: the base of a merge).
+pub fn read_base(path: &Path) -> Map<String, Value> {
+    read_object(path)
+}
+
+/// Keys written together: the playlist, the track in it and its position
+/// belong to each other.
+const GROUPS: [&[&str]; 1] = [&["tracks", "current", "position_ms"]];
+
+/// Write `state` into `path` without undoing what another program (axross's
+/// player, a second axross-amp) wrote there since `base` - what this
+/// program last read or wrote: a three-way merge by key. A key (or group)
+/// this program did not change since `base` and the other did keeps the
+/// other's value; one this program changed is its. `base` becomes what was
+/// written. Returns the keys of the other program's that were kept.
+pub fn write_state_merged(
+    path: &Path,
+    state: &PlayerState,
+    base: &mut Option<Map<String, Value>>,
+) -> std::io::Result<Vec<String>> {
+    let theirs = read_object(path);
+    let ours = state_object(state, &theirs);
+    let mut out = theirs.clone();
+    let mut kept = Vec::new();
+    let mut done: Vec<&str> = Vec::new();
+    for key in ours.keys() {
+        if done.contains(&key.as_str()) {
+            continue;
+        }
+        let group: Vec<&str> = GROUPS
+            .iter()
+            .find(|g| g.contains(&key.as_str()))
+            .map(|g| g.to_vec())
+            .unwrap_or_else(|| vec![key.as_str()]);
+        done.extend(group.iter().copied());
+        let value = |m: &Map<String, Value>| -> Vec<Option<Value>> {
+            group.iter().map(|k| m.get(*k).cloned()).collect()
+        };
+        let mine = value(&ours);
+        let theirs_changed = base
+            .as_ref()
+            .is_some_and(|b| value(b) != value(&theirs) && theirs.contains_key(group[0]));
+        let mine_changed = base.as_ref().is_none_or(|b| value(b) != mine);
+        if theirs_changed && !mine_changed {
+            kept.extend(group.iter().map(|k| (*k).to_owned()));
+            continue;
+        }
+        for k in &group {
+            if let Some(v) = ours.get(*k) {
+                out.insert((*k).to_owned(), v.clone());
+            }
+        }
+    }
+    write_object(path, &out)?;
+    *base = Some(out);
+    Ok(kept)
+}
+
+/// The keys this program writes, as they are now (`file`: what the file
+/// holds, for the nested options it does not know).
+fn state_object(state: &PlayerState, file: &Map<String, Value>) -> Map<String, Value> {
+    let mut map = Map::new();
     let tracks: Vec<Value> = state
         .tracks
         .iter()
         .take(MAX_TRACKS)
         .map(|t| json!({"path": t.path, "title": t.title, "duration": t.duration_ms / 1000}))
         .collect();
-    let mut options = map
+    let mut options = file
         .get("visual_options")
         .and_then(Value::as_object)
         .cloned()
@@ -382,7 +446,7 @@ pub fn write_state(path: &Path, state: &PlayerState) -> std::io::Result<()> {
     ] {
         map.insert(key.into(), value);
     }
-    write_object(path, &map)
+    map
 }
 
 pub fn read_eq(path: &Path) -> EqSettings {
@@ -530,6 +594,46 @@ mod tests {
         assert_eq!(back.preamp_db, 15.0);
         let raw: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(raw["kept"], json!(1));
+    }
+
+    #[test]
+    fn what_another_program_wrote_since_is_not_undone() {
+        let path = temp("merge");
+        let mut state = PlayerState::default();
+        state.tracks.push(Track {
+            path: "/m/ours.mp3".into(),
+            title: String::new(),
+            duration_ms: 0,
+        });
+        state.current = 0;
+        let mut base = None;
+        write_state_merged(&path, &state, &mut base).unwrap();
+        // axross's player changes the playlist meanwhile (and a key of its own)
+        let mut theirs: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        theirs["tracks"] = json!([{"path": "/m/theirs.flac", "title": "", "duration": 0},
+                                  {"path": "/m/second.flac", "title": "", "duration": 0}]);
+        theirs["current"] = json!(1);
+        theirs["python_only"] = json!(true);
+        fs::write(&path, theirs.to_string()).unwrap();
+        // this program changes only the volume
+        state.volume = 33;
+        let kept = write_state_merged(&path, &state, &mut base).unwrap();
+        let file = read_state(&path);
+        assert_eq!(file.volume, 33, "ours");
+        assert_eq!(file.tracks.len(), 2, "theirs: not clobbered");
+        assert_eq!(file.current, 1, "the track goes with its playlist");
+        assert!(kept.contains(&"tracks".to_owned()));
+        // a change of ours to the playlist wins over theirs
+        state.tracks.push(Track {
+            path: "/m/new.mp3".into(),
+            title: String::new(),
+            duration_ms: 0,
+        });
+        write_state_merged(&path, &state, &mut base).unwrap();
+        assert_eq!(read_state(&path).tracks.len(), 2);
+        assert_eq!(read_state(&path).tracks[1].path, "/m/new.mp3");
+        let raw: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(raw["python_only"], json!(true));
     }
 
     #[test]
