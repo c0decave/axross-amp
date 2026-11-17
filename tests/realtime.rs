@@ -5,6 +5,9 @@
 //!
 //! A counting allocator watches the thread while it renders.
 
+#[path = "support/scratch.rs"]
+mod scratch;
+
 use axross_amp::engine::{Command, Engine, RenderState};
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
@@ -78,11 +81,8 @@ fn sine(path: &std::path::Path, secs: f32, hz: f32) {
     std::fs::write(path, out).unwrap();
 }
 
-fn folder(name: &str) -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!("amp-rt-{name}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
+fn folder(name: &str) -> scratch::Scratch {
+    scratch::Scratch::new(&format!("rt-{name}"))
 }
 
 /// Render `calls` buffers of `frames` (one channel's samples kept), at the

@@ -2,6 +2,9 @@
 //! dropped on it), headless; what it did is read from the app and from the
 //! files it shares with axross.
 
+#[path = "support/scratch.rs"]
+mod scratch;
+
 use axross_amp::app::App;
 use egui::{Event, Key, PointerButton, Pos2};
 use egui_kittest::Harness;
@@ -58,8 +61,7 @@ fn settle(harness: &mut Harness<'_, App>, steps: usize) {
 
 #[test]
 fn buttons_keys_equalizer_playlist_url_and_dropped_files() {
-    let home = std::env::temp_dir().join(format!("amp-click-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&home);
+    let home = scratch::Scratch::new("click");
     std::fs::create_dir_all(home.join("music/sub")).unwrap();
     // SAFETY: the only test of this binary; set before the app reads it
     unsafe { std::env::set_var("HOME", &home) };

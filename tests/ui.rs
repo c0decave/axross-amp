@@ -3,6 +3,9 @@
 //! from the sound it is fed, and saves pictures of itself into
 //! `target/screenshots/`.
 
+#[path = "support/scratch.rs"]
+mod scratch;
+
 use axross_amp::app::App;
 use axross_amp::viz::MODES;
 use egui_kittest::Harness;
@@ -69,8 +72,7 @@ fn shots() -> PathBuf {
 
 #[test]
 fn the_window_shows_the_track_and_every_visualization() {
-    let home = std::env::temp_dir().join(format!("amp-ui-{}", std::process::id()));
-    std::fs::create_dir_all(&home).unwrap();
+    let home = scratch::Scratch::new("ui");
     // SAFETY: the only test of this binary; nothing else reads the environment meanwhile
     unsafe { std::env::set_var("HOME", &home) };
     let wav = home.join("Tone in A.wav");
@@ -117,8 +119,7 @@ fn the_readme_picture() {
         eprintln!("AMP_DEMO_TRACK not set");
         return;
     };
-    let dir = std::env::temp_dir().join(format!("amp-hero-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
+    let dir = scratch::Scratch::new("hero");
     std::fs::create_dir_all(dir.join("config")).unwrap();
     std::fs::write(
         dir.join("config/media_player.json"),

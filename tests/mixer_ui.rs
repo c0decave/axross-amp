@@ -2,6 +2,9 @@
 //! (AMP_FAKE_PACTL; without it the test passes): the lists show, a click
 //! reaches pactl, and a picture of the tab is saved.
 
+#[path = "support/scratch.rs"]
+mod scratch;
+
 use axross_amp::app::{App, Tab};
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
@@ -13,14 +16,12 @@ fn the_mixer_tab_shows_the_sound_server_and_acts() {
         eprintln!("AMP_FAKE_PACTL not set: skipped");
         return;
     };
-    let dir = std::env::temp_dir().join(format!("amp-mixer-ui-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = scratch::Scratch::new("mixer-ui");
     let python = std::env::var("AMP_PYTHON").unwrap_or_else(|_| "python3".into());
     let code = format!(
         "import sys; sys.path.insert(0, {:?}); import fake_pactl; from pathlib import Path; fake_pactl.install(Path({:?}))",
         script.parent().unwrap(),
-        dir
+        &*dir
     );
     assert!(
         std::process::Command::new(&python)

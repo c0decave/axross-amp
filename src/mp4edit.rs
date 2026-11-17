@@ -185,7 +185,8 @@ mod tests {
         );
         let moov = atom(b"moov", &[atom(b"mvhd", &mvhd), trak].concat());
         let file = [atom(b"ftyp", b"M4A \0\0\0\0"), moov].concat();
-        let path = std::env::temp_dir().join(format!("amp-elst-{}.m4a", std::process::id()));
+        let dir = crate::testdir::Scratch::new("elst");
+        let path = dir.join("x.m4a");
         std::fs::write(&path, file).unwrap();
         assert_eq!(
             read_edit(&path),

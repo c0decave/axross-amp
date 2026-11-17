@@ -19,4 +19,6 @@ pub mod playlist;
 pub mod ring;
 pub mod saver;
 pub mod state;
+#[cfg(test)]
+pub(crate) mod testdir;
 pub mod viz;

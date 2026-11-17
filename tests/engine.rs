@@ -4,6 +4,9 @@
 //! servers that stall, break off, carry ICY titles or answer as old
 //! SHOUTcast servers do.
 
+#[path = "support/scratch.rs"]
+mod scratch;
+
 use axross_amp::engine::{Command, Engine, Event, Queued, RenderState};
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -52,11 +55,8 @@ fn pcm(rate: u32, frames: u32, hz: f32, from: u64) -> Vec<u8> {
     out
 }
 
-fn folder(name: &str) -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!("amp-engine-{name}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
+fn folder(name: &str) -> scratch::Scratch {
+    scratch::Scratch::new(&format!("engine-{name}"))
 }
 
 /// The output: `secs` of sound rendered at a device's pace (10 ms a call).

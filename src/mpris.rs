@@ -592,7 +592,9 @@ fn connect(
 /// one again), in a folder only this user can enter; the one before is
 /// removed, and the last when the player goes.
 pub struct Covers {
-    dir: Option<PathBuf>,
+    /// The folder (made when the first cover is written), whether it is ours.
+    folder: PathBuf,
+    dir: Option<Option<PathBuf>>,
     current: Option<PathBuf>,
 }
 
@@ -629,7 +631,8 @@ fn private_folder(dir: &Path) -> Option<PathBuf> {
 impl Covers {
     pub fn in_folder(dir: PathBuf) -> Covers {
         Covers {
-            dir: private_folder(&dir),
+            folder: dir,
+            dir: None,
             current: None,
         }
     }
@@ -647,7 +650,7 @@ impl Covers {
             .unwrap_or_default()
     }
 
-    fn write(&self, bytes: &[u8]) -> Option<PathBuf> {
+    fn write(&mut self, bytes: &[u8]) -> Option<PathBuf> {
         use std::io::Write;
         use std::os::unix::fs::OpenOptionsExt;
         let ext = if bytes.starts_with(b"\x89PNG") {
@@ -661,7 +664,9 @@ impl Covers {
         let hash = bytes.iter().fold(0xcbf2_9ce4_8422_2325u64, |h, b| {
             (h ^ *b as u64).wrapping_mul(0x0100_0000_01b3)
         });
-        let path = self.dir.as_ref()?.join(format!("cover-{hash:016x}.{ext}"));
+        let folder = &self.folder;
+        let dir = self.dir.get_or_insert_with(|| private_folder(folder));
+        let path = dir.as_ref()?.join(format!("cover-{hash:016x}.{ext}"));
         if self.current.as_ref() == Some(&path) {
             return Some(path);
         }
@@ -716,12 +721,12 @@ mod tests {
     #[test]
     fn each_cover_a_file_of_its_own_in_a_private_folder() {
         use std::os::unix::fs::PermissionsExt;
-        let base = std::env::temp_dir().join(format!("amp-covers-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&base);
+        let scratch = crate::testdir::Scratch::new("covers");
+        let base = scratch.join("folder");
         let mut covers = Covers::in_folder(base.clone());
+        let a = covers.show(Some(b"\x89PNG first"));
         let mode = std::fs::metadata(&base).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o700);
-        let a = covers.show(Some(b"\x89PNG first"));
         let b = covers.show(Some(b"\xff\xd8 second"));
         assert!(a.ends_with(".png") && b.ends_with(".jpg") && a != b);
         assert!(

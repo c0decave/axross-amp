@@ -6,6 +6,9 @@
 //! passes (CI without axross).
 #![cfg(target_os = "linux")]
 
+#[path = "support/scratch.rs"]
+mod scratch;
+
 #[path = "support/bluez.rs"]
 mod bluez;
 
@@ -46,13 +49,11 @@ fn the_bluetooth_tab_pairs_connects_and_makes_a_headset_the_output() {
         eprintln!("AMP_FAKE_BLUEZ or dbus-daemon missing: skipped");
         return;
     };
-    let dir = std::env::temp_dir().join(format!("amp-bt-ui-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = scratch::Scratch::new("bt-ui");
     let code = format!(
         "import sys; sys.path.insert(0, {:?}); import fake_pactl; from pathlib import Path; fake_pactl.install(Path({:?}))",
         pactl.parent().unwrap(),
-        dir
+        &*dir
     );
     assert!(
         std::process::Command::new(&bus.python)

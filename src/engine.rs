@@ -2500,7 +2500,8 @@ mod tests {
 
     #[test]
     fn a_wav_file_decodes_seeks_and_ends() {
-        let path = std::env::temp_dir().join(format!("amp-{}.wav", std::process::id()));
+        let dir = crate::testdir::Scratch::new("wav");
+        let path = dir.join("x.wav");
         write_wav(&path, 22_050, 1, 22_050 * 2); // two seconds of mono
         let (mut d, info) = open(path.to_str().unwrap(), 44_100, 1, Loudness::default()).unwrap();
         assert!(info.seekable && info.rate == 22_050 && info.channels == 1);

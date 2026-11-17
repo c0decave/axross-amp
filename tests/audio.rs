@@ -9,6 +9,9 @@
 // (the WAV reader reads more plainly with chunks_exact)
 #![allow(clippy::chunks_exact_to_as_chunks)]
 
+#[path = "support/scratch.rs"]
+mod scratch;
+
 use axross_amp::engine::{Command, Engine, Event, TrackInfo};
 use rustfft::FftPlanner;
 use rustfft::num_complex::Complex;
@@ -283,8 +286,7 @@ fn real_sound_from_every_format_with_eq_volume_seek_streams_and_errors() {
         eprintln!("AMP_CORPUS not set: the sound test is skipped");
         return;
     };
-    let home = std::env::temp_dir().join(format!("amp-audio-{}", std::process::id()));
-    std::fs::create_dir_all(&home).unwrap();
+    let home = scratch::Scratch::new("audio");
     let capture = home.join("capture.wav");
     // SAFETY: the only test of this binary; set before ALSA reads its configuration
     unsafe { std::env::set_var("HOME", &home) };

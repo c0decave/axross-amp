@@ -2,6 +2,9 @@
 //! GPU) for every visualization at its worst: 1920x1080, 128 bars, loud
 //! noise. Each must stay well under a frame at 60 fps (16.7 ms).
 
+#[path = "support/scratch.rs"]
+mod scratch;
+
 use axross_amp::app::App;
 use axross_amp::viz::MODES;
 use egui_kittest::Harness;
@@ -10,7 +13,7 @@ use std::time::Instant;
 
 #[test]
 fn every_face_paints_a_full_hd_frame_in_a_few_milliseconds() {
-    let home = std::env::temp_dir().join(format!("amp-cost-{}", std::process::id()));
+    let home = scratch::Scratch::new("cost");
     std::fs::create_dir_all(home.join(".config/axross")).unwrap();
     std::fs::write(
         home.join(".config/axross/media_player.json"),

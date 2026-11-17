@@ -4,6 +4,9 @@
 //! has no gap. (Opened when the first ran out, it was a gap of the time
 //! to open it every time.)
 
+#[path = "support/scratch.rs"]
+mod scratch;
+
 use axross_amp::engine::{Command, Engine, Event, OPEN_DELAY_MS, Queued, RenderState};
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
@@ -38,9 +41,7 @@ fn tone(path: &std::path::Path, secs: f32) {
 
 #[test]
 fn a_slow_disk_leaves_no_gap_between_tracks() {
-    let dir = std::env::temp_dir().join(format!("amp-slow-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = scratch::Scratch::new("slow");
     tone(&dir.join("a.wav"), 1.5);
     tone(&dir.join("b.wav"), 1.0);
     OPEN_DELAY_MS.store(600, Ordering::Relaxed);

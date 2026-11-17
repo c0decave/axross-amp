@@ -1004,8 +1004,7 @@ mod tests {
 
     #[test]
     fn playlists_of_other_systems_read() {
-        let dir = std::env::temp_dir().join(format!("amp-pl2-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
+        let dir = crate::testdir::Scratch::new("pl2");
         fs::create_dir_all(dir.join("Ça va")).unwrap();
         // Latin-1 text, a file: URL, Windows' backslashes
         let mut text = b"#EXTM3U\n#EXTINF:5,Caf\xe9\n".to_vec();
@@ -1120,8 +1119,7 @@ mod tests {
 
     #[test]
     fn playlists_resolve_relative_paths_and_streams() {
-        let dir = std::env::temp_dir().join(format!("amp-pl-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
+        let dir = crate::testdir::Scratch::new("pl");
         fs::create_dir_all(dir.join("sub")).unwrap();
         fs::write(dir.join("sub/a.mp3"), b"x").unwrap();
         fs::write(dir.join("b.flac"), b"x").unwrap();

@@ -3,6 +3,9 @@
 //! dead server and failures). AMP_FAKE_PACTL names that script; without it
 //! the test passes (CI without axross).
 
+#[path = "support/scratch.rs"]
+mod scratch;
+
 use axross_amp::mixer::{Action, Kind, Mixer, Status};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
@@ -64,9 +67,7 @@ fn calls(log: &Path) -> Vec<Vec<String>> {
 
 #[test]
 fn lists_commands_live_updates_and_failures_against_the_fake_pactl() {
-    let dir = std::env::temp_dir().join(format!("amp-mixer-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = scratch::Scratch::new("mixer");
     let Some((state, log)) = install(&dir) else {
         eprintln!("AMP_FAKE_PACTL not set: skipped");
         return;

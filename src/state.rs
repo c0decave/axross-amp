@@ -596,16 +596,16 @@ pub fn write_output(path: &Path, id: &str) -> std::io::Result<()> {
 mod tests {
     use super::*;
 
-    fn temp(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("amp-test-{}-{name}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
-        dir.join("state.json")
+    /// A file in a folder of the test's own (removed with the guard).
+    fn temp(name: &str) -> (crate::testdir::Scratch, PathBuf) {
+        let dir = crate::testdir::Scratch::new(&format!("test-{name}"));
+        let file = dir.join("state.json");
+        (dir, file)
     }
 
     #[test]
     fn a_python_state_reads_and_round_trips_keeping_unknown_keys() {
-        let path = temp("roundtrip");
+        let (_dir, path) = temp("roundtrip");
         fs::write(
             &path,
             r##"{"version": 1, "volume": 64, "muted": true, "shuffle": true, "repeat": "one",
@@ -652,7 +652,7 @@ mod tests {
     #[test]
     fn a_track_duration_is_in_seconds_as_axross_writes_it() {
         // axross's player keeps `duration` in whole seconds (`_track_ms // 1000`)
-        let path = temp("seconds");
+        let (_dir, path) = temp("seconds");
         fs::write(
             &path,
             r#"{"tracks": [{"path": "/m/a.mp3", "title": "", "duration": 125},
@@ -672,7 +672,7 @@ mod tests {
 
     #[test]
     fn this_programs_own_settings_round_trip() {
-        let path = temp("amp");
+        let (_dir, path) = temp("amp");
         assert_eq!(read_amp(&path), AmpSettings::default());
         fs::write(
             &path,
@@ -697,7 +697,7 @@ mod tests {
 
     #[test]
     fn what_another_program_wrote_since_is_not_undone() {
-        let path = temp("merge");
+        let (_dir, path) = temp("merge");
         let mut state = PlayerState::default();
         state.tracks.push(Track {
             path: "/m/ours.mp3".into(),
@@ -739,7 +739,7 @@ mod tests {
 
     #[test]
     fn a_tracks_tags_are_kept_beside_axross_keys() {
-        let path = temp("tags");
+        let (_dir, path) = temp("tags");
         let mut state = PlayerState::default();
         state.tracks.push(Track {
             path: "/m/a.flac".into(),
@@ -766,7 +766,7 @@ mod tests {
 
     #[test]
     fn the_file_stays_small_enough_for_axross() {
-        let path = temp("big");
+        let (_dir, path) = temp("big");
         let mut state = PlayerState::default();
         for i in 0..MAX_TRACKS {
             state.tracks.push(Track {
@@ -794,7 +794,7 @@ mod tests {
 
     #[test]
     fn nonsense_is_ignored() {
-        let path = temp("nonsense");
+        let (_dir, path) = temp("nonsense");
         fs::write(
             &path,
             r#"{"volume": "loud", "repeat": "forever", "current": 9, "tracks": "x"}"#,
@@ -808,7 +808,7 @@ mod tests {
 
     #[test]
     fn the_equalizer_is_shared_with_axross() {
-        let path = temp("eq");
+        let (_dir, path) = temp("eq");
         fs::write(
             &path,
             r#"{"output": "speakers", "eq_gains": [1,2,3,4,5,6,7,8,9,99]}"#,
