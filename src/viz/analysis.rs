@@ -779,13 +779,29 @@ pub fn overview_share(rect: Rect, x: f32) -> f32 {
     ((x - rect.left()) / rect.width()).clamp(0.0, 1.0)
 }
 
+/// The waveform's place in the overview face drawn into `rect` (the
+/// whole picture, as [`super::draw`] is given it).
+fn overview_wave(rect: Rect) -> Rect {
+    let r = rect.shrink(4.0);
+    Rect::from_min_max(
+        pos2(r.left(), r.top() + 18.0),
+        pos2(r.right(), r.bottom() - 16.0),
+    )
+}
+
+/// Where in the track (0..1) a click at `at` on the overview face in
+/// `rect` goes, if it is on the waveform.
+pub fn overview_seek(rect: Rect, at: Pos2) -> Option<f32> {
+    let wave = overview_wave(rect);
+    wave.expand2(vec2(0.0, 8.0))
+        .contains(at)
+        .then(|| overview_share(wave, at.x))
+}
+
 fn overview(f: &Frame<'_>, cv: &mut Canvas, st: &State) {
     let (s, p) = (f.s, f.painter);
     let r = f.rect;
-    let wave = Rect::from_min_max(
-        pos2(r.left(), r.top() + 18.0),
-        pos2(r.right(), r.bottom() - 16.0),
-    );
+    let wave = overview_wave(f.rect.expand(4.0));
     let mid = wave.center().y;
     let half = wave.height() / 2.0;
     let Some(view) = f.overview.filter(|o| !o.columns.is_empty()) else {

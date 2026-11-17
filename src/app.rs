@@ -13,6 +13,8 @@ use egui::{
 };
 use egui_file_dialog::FileDialog;
 use std::path::PathBuf;
+use std::sync::atomic::AtomicBool;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 const ACCENT: Color32 = Color32::from_rgb(0x4c, 0x9a, 0xff);
@@ -51,6 +53,9 @@ pub struct App {
     eq_open: bool,
     playlist_open: bool,
     big_visual: bool,
+    /// The current track's waveform, read for the overview face: its
+    /// path, what is read so far, the flag that stops the reading.
+    overview: Option<(String, Arc<Mutex<viz::Overview>>, Arc<AtomicBool>)>,
     /// A click on the picture waits until it cannot become a double-click
     /// (which shows it large and leaves the face as it is).
     pending_click: Option<f64>,
@@ -357,6 +362,7 @@ impl App {
             eq_open: saved.equalizer_open,
             playlist_open: saved.playlist_open,
             big_visual: false,
+            overview: None,
             pending_click: None,
             generation: 0,
             generations: 0,
@@ -2109,6 +2115,14 @@ impl App {
         }
     }
 
+    /// How much of the current track's waveform is read (0..1; tests).
+    pub fn overview_read(&self) -> f32 {
+        self.overview
+            .as_ref()
+            .and_then(|(_, o, _)| o.lock().ok().map(|o| o.done))
+            .unwrap_or(0.0)
+    }
+
     /// Frames the analysis ran (tests: none with the picture off).
     pub fn analyzer_frames(&self) -> u64 {
         self.analyzer_frames
@@ -2122,6 +2136,44 @@ impl App {
     /// Why the track at `path` could not be played, if it could not.
     pub fn broken(&self, path: &str) -> Option<&str> {
         self.broken.get(path).map(String::as_str)
+    }
+
+    /// The current track's waveform is being read (a local file of known
+    /// length), on a thread of its own; another track's reading stops.
+    fn read_overview(&mut self) {
+        let Some(path) = self
+            .playlist
+            .current
+            .and_then(|i| self.playlist.tracks.get(i))
+            .map(|t| t.path.clone())
+            .filter(|p| !p.contains("://") && self.duration.is_some())
+        else {
+            if let Some((_, _, stop)) = self.overview.take() {
+                stop.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+            return;
+        };
+        if self.overview.as_ref().is_some_and(|(p, _, _)| *p == path) {
+            return;
+        }
+        if let Some((_, _, stop)) = self.overview.take() {
+            stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+        let shared = Arc::new(Mutex::new(viz::Overview::default()));
+        let stop = Arc::new(AtomicBool::new(false));
+        let (into, flag, file) = (shared.clone(), stop.clone(), path.clone());
+        let _ = std::thread::Builder::new()
+            .name("overview".into())
+            .spawn(move || {
+                let _ = crate::engine::waveform(&file, 1600, &flag, |columns, done| {
+                    if let Ok(mut o) = into.lock() {
+                        o.columns.clear();
+                        o.columns.extend_from_slice(columns);
+                        o.done = done;
+                    }
+                });
+            });
+        self.overview = Some((path, shared, stop));
     }
 
     fn visual(&mut self, ui: &mut Ui, height: f32) {
@@ -2158,6 +2210,15 @@ impl App {
             );
             self.analyzer_frames += 1;
         }
+        if self.mode == "overview" {
+            self.read_overview();
+        }
+        let overview = self
+            .overview
+            .as_ref()
+            .filter(|_| self.mode == "overview")
+            .map(|(_, o, _)| o.clone());
+        let overview = overview.as_ref().and_then(|o| o.lock().ok());
         let title = self
             .window_title
             .strip_prefix("axross-amp – ")
@@ -2169,12 +2230,13 @@ impl App {
             s: &scheme,
             dt,
             title,
-            overview: None,
+            overview: overview.as_deref(),
             position: self.engine.shared.position() as f32,
             duration: self.duration.unwrap_or(0.0) as f32,
             hover: response.hover_pos(),
         };
         viz::draw(&frame, self.mode, &mut self.viz_state);
+        drop(overview);
         // the face's name, for a moment after it changed (axross's 1.5 s)
         let now = ui.input(|i| i.time);
         if self.label_for != self.mode {
@@ -2209,6 +2271,16 @@ impl App {
                 self.set_fullscreen(ui.ctx(), false);
             } else {
                 self.big_visual = !self.big_visual;
+            }
+        } else if response.clicked()
+            && self.mode == "overview"
+            && let Some(share) = response
+                .interact_pointer_pos()
+                .and_then(|p| viz::analysis::overview_seek(rect, p))
+        {
+            // the overview: a click goes there in the track (V: the next face)
+            if let Some(total) = self.duration {
+                self.seek(share as f64 * total);
             }
         } else if response.clicked() {
             self.pending_click = Some(now);

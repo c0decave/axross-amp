@@ -1569,6 +1569,69 @@ pub fn decode_file(path: &str, rate: u32) -> Result<(usize, TrackInfo), String> 
     Ok((frames, info))
 }
 
+/// The waveform of all of `path` (the overview face): `columns` of the
+/// mono mix's lowest and highest sample and its RMS, over the track's
+/// length; `progress` is told the columns so far and the share read (now
+/// and then, and at the end). Gives up when `cancel` is set.
+pub fn waveform(
+    path: &str,
+    columns: usize,
+    cancel: &AtomicBool,
+    mut progress: impl FnMut(&[[f32; 3]], f32),
+) -> Result<(), String> {
+    let (mut decoding, info) = open(path, 48_000, 0, Loudness::default())?;
+    let rate = if decoding.resample {
+        48_000
+    } else {
+        decoding.rate.max(1)
+    } as f64;
+    let total = info
+        .duration
+        .map(|d| (d * rate) as u64)
+        .filter(|f| *f > 0)
+        .ok_or("the track's length is not known")?;
+    let per = (total / columns.max(1) as u64).max(1);
+    let mut out = Vec::new();
+    let mut made: Vec<[f32; 3]> = Vec::with_capacity(columns + 1);
+    let (mut lo, mut hi, mut sum, mut count) = (0.0f32, 0.0f32, 0.0f64, 0u64);
+    let mut frames = 0u64;
+    let mut told = Instant::now();
+    loop {
+        if cancel.load(Ordering::Relaxed) {
+            return Ok(());
+        }
+        let more = decoding.step(&mut out)?;
+        if !more {
+            decoding.finish(&mut out);
+        }
+        for f in out.as_chunks::<2>().0 {
+            let v = (f[0] + f[1]) * 0.5;
+            lo = lo.min(v);
+            hi = hi.max(v);
+            sum += (v * v) as f64;
+            count += 1;
+            frames += 1;
+            if count == per {
+                made.push([lo, hi, (sum / count as f64).sqrt() as f32]);
+                (lo, hi, sum, count) = (0.0, 0.0, 0.0, 0);
+            }
+        }
+        out.clear();
+        if !more {
+            break;
+        }
+        if told.elapsed() > Duration::from_millis(150) {
+            told = Instant::now();
+            progress(&made, (frames as f64 / total as f64).min(0.99) as f32);
+        }
+    }
+    if count > 0 {
+        made.push([lo, hi, (sum / count as f64).sqrt() as f32]);
+    }
+    progress(&made, 1.0);
+    Ok(())
+}
+
 /// symphonia's decoders and Opus (libopus, built in: symphonia has no Opus
 /// decoder of its own; Ogg Opus and WebM / MKV Opus).
 fn codecs() -> &'static symphonia::core::codecs::registry::CodecRegistry {

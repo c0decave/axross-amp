@@ -100,3 +100,36 @@ fn off_draws_no_analysis() {
     // a click on the picture never steps into "off"
     assert_eq!(axross_amp::viz::next("typography"), "spectrum");
 }
+
+#[test]
+fn the_overview_shows_the_track_and_a_click_goes_there() {
+    let dir = folder("visual-overview");
+    let files = tracks(&dir, &["long.wav"], 20.0);
+    let mut h = harness(&dir, files);
+    assert!(until(&mut h, 5.0, |a| a.is_loaded()));
+    h.state_mut().set_mode("overview");
+    // the whole track is read on a thread of its own
+    assert!(until(&mut h, 20.0, |a| a.overview_read() >= 1.0));
+    let picture = h.get_by_role(egui::accesskit::Role::Image).rect();
+    // a click three quarters along the waveform
+    let at = Pos2::new(
+        picture.left() + 4.0 + (picture.width() - 8.0) * 0.75,
+        picture.center().y,
+    );
+    h.hover_at(at);
+    h.run_steps(1);
+    for pressed in [true, false] {
+        h.event(Event::PointerButton {
+            pos: at,
+            button: PointerButton::Primary,
+            pressed,
+            modifiers: Default::default(),
+        });
+    }
+    settle(&mut h, 3);
+    let pos = h.state().engine().shared.position();
+    assert!((pos - 15.0).abs() < 1.0, "at {pos} s");
+    // and the face stays (no step to the next)
+    settle(&mut h, 30);
+    assert_eq!(h.state().mode(), "overview");
+}
