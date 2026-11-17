@@ -512,6 +512,13 @@ fn real_sound_from_every_format_with_eq_volume_seek_streams_and_errors() {
         levelled / level
     ));
     assert!(near(levelled / level, 0.5, 0.02), "{}", levelled / level);
+    // Opus: R128_TRACK_GAIN (Q7.8 dB against -23 LUFS: -2560 is -10 dB, 5 dB
+    // more than ReplayGain's level - so -5 dB of ReplayGain)
+    let r128 = corpus.join("tone-r128.opus");
+    if r128.exists() {
+        let (_, info) = axross_amp::engine::decode_file(r128.to_str().unwrap(), 48_000).unwrap();
+        assert_eq!(info.track_gain, Some(-5.0), "{:?}", info.tags);
+    }
     // off: as it is
     play(gained.to_str().unwrap(), 0, |_| {});
     let (_, off) = tone_of(&read_wav(&capture).channel(0), 48_000);
