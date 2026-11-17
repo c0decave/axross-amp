@@ -35,14 +35,36 @@ picture is made by `AMP_DEMO_TRACK=… cargo test --test ui -- --ignored`.</sub>
   (`ICY 200 OK`) play. The network is read on threads of its own: a server that
   stalls holds up nothing (a read gives up after 20 s; a stream let go closes its
   connection at once). HLS (`.m3u8` with segments) is not supported and says so.
-- **Visualizations** drawn on the GPU (egui) - all eighteen of axross's: spectrum,
-  mirrored, radial and polar spectrum, line spectrum, LED equalizer, particle
-  columns, waterfall, ridgelines, spectrum terrain, 3D ring, bell curves, wave
-  ribbon, kaleidoscope, oscilloscope, stereo scope, VU meters, starfield - in
-  axross's colour schemes (Classic, Fire, Ice, Neon, Mono, Follow the theme,
-  Custom - edited here), with its options (bars, smoothing, peak fall, frame
-  rate). A click shows the next face, a double-click makes it large, F11 full
-  screen, a right click its menu; "Off" draws nothing (and costs nothing).
+- **Visualizations**, 48 of them in three groups, drawn on the GPU:
+  - *Classic* - all eighteen of axross's, drawn as axross draws them (its geometry,
+    colours and constants; [side by side](docs/axross-and-amp.png)): spectrum,
+    mirrored, radial and polar spectrum, line spectrum, LED equalizer, particle
+    columns, waterfall, ridgelines with their sun, spectrum terrain, 3D ring, bell
+    curves, wave ribbon, kaleidoscope, oscilloscope, stereo scope, VU meter, starfield.
+  - *Analysis* - a spectrum analyzer (8192-point FFT, a held peak curve, the
+    strongest peak with its note and cents, the note and level under the pointer),
+    a loudness meter after EBU R128 (momentary, short-term, integrated with both
+    gates, loudness range, true peak, the last minute), phase and stereo width
+    (correlation, width, balance, the last ten seconds), a goniometer (with its
+    persistence and an automatic gain), the track's waveform (read in the background;
+    a click goes there), a chromagram with the circle of fifths and the key, a piano
+    roll and a mel spectrogram.
+  - *Generative* - plasma, fire, metaballs, aurora, flow field, synthwave, tunnel,
+    galaxy, Julia set, reaction-diffusion, arcs, ripples, skyline, isometric bars,
+    DNA helix, spirograph, polygon morph, mandala, moiré, beat rings, smoke and the
+    title's words on the beat. They move with the bass, the treble, the beat and
+    the tempo.
+
+  The pixel faces are WGSL shaders run through egui's wgpu renderer; without wgpu
+  the same functions are drawn on the CPU, coarser. The sound is analysed once a
+  frame for all faces (bars, levels, stereo picture, loudness, beat, and for the
+  faces that ask a fine spectrum with notes, chroma and mel bands), and neither the
+  analysis nor most faces allocate in a frame; the pictures move alike at any frame
+  rate. In axross's colour schemes (Classic, Fire, Ice, Neon, Mono, Follow the theme,
+  Custom - edited here), with its options (bars, smoothing, peak fall, frame rate).
+  A click shows the next face (Shift+V the one before), a double-click makes it
+  large, F11 full screen, a right click its menu with every face at a glance; "Off"
+  draws nothing (and costs nothing).
 - **Playlist**: shuffle (Previous goes back the way it came), repeat (all / one), a
   filter (Ctrl+F), sorting (title, artist, album with its discs and track numbers,
   file name, folder, length, reversed; names in natural order), several rows at once
@@ -80,7 +102,14 @@ picture is made by `AMP_DEMO_TRACK=… cargo test --test ui -- --ignored`.</sub>
   Files are written on a thread of their own, merged with what axross's player wrote
   meanwhile (its playlist is not undone by a change of volume here).
 
-![The visualizations](docs/visualizations.png)
+![The classic faces](docs/faces-classic.png)
+
+![The analysis faces](docs/faces-analysis.png)
+
+![The generative faces](docs/faces-generative.png)
+
+<sub>From the demo track, played in real time by `cargo test --test ui -- --ignored`
+(see above); the sheets are made by `docs/faces_sheet.py`.</sub>
 
 <p><img src="docs/mixer.png" alt="The Mixer tab" width="45%"> <img src="docs/bluetooth.png" alt="The Bluetooth tab" width="45%"></p>
 
@@ -102,7 +131,7 @@ Keys (on the Player tab, not while typing in a field):
 | ↑ / ↓, + / − | volume |
 | Home | the track's start |
 | M, N, P | mute, next, previous |
-| V, F11 | the next visualization; full screen (Escape leaves) |
+| V, Shift+V, F11 | the next / the previous visualization; full screen (Escape leaves) |
 | Ctrl+F | the playlist's filter |
 | Ctrl+↑ / ↓, Alt+↑ / ↓ | choose a track in the playlist; move it |
 | Enter, Delete | play the chosen track; remove it |
@@ -156,8 +185,10 @@ the Mixer tab needs `pactl` (Linux, or a PulseAudio elsewhere).
 Known limits: cpal's PulseAudio back end (cpal 0.18.2, the newest) takes a mutex
 after the output callback has returned, to hand the samples over - outside this
 player's callback, which itself takes no lock, and out of its hands until cpal
-changes it. HLS radio (`.m3u8` segment lists)
-is not played.
+changes it. HLS radio (`.m3u8` segment lists) is not played. Without wgpu (another
+renderer) the shader faces are drawn on the CPU on a coarse grid - softer, and
+dearer. The beat is found from the onsets; on syncopated music the tempo may read
+half or double.
 
 Tests: `cargo test` runs everywhere. The window is driven headless (egui_kittest,
 wgpu - Mesa's lavapipe works without a GPU); the engine's sound is taken by the
@@ -168,6 +199,15 @@ The mixer and Bluetooth tests run against axross's fakes when they are given -
 `AMP_FAKE_PACTL=axross/tests/fake_pactl.py`, `AMP_FAKE_BLUEZ=axross/tests/fake_bluez.py`
 (on a private `dbus-daemon`) and `AMP_PYTHON` (a Python with jeepney); MPRIS runs on
 a private `dbus-daemon` of its own. Without them those tests pass, saying so.
+
+The faces are tested from a known signal: every one rendered and measured (how
+much it draws, in how many colours, how much it moves), the shaders on the CPU
+against the GPU, the cost of a frame at 620 x 300, 1920 x 1080 and 3840 x 2160, the
+allocations of a frame counted; the analysis against known signals (a 1 kHz sine at
+-18 dBFS reads -18 LUFS, mono correlates +1 and inverted -1, a C major chord lights
+C, E and G, clicks at 128 BPM are 128 BPM, an intersample peak is found).
+`docs/axross_faces.py` renders axross's own faces (offscreen Qt) from the same signal
+for the comparison sheet. `tests/states.rs` renders the window in each of its states.
 
 ## Licence
 

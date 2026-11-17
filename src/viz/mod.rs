@@ -673,9 +673,16 @@ pub fn draw(f: &Frame<'_>, key: &str, state: &mut VizState) {
     if f.rect.width() < 8.0 || f.rect.height() < 8.0 {
         return;
     }
-    // (a little room within the rounded corners)
+    // (a little room within the rounded corners; nothing drawn outside)
     let inner = f.rect.shrink(4.0);
-    let frame = Frame { rect: inner, ..*f };
+    let clipped = f
+        .painter
+        .with_clip_rect(f.rect.intersect(f.painter.clip_rect()));
+    let frame = Frame {
+        rect: inner,
+        painter: &clipped,
+        ..*f
+    };
     let face = find(key).unwrap_or(&FACES[0]);
     match face.group {
         Group::Classic => classic::draw(&frame, face.key, state),

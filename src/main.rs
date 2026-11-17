@@ -21,8 +21,9 @@ A player already running (Linux) takes the files of a second start;
 
 Keys: Space play / pause, Left / Right seek 5 s (Shift: 30 s), Ctrl+Left /
 Right previous / next, Up / Down or + / - volume, Home the track's start,
-M mute, N next, P previous, V next visualization; in the playlist Ctrl+Up /
-Down choose a track, Alt+Up / Down move it, Enter play it, Delete remove it.
+M mute, N next, P previous, V / Shift+V the next / previous visualization;
+in the playlist Ctrl+Up / Down choose a track, Alt+Up / Down move it, Enter
+play it, Delete remove it, Ctrl+Z undo.
 The mouse wheel seeks over the position and sets the volume over its slider.";
 
 fn main() -> eframe::Result {

@@ -181,3 +181,29 @@ fn the_shader_faces_look_alike_on_the_cpu() {
     }
     println!("{}", report.join("\n"));
 }
+
+/// What the GPU's work costs, rendered by wgpu (where there is no GPU: Mesa's
+/// lavapipe on the CPU, far slower than any graphics card) - for a measure,
+/// not a limit: `cargo test --test faces -- --ignored`.
+#[test]
+#[ignore]
+fn what_the_shader_faces_cost_the_gpu() {
+    for (w, h) in [(620.0, 300.0), (1920.0, 1080.0), (3840.0, 2160.0)] {
+        let mut line = format!("{w}x{h}:");
+        for face in FACES.iter().filter(|f| f.shader) {
+            let mut harness = faces::harness(face.key, vec2(w, h), true, 3.0);
+            for _ in 0..10 {
+                faces::frame(&mut harness);
+            }
+            harness.render().unwrap();
+            let started = std::time::Instant::now();
+            for _ in 0..3 {
+                faces::frame(&mut harness);
+                harness.render().unwrap();
+            }
+            let ms = started.elapsed().as_secs_f64() * 1000.0 / 3.0;
+            line.push_str(&format!(" {} {ms:.0} ms,", face.key));
+        }
+        println!("{line}");
+    }
+}

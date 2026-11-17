@@ -188,4 +188,48 @@ fn the_readme_picture() {
     // (without the status line: the test's own output has no device name)
     let image = image::imageops::crop_imm(&image, 0, 0, 620, 834).to_image();
     image.save(shots().join("hero.png")).unwrap();
+    // every face from the same music, for the README's gallery
+    let gallery = shots().join("gallery");
+    std::fs::create_dir_all(&gallery).unwrap();
+    for (k, key) in FACES
+        .iter()
+        .filter(|f| f.group != Group::Off)
+        .map(|f| f.key)
+        .enumerate()
+    {
+        // (the music goes on where it is lively: the demo is a minute long)
+        if k % 12 == 0 {
+            harness
+                .state()
+                .engine()
+                .send(axross_amp::engine::Command::Seek(14.0));
+        }
+        harness.state_mut().set_mode(key);
+        let end = std::time::Instant::now() + std::time::Duration::from_millis(1800);
+        while std::time::Instant::now() < end {
+            harness
+                .state()
+                .engine()
+                .shared
+                .render(&mut buf, 2, &mut state);
+            harness.run_steps(1);
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let image = harness.render().unwrap();
+        let r = harness
+            .get_by_role_and_label(
+                egui::accesskit::Role::Image,
+                &format!("Visualization: {}", axross_amp::viz::name(key)),
+            )
+            .rect();
+        let picture = image::imageops::crop_imm(
+            &image,
+            r.left() as u32,
+            r.top() as u32,
+            r.width() as u32,
+            r.height() as u32,
+        )
+        .to_image();
+        picture.save(gallery.join(format!("{key}.png"))).unwrap();
+    }
 }

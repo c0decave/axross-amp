@@ -148,7 +148,19 @@ pub fn draw(f: &Frame<'_>, key: &str, state: &mut VizState) {
         "spirograph" => cv.draw(p, |pen| spirograph(f, pen, st, dt)),
         "morph" => cv.draw(p, |pen| morph(f, pen, st, dt)),
         "mandala" => cv.draw(p, |pen| mandala(f, pen)),
-        "beatrings" => cv.draw(p, |pen| beatrings(f, pen, st, dt)),
+        "beatrings" => {
+            cv.draw(p, |pen| beatrings(f, pen, st, dt));
+            // the tempo the rings keep
+            if f.a.beat.bpm > 0.0 && f.a.beat.confidence > 0.25 {
+                p.text(
+                    f.rect.left_bottom() + vec2(4.0, -4.0),
+                    egui::Align2::LEFT_BOTTOM,
+                    format!("{:.0} BPM", f.a.beat.bpm),
+                    FontId::monospace(12.0),
+                    f.s.text(),
+                );
+            }
+        }
         _ => cv.draw(p, |pen| typography(f, pen, st, dt)),
     }
 }
@@ -307,6 +319,11 @@ fn reaction(a: &Analyzer, st: &mut State, dt: f32, picture: &std::sync::Mutex<gp
 fn seed(st: &mut State, x: usize, y: usize, r: usize) {
     for dy in 0..=2 * r {
         for dx in 0..=2 * r {
+            // (a round seed: a square one stays a square for a while)
+            let (ox, oy) = (dx as i32 - r as i32, dy as i32 - r as i32);
+            if ox * ox + oy * oy > (r * r) as i32 {
+                continue;
+            }
             let (xx, yy) = ((x + dx + RD_W - r) % RD_W, (y + dy + RD_H - r) % RD_H);
             st.rd_v[yy * RD_W + xx] = 0.9;
             st.rd_u[yy * RD_W + xx] = 0.3;
@@ -1195,9 +1212,8 @@ fn typography(f: &Frame<'_>, pen: &mut Pen<'_>, st: &mut State, dt: f32) {
     // the word: it comes in large, settles, swells with the beat; its
     // letters shake with the treble
     let arrive = (st.word_age / 0.22).min(1.0);
-    let scale = fit
-        * (1.0 + 0.6 * (1.0 - arrive) * (1.0 - arrive))
-        * (1.0 + 0.12 * a.beat.pulse + 0.06 * a.bass);
+    let scale =
+        fit * (0.7 + 0.3 * arrive * (2.0 - arrive)) * (1.0 + 0.12 * a.beat.pulse + 0.06 * a.bass);
     let tilt = (t * 0.7).sin() * 0.04 + (1.0 - arrive) * 0.15;
     let colour = mix(s.mid, s.peak, a.beat.pulse * 0.8);
     put_text(
