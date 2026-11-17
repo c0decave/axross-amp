@@ -2102,6 +2102,15 @@ impl App {
     fn visual(&mut self, ui: &mut Ui, height: f32) {
         let (rect, response) =
             ui.allocate_exact_size(vec2(ui.available_width(), height), Sense::click());
+        // (a screen reader names the picture by its face)
+        let name = viz::name(self.mode);
+        response.widget_info(|| {
+            egui::WidgetInfo::labeled(
+                egui::accesskit::Role::Image,
+                true,
+                format!("Visualization: {name}"),
+            )
+        });
         let scheme = viz::scheme(&self.scheme_key, &self.custom_colours);
         let dt = self.last_frame.elapsed().as_secs_f32().clamp(0.0, 0.2);
         self.last_frame = Instant::now();
