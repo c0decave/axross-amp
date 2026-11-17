@@ -34,11 +34,17 @@ fn main() -> eframe::Result {
         return Ok(());
     }
     let files: Vec<String> = args.into_iter().filter(|a| !a.starts_with("--")).collect();
+    // the window as large as it was left
+    let size = axross_amp::state::read_amp(
+        &axross_amp::state::config_dir().join(axross_amp::state::AMP_FILE),
+    )
+    .window
+    .unwrap_or([620.0, 860.0]);
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("axross-amp")
             .with_app_id("axross-amp")
-            .with_inner_size([620.0, 860.0])
+            .with_inner_size(size)
             .with_min_inner_size([420.0, 420.0])
             .with_drag_and_drop(true),
         ..Default::default()

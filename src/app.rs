@@ -19,6 +19,7 @@ const ACCENT: Color32 = Color32::from_rgb(0x4c, 0x9a, 0xff);
 const MUTED: Color32 = Color32::from_rgb(0x8b, 0x94, 0x9e);
 const PANEL: Color32 = Color32::from_rgb(0x16, 0x1b, 0x22);
 const SAVE_EVERY: Duration = Duration::from_secs(3);
+const POSITION_EVERY: Duration = Duration::from_secs(30);
 /// A track that could not be played (axross's red).
 const BROKEN: Color32 = Color32::from_rgb(0xe0, 0x5a, 0x4b);
 
@@ -114,6 +115,33 @@ pub struct App {
     visible: Vec<usize>,
     visible_for: (String, u64),
     ctx: egui::Context,
+    /// What only this program keeps (window, ReplayGain), where, and
+    /// whether it changed.
+    amp: state::AmpSettings,
+    amp_path: PathBuf,
+    amp_dirty: bool,
+    /// The sleep timer (not kept, as axross).
+    sleep: Option<Sleep>,
+    /// The track details shown (a window).
+    details: Option<Details>,
+}
+
+/// The sleep timer: the music pauses at a time (fading out over its last
+/// seconds), or stops at the end of the track.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Sleep {
+    At(Instant),
+    EndOfTrack,
+}
+
+/// The sleep timer's fade (axross's 8 s).
+const SLEEP_FADE: Duration = Duration::from_secs(8);
+
+/// The details of a track: its path, and what was read of it.
+struct Details {
+    path: String,
+    stream: bool,
+    info: std::sync::Arc<std::sync::Mutex<Option<Result<TrackInfo, String>>>>,
 }
 
 /// Files and folders on their way into the playlist.
@@ -235,6 +263,9 @@ impl App {
         let audio_path = setup.config_dir.join(state::AUDIO_FILE);
         let saved = state::read_state(&state_path);
         let eq_settings = state::read_eq(&audio_path);
+        let amp_path = setup.config_dir.join(state::AMP_FILE);
+        let amp = state::read_amp(&amp_path);
+        engine.send(Command::Loudness(loudness(&amp)));
         engine.shared.set_volume(volume_curve(saved.volume));
         let output = state::read_output(&audio_path);
         if !output.is_empty() {
@@ -327,6 +358,11 @@ impl App {
             visible: Vec::new(),
             visible_for: (String::new(), u64::MAX),
             ctx: cc.egui_ctx.clone(),
+            amp,
+            amp_path,
+            amp_dirty: false,
+            sleep: None,
+            details: None,
         };
         #[cfg(target_os = "linux")]
         if setup.desktop {
@@ -606,7 +642,10 @@ impl App {
     /// Name the track that follows the current one to the engine (it
     /// decodes it on without a gap), whenever that changes.
     fn sync_queue(&mut self) {
-        let want = if self.loaded == Some(self.generation) && !self.current_is_stream() {
+        let want = if self.loaded == Some(self.generation)
+            && !self.current_is_stream()
+            && self.sleep != Some(Sleep::EndOfTrack)
+        {
             self.playlist
                 .peek_next()
                 .and_then(|i| Some((i, self.playlist.tracks.get(i)?.path.clone())))
@@ -695,6 +734,240 @@ impl App {
         #[cfg(target_os = "linux")]
         if let Some(m) = &self.mpris {
             m.seeked(secs);
+        }
+    }
+
+    /// Set the sleep timer (None: off).
+    pub fn set_sleep(&mut self, sleep: Option<Sleep>) {
+        self.sleep = sleep;
+        // (a fade under way is taken back)
+        self.engine.shared.set_volume(volume_curve(self.volume));
+    }
+
+    /// The sleep timer: the fade over its last seconds, then the pause.
+    fn sleep_tick(&mut self) {
+        let Some(Sleep::At(at)) = self.sleep else {
+            return;
+        };
+        let left = at.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            self.engine.send(Command::Pause);
+            self.set_sleep(None);
+            self.status = "The sleep timer paused the music.".into();
+            return;
+        }
+        let fade = (left.as_secs_f32() / SLEEP_FADE.as_secs_f32()).min(1.0);
+        self.engine
+            .shared
+            .set_volume(volume_curve(self.volume) * fade);
+        self.ctx.request_repaint_after(if fade < 1.0 {
+            Duration::from_millis(50)
+        } else {
+            (left - SLEEP_FADE).min(Duration::from_secs(1))
+        });
+    }
+
+    /// The timer's words beside the controls ("Sleep: 15 min").
+    fn sleep_label(&self) -> Option<String> {
+        match self.sleep? {
+            Sleep::EndOfTrack => Some("Sleep: end of track".into()),
+            Sleep::At(at) => {
+                let secs = at.saturating_duration_since(Instant::now()).as_secs();
+                Some(format!("Sleep: {} min", secs.div_ceil(60).max(1)))
+            }
+        }
+    }
+
+    /// The "⋯" menu: the sleep timer, ReplayGain, the track's details, the mixer.
+    fn more_menu(&mut self, ui: &mut Ui) {
+        ui.menu_button("Sleep timer", |ui| {
+            let now = self.sleep;
+            if ui.radio(now.is_none(), "Off").clicked() {
+                self.set_sleep(None);
+                ui.close();
+            }
+            for minutes in [15u64, 30, 45, 60, 90] {
+                if ui.radio(false, format!("{minutes} minutes")).clicked() {
+                    self.set_sleep(Some(Sleep::At(
+                        Instant::now() + Duration::from_secs(minutes * 60),
+                    )));
+                    ui.close();
+                }
+            }
+            if ui
+                .radio(now == Some(Sleep::EndOfTrack), "At the end of the track")
+                .clicked()
+            {
+                self.set_sleep(Some(Sleep::EndOfTrack));
+                ui.close();
+            }
+        });
+        ui.menu_button("ReplayGain", |ui| {
+            let mut amp = self.amp.clone();
+            for (key, name) in [
+                ("off", "Off"),
+                ("track", "Track gain"),
+                ("album", "Album gain"),
+            ] {
+                ui.radio_value(&mut amp.replay_gain, key.to_owned(), name);
+            }
+            ui.add(
+                egui::Slider::new(&mut amp.preamp_db, -15.0..=15.0)
+                    .step_by(0.5)
+                    .text("Pre-amp dB"),
+            );
+            ui.label(
+                RichText::new("Levels tracks by their ReplayGain tags (from the next track on).")
+                    .small()
+                    .color(MUTED),
+            );
+            if amp != self.amp {
+                self.amp = amp;
+                self.amp_dirty = true;
+                self.engine.send(Command::Loudness(loudness(&self.amp)));
+            }
+        });
+        ui.separator();
+        if ui
+            .add_enabled(
+                self.playlist.current.is_some(),
+                egui::Button::new("Track details…"),
+            )
+            .clicked()
+        {
+            if let Some(i) = self.playlist.current {
+                self.show_details(i);
+            }
+            ui.close();
+        }
+        if ui.button("Audio mixer…").clicked() {
+            self.tab = Tab::Mixer;
+            ui.close();
+        }
+    }
+
+    /// The details of track `index` (read on a thread for one not playing).
+    fn show_details(&mut self, index: usize) {
+        let Some(track) = self.playlist.tracks.get(index) else {
+            return;
+        };
+        let path = track.path.clone();
+        let stream = playlist::is_stream(&path);
+        let slot = std::sync::Arc::new(std::sync::Mutex::new(None));
+        if self.playlist.current == Some(index) && self.loaded == Some(self.generation) {
+            if let Ok(mut s) = slot.lock() {
+                *s = Some(Ok(self.info.clone()));
+            }
+        } else if !stream {
+            let (s, p, ctx) = (slot.clone(), path.clone(), self.ctx.clone());
+            let _ = std::thread::Builder::new()
+                .name("amp-details".into())
+                .spawn(move || {
+                    let info = crate::engine::probe(&p);
+                    if let Ok(mut s) = s.lock() {
+                        *s = Some(info);
+                    }
+                    ctx.request_repaint();
+                });
+        }
+        self.details = Some(Details {
+            path,
+            stream,
+            info: slot,
+        });
+    }
+
+    fn details_window(&mut self, ctx: &egui::Context) {
+        let Some(details) = &self.details else {
+            return;
+        };
+        let mut open = true;
+        let info = details.info.lock().ok().and_then(|i| i.clone());
+        let playing_this = self
+            .playlist
+            .current
+            .and_then(|i| self.playlist.tracks.get(i))
+            .is_some_and(|t| t.path == details.path);
+        egui::Window::new("Track details")
+            .open(&mut open)
+            .collapsible(false)
+            .default_width(420.0)
+            .show(ctx, |ui| {
+                let mut rows: Vec<(String, String)> =
+                    vec![("Location".into(), details.path.clone())];
+                match &info {
+                    None if details.stream && playing_this => {}
+                    None if details.stream => rows.push((
+                        "".into(),
+                        "A stream: its details come when it plays.".into(),
+                    )),
+                    None => rows.push(("".into(), "Reading…".into())),
+                    Some(Err(why)) => rows.push(("Cannot read it".into(), why.clone())),
+                    Some(Ok(i)) => {
+                        let mut put = |k: &str, v: String| {
+                            if !v.is_empty() {
+                                rows.push((k.into(), v));
+                            }
+                        };
+                        put("Title", i.title.clone());
+                        put("Artist", i.artist.clone());
+                        put("Album", i.album.clone());
+                        put("Album artist", i.album_artist.clone());
+                        put(
+                            "Track",
+                            i.track_number.map(|n| n.to_string()).unwrap_or_default(),
+                        );
+                        put("Date", i.date.clone());
+                        put("Genre", i.genre.clone());
+                        put("Station", i.station.clone());
+                        put("Station's genre", i.station_genre.clone());
+                        put("Length", i.duration.map(clock).unwrap_or_default());
+                        put(
+                            "Format",
+                            format!(
+                                "{}, {} Hz, {} channel{}{}",
+                                i.codec,
+                                i.rate,
+                                i.channels,
+                                if i.channels == 1 { "" } else { "s" },
+                                i.bits.map(|b| format!(", {b} bit")).unwrap_or_default()
+                            ),
+                        );
+                        let gain = |g: Option<f32>, p: Option<f32>| match (g, p) {
+                            (Some(g), Some(p)) => format!("{g:+.2} dB, peak {p:.3}"),
+                            (Some(g), None) => format!("{g:+.2} dB"),
+                            _ => String::new(),
+                        };
+                        put("ReplayGain (track)", gain(i.track_gain, i.track_peak));
+                        put("ReplayGain (album)", gain(i.album_gain, i.album_peak));
+                        if !i.tags.is_empty() {
+                            rows.push(("".into(), "".into()));
+                            for (k, v) in &i.tags {
+                                rows.push((k.clone(), v.clone()));
+                            }
+                        }
+                    }
+                }
+                if details.stream && playing_this && !self.stream_title.is_empty() {
+                    rows.insert(1, ("Playing".into(), self.stream_title.clone()));
+                }
+                egui::ScrollArea::vertical()
+                    .max_height(420.0)
+                    .show(ui, |ui| {
+                        egui::Grid::new("details")
+                            .num_columns(2)
+                            .striped(true)
+                            .show(ui, |ui| {
+                                for (k, v) in rows {
+                                    ui.label(RichText::new(k).color(MUTED));
+                                    ui.add(egui::Label::new(v).wrap().selectable(true));
+                                    ui.end_row();
+                                }
+                            });
+                    });
+            });
+        if !open {
+            self.details = None;
         }
     }
 
@@ -822,7 +1095,16 @@ impl App {
                     self.stream_title.clear();
                     self.take_info(ctx, info);
                 }
-                Event::Ended { generation } if generation == self.generation => self.next(true),
+                Event::Ended { generation } if generation == self.generation => {
+                    if self.sleep == Some(Sleep::EndOfTrack) {
+                        self.set_sleep(None);
+                        self.stop();
+                        self.status =
+                            "The sleep timer stopped the music at the end of the track.".into();
+                    } else {
+                        self.next(true);
+                    }
+                }
                 Event::StreamTitle { generation, title } if generation == self.generation => {
                     self.stream_title = title;
                 }
@@ -865,10 +1147,16 @@ impl App {
     }
 
     fn save(&mut self, force: bool) {
-        if !(force || (self.dirty && self.last_save.elapsed() >= SAVE_EVERY)) && !self.eq_dirty {
+        let due = self.last_save.elapsed() >= SAVE_EVERY;
+        // while playing, the position is kept every 30 s (as axross: a crash
+        // or a power cut loses no more)
+        if self.playing() && self.last_save.elapsed() >= POSITION_EVERY {
+            self.dirty = true;
+        }
+        if !(force || (self.dirty && due) || self.eq_dirty || (self.amp_dirty && due)) {
             return;
         }
-        if self.dirty || force {
+        if force || (self.dirty && due) {
             let state = self.snapshot();
             if let Err(e) = state::write_state(&self.state_path, &state) {
                 self.status = format!("Cannot save the player state: {e}");
@@ -881,6 +1169,12 @@ impl App {
                 self.status = format!("Cannot save the equalizer: {e}");
             }
             self.eq_dirty = false;
+        }
+        if self.amp_dirty && (force || self.last_save.elapsed() >= SAVE_EVERY) {
+            if let Err(e) = state::write_amp(&self.amp_path, &self.amp) {
+                self.status = format!("Cannot save the settings: {e}");
+            }
+            self.amp_dirty = false;
         }
     }
 
@@ -1625,6 +1919,13 @@ impl App {
                 {
                     self.set_muted(!self.muted);
                 }
+                ui.menu_button(RichText::new("⋯").size(16.0), |ui| self.more_menu(ui))
+                    .response
+                    .accessible_name("More")
+                    .on_hover_text("Sleep timer, ReplayGain, track details, mixer");
+                if let Some(label) = self.sleep_label() {
+                    ui.label(RichText::new(label).small().color(ACCENT));
+                }
             });
         });
     }
@@ -1797,6 +2098,7 @@ impl App {
             let count = rows.len();
             let mut play: Option<usize> = None;
             let mut remove: Option<usize> = None;
+            let mut details: Option<usize> = None;
             let mut moved: Option<(usize, usize)> = None;
             let height = ui.available_height().max(120.0);
             let mut area = egui::ScrollArea::vertical()
@@ -1928,6 +2230,10 @@ impl App {
                             remove = Some(i);
                             ui.close();
                         }
+                        if ui.button("ℹ Details…").clicked() {
+                            details = Some(i);
+                            ui.close();
+                        }
                     });
                 }
             });
@@ -1945,6 +2251,9 @@ impl App {
             }
             if let Some(i) = play {
                 self.play_index(i, 0, true);
+            }
+            if let Some(i) = details {
+                self.show_details(i);
             }
             if self.gate.any
                 && ui.input(|inp| inp.key_pressed(Key::Delete))
@@ -2054,6 +2363,19 @@ impl eframe::App for App {
         self.handle_events(&ctx);
         self.poll_adding();
         self.poll_scanner();
+        self.sleep_tick();
+        // (the window's inner size; where the platform does not say, the area drawn on)
+        let size = ctx.input(|i| {
+            i.viewport()
+                .inner_rect
+                .map(|r| r.size())
+                .unwrap_or_else(|| i.viewport_rect().size())
+        });
+        let size = [size.x.round(), size.y.round()];
+        if self.amp.window != Some(size) && size[0] >= 200.0 && size[1] >= 200.0 {
+            self.amp.window = Some(size);
+            self.amp_dirty = true;
+        }
         #[cfg(target_os = "linux")]
         self.desktop(&ctx);
         self.sync_queue();
@@ -2149,6 +2471,7 @@ impl eframe::App for App {
                 self.playlist_view(ui);
             });
         self.url_window(&ctx);
+        self.details_window(&ctx);
         self.file_dialog(&ctx);
         self.save(false);
         let fps = self.options.fps.clamp(10, 60) as f32;
@@ -2219,6 +2542,14 @@ fn file_url(path: &str) -> String {
         }
     }
     out
+}
+
+/// ReplayGain's settings as the engine takes them.
+fn loudness(amp: &state::AmpSettings) -> crate::engine::Loudness {
+    crate::engine::Loudness {
+        mode: crate::engine::GainMode::from_key(&amp.replay_gain),
+        preamp_db: amp.preamp_db,
+    }
 }
 
 /// The host of an http(s) URL (for "Connecting to …").

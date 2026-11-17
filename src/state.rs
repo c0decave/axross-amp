@@ -8,7 +8,11 @@
 //! * `~/.config/axross/audio.json` - the one equalizer of axross
 //!   (`eq_enabled`, `eq_preset`, `eq_gains`).
 //!
-//! Both are read leniently (a value that makes no sense is left at its
+//! * `~/.config/axross/axross-amp.json` - what only this program has: its
+//!   window's size, ReplayGain (axross's player rewrites its own file with
+//!   its own keys only, so these live apart).
+//!
+//! All are read leniently (a value that makes no sense is left at its
 //! default) and written back with every key this program does not know kept
 //! as it was, atomically (a temporary file renamed over), mode 0600.
 
@@ -124,9 +128,70 @@ pub fn config_dir() -> PathBuf {
         .join("axross")
 }
 
-/// The player's file and axross's audio settings, in [`config_dir`].
+/// The player's file, axross's audio settings and this program's own, in
+/// [`config_dir`].
 pub const STATE_FILE: &str = "media_player.json";
 pub const AUDIO_FILE: &str = "audio.json";
+pub const AMP_FILE: &str = "axross-amp.json";
+
+/// What only axross-amp keeps.
+#[derive(Clone, Debug, PartialEq)]
+pub struct AmpSettings {
+    /// The window's inner size (points); None: the default.
+    pub window: Option<[f32; 2]>,
+    /// ReplayGain: "off", "track" or "album", and the pre-amplification (dB).
+    pub replay_gain: String,
+    pub preamp_db: f32,
+}
+
+impl Default for AmpSettings {
+    fn default() -> Self {
+        AmpSettings {
+            window: None,
+            replay_gain: "off".into(),
+            preamp_db: 0.0,
+        }
+    }
+}
+
+pub fn read_amp(path: &Path) -> AmpSettings {
+    let map = read_object(path);
+    let mut settings = AmpSettings::default();
+    if let Some(Value::Array(size)) = map.get("window")
+        && let [Some(w), Some(h)] = [size.first(), size.get(1)].map(|v| v.and_then(Value::as_f64))
+        && (200.0..=20_000.0).contains(&w)
+        && (200.0..=20_000.0).contains(&h)
+    {
+        settings.window = Some([w as f32, h as f32]);
+    }
+    if let Some(mode) =
+        text(&map, "replay_gain").filter(|m| ["off", "track", "album"].contains(&m.as_str()))
+    {
+        settings.replay_gain = mode;
+    }
+    if let Some(db) = map
+        .get("preamp_db")
+        .and_then(Value::as_f64)
+        .filter(|d| d.is_finite())
+    {
+        settings.preamp_db = db.clamp(-15.0, 15.0) as f32;
+    }
+    settings
+}
+
+pub fn write_amp(path: &Path, settings: &AmpSettings) -> std::io::Result<()> {
+    let mut map = read_object(path);
+    match settings.window {
+        Some([w, h]) => map.insert("window".into(), json!([w.round(), h.round()])),
+        None => map.remove("window"),
+    };
+    map.insert("replay_gain".into(), json!(settings.replay_gain));
+    map.insert(
+        "preamp_db".into(),
+        json!((settings.preamp_db as f64 * 10.0).round() / 10.0),
+    );
+    write_object(path, &map)
+}
 
 pub fn state_path() -> PathBuf {
     config_dir().join(STATE_FILE)
@@ -429,6 +494,30 @@ mod tests {
         let back: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(back["tracks"][0]["duration"], json!(200));
         assert_eq!(back["tracks"][1]["duration"], json!(61));
+    }
+
+    #[test]
+    fn this_programs_own_settings_round_trip() {
+        let path = temp("amp");
+        assert_eq!(read_amp(&path), AmpSettings::default());
+        fs::write(
+            &path,
+            r#"{"window": [800, 9e9], "replay_gain": "loud", "kept": 1}"#,
+        )
+        .unwrap();
+        assert_eq!(read_amp(&path), AmpSettings::default());
+        let settings = AmpSettings {
+            window: Some([700.4, 900.0]),
+            replay_gain: "album".into(),
+            preamp_db: 99.0,
+        };
+        write_amp(&path, &settings).unwrap();
+        let back = read_amp(&path);
+        assert_eq!(back.window, Some([700.0, 900.0]));
+        assert_eq!(back.replay_gain, "album");
+        assert_eq!(back.preamp_db, 15.0);
+        let raw: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(raw["kept"], json!(1));
     }
 
     #[test]

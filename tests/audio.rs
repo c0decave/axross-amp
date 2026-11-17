@@ -251,11 +251,18 @@ fn with_cover(source: &Path, png: &[u8], target: &Path) {
     frame.push(3); // front cover
     frame.push(0); // empty description
     frame.extend_from_slice(png);
+    with_frames(source, &[(*b"APIC", frame)], target);
+}
+
+/// `source` with an ID3v2.3 tag of `frames` (id, body) in front.
+fn with_frames(source: &Path, frames: &[([u8; 4], Vec<u8>)], target: &Path) {
     let mut tag = Vec::new();
-    tag.extend_from_slice(b"APIC");
-    tag.extend_from_slice(&(frame.len() as u32).to_be_bytes());
-    tag.extend_from_slice(&[0, 0]);
-    tag.extend_from_slice(&frame);
+    for (id, frame) in frames {
+        tag.extend_from_slice(id);
+        tag.extend_from_slice(&(frame.len() as u32).to_be_bytes());
+        tag.extend_from_slice(&[0, 0]);
+        tag.extend_from_slice(frame);
+    }
     let size = tag.len() as u32;
     let syncsafe = [
         (size >> 21) as u8 & 0x7f,
@@ -432,6 +439,45 @@ fn real_sound_from_every_format_with_eq_volume_seek_streams_and_errors() {
     let cover = played.info.and_then(|i| i.cover);
     report.push(format!("cover: {:?} bytes", cover.as_ref().map(Vec::len)));
     assert_eq!(cover.as_deref(), Some(png.as_slice()));
+
+    // ReplayGain: a track gain of -6 dB, the track mode on: half the level
+    let txxx = |key: &str, value: &str| {
+        let mut f = vec![0u8];
+        f.extend_from_slice(key.as_bytes());
+        f.push(0);
+        f.extend_from_slice(value.as_bytes());
+        (*b"TXXX", f)
+    };
+    let gained = home.join("gained.mp3");
+    with_frames(
+        &corpus.join("tone.mp3"),
+        &[
+            txxx("REPLAYGAIN_TRACK_GAIN", "-6.02 dB"),
+            txxx("REPLAYGAIN_TRACK_PEAK", "0.400000"),
+        ],
+        &gained,
+    );
+    let plain = play(corpus.join("tone.mp3").to_str().unwrap(), 0, |_| {});
+    let (_, level) = tone_of(&read_wav(&capture).channel(0), 48_000);
+    assert!(plain.info.unwrap().track_gain.is_none());
+    let played = play(gained.to_str().unwrap(), 0, |e| {
+        e.send(Command::Loudness(axross_amp::engine::Loudness {
+            mode: axross_amp::engine::GainMode::Track,
+            preamp_db: 0.0,
+        }))
+    });
+    let info = played.info.unwrap();
+    assert_eq!((info.track_gain, info.track_peak), (Some(-6.02), Some(0.4)));
+    let (_, levelled) = tone_of(&read_wav(&capture).channel(0), 48_000);
+    report.push(format!(
+        "ReplayGain -6.02 dB: level x{:.3}",
+        levelled / level
+    ));
+    assert!(near(levelled / level, 0.5, 0.02), "{}", levelled / level);
+    // off: as it is
+    play(gained.to_str().unwrap(), 0, |_| {});
+    let (_, off) = tone_of(&read_wav(&capture).channel(0), 48_000);
+    assert!(near(off / level, 1.0, 0.02), "{}", off / level);
 
     println!("{}", report.join("\n"));
 }
