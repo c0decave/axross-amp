@@ -2474,9 +2474,12 @@ impl App {
 }
 
 impl eframe::App for App {
-    fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
-        let ctx = ui.ctx().clone();
-        self.handle_events(&ctx);
+    /// Everything that keeps the player going - what the engine said, the
+    /// desktop's requests, the sleep timer, the next track queued, the state
+    /// saved. eframe calls this also while the window is minimised or
+    /// covered (and `ui` is not called at all).
+    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.handle_events(ctx);
         self.poll_adding();
         self.poll_scanner();
         self.sleep_tick();
@@ -2493,9 +2496,18 @@ impl eframe::App for App {
             self.amp_dirty = true;
         }
         #[cfg(target_os = "linux")]
-        self.desktop(&ctx);
+        self.desktop(ctx);
         self.sync_queue();
-        self.window_title(&ctx);
+        self.window_title(ctx);
+        self.save(false);
+        // a heartbeat while something goes on: saves, the timer, the desktop
+        if self.playing() || self.sleep.is_some() || !self.adding.is_empty() || self.dirty {
+            ctx.request_repaint_after(Duration::from_millis(500));
+        }
+    }
+
+    fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
+        let ctx = ui.ctx().clone();
         self.gate = self.key_gate(&ctx);
         self.keys(ui);
         // dropped files and folders
@@ -2589,12 +2601,9 @@ impl eframe::App for App {
         self.url_window(&ctx);
         self.details_window(&ctx);
         self.file_dialog(&ctx);
-        self.save(false);
         let fps = self.options.fps.clamp(10, 60) as f32;
-        if self.playing()
-            || self.analyzer.bars.iter().any(|b| *b > 0.001)
-            || self.mode == "starfield"
-        {
+        // (the picture moves while there is sound, and as long as it falls to rest)
+        if self.playing() || self.analyzer.bars.iter().any(|b| *b > 0.001) {
             ctx.request_repaint_after(Duration::from_secs_f32(1.0 / fps));
         } else {
             ctx.request_repaint_after(Duration::from_millis(500));
