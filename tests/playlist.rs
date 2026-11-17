@@ -11,7 +11,7 @@ use player::*;
 
 /// The playlist's rows shown, top to bottom (of the names that may be there).
 fn rows(h: &egui_kittest::Harness<'_, axross_amp::app::App>) -> Vec<String> {
-    let mut found: Vec<(f32, String)> = ["apple", "banana", "cherry", "a", "b", "c"]
+    let mut found: Vec<(f32, String)> = ["apple", "banana", "cherry", "a", "b", "c", "d"]
         .iter()
         .filter_map(|name| {
             h.query_by_role_and_label(egui::accesskit::Role::ListItem, name)
@@ -121,4 +121,41 @@ fn a_folder_past_the_limit_is_said_to_be_cut() {
         "{}",
         h.state().status()
     );
+}
+
+#[test]
+fn delete_twice_removes_two_rows() {
+    let dir = folder("pl-delete");
+    let files = tracks(&dir, &["a.wav", "b.wav", "c.wav", "d.wav"], 1.0);
+    let mut h = harness(&dir, files);
+    assert!(until(&mut h, 5.0, |a| a.is_loaded()));
+    settle(&mut h, 2);
+    h.get_by_label("b").click();
+    settle(&mut h, 1);
+    h.key_press(Key::Delete);
+    settle(&mut h, 1);
+    h.key_press(Key::Delete);
+    settle(&mut h, 2);
+    assert_eq!(rows(&h), ["a", "d"]);
+}
+
+#[test]
+fn the_chosen_row_stays_chosen_when_one_above_it_goes() {
+    // (the selection was an index: removing a row above it by its menu
+    // moved it onto the next track, and Delete removed that one)
+    let dir = folder("pl-select");
+    let files = tracks(&dir, &["a.wav", "b.wav", "c.wav", "d.wav"], 1.0);
+    let mut h = harness(&dir, files);
+    assert!(until(&mut h, 5.0, |a| a.is_loaded()));
+    settle(&mut h, 2);
+    h.get_by_label("c").click();
+    settle(&mut h, 1);
+    h.get_by_role_and_label(egui::accesskit::Role::ListItem, "a")
+        .click_secondary();
+    settle(&mut h, 2);
+    h.get_by_label("✖ Remove").click();
+    settle(&mut h, 2);
+    h.key_press(Key::Delete);
+    settle(&mut h, 2);
+    assert_eq!(rows(&h), ["b", "d"]);
 }

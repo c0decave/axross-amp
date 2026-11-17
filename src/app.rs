@@ -2356,6 +2356,11 @@ impl App {
             }
             if let Some(i) = remove {
                 self.playlist.remove(i);
+                self.selected = match self.selected {
+                    Some(s) if s > i => Some(s - 1),
+                    Some(s) if s == i => None,
+                    other => other,
+                };
                 self.dirty = true;
             }
             if let Some(i) = play {
@@ -2369,7 +2374,9 @@ impl App {
                 && let Some(i) = self.selected
             {
                 self.playlist.remove(i);
-                self.selected = None;
+                // the row that took its place is chosen: Delete again removes it
+                let left = self.playlist.tracks.len();
+                self.selected = (left > 0).then(|| i.min(left - 1));
                 self.dirty = true;
             }
             if self.gate.activation
