@@ -173,38 +173,21 @@ picture is made by `AMP_DEMO_TRACK=… cargo test --test ui -- --ignored`.</sub>
 
 ## Photosensitivity
 
-The pictures move with the music, and moving, flashing pictures can bring
-on seizures in people with photosensitive epilepsy - some of whom do not
-know it. axross-amp is made so that no picture flashes more than three times
-in any second (WCAG 2.3.1), nor flashes in saturated red (2.3.2):
+**Warning.** The pictures move with the music, and moving, flashing pictures
+and stripes can bring on seizures in people with photosensitive epilepsy -
+some of whom do not know it. axross-amp does **not** yet guarantee that its
+pictures stay within the WCAG 2.3.1 limit (three flashes in any second) for
+every kind of music: an independent review found the oscilloscope and other
+faces flashing faster than that with some sounds (a bass alternating with
+noise, fast sweeps), and the moiré face is a moving high-contrast pattern.
+Work to measure this soundly and to limit it for every face is under way.
 
-- **The flash guard.** What drives a picture's brightness - every bar, the
-  beat's pulse, the VU meter, the oscilloscope's height - may turn from
-  rising to falling (or back) no sooner than a quarter of a second after it
-  last turned, and it moves there smoothly, never jumping within a frame: at
-  most two flashes a second. Beats move, scale and colour the pictures; no
-  picture brightens as a whole on the beat. The fire's flames lick slowly and
-  are orange rather than saturated red.
-- **Calm by default.** Motion is *Calm* (the generative pictures at 70 % of
-  their pace). *Intense* (Options) is livelier, after a photosensitivity
-  warning, and still turns no sooner than every 0.17 s: under three flashes a
-  second. Where the desktop asks for reduced motion (GNOME's animations off),
-  Intense cannot be chosen.
-- **Tested.** `tests/flash.rs` renders every face and its options at 60 frames
-  a second through the worst music for them - a kick at 180 BPM, white noise
-  in bursts four times a second, silence and full scale in turn - and follows
-  each frame's relative luminance (and saturated red) in every quarter of the
-  picture as ITU-R BT.1702 and the Harding test do: more than three flashes in
-  any second, or any red flashes over three, fails it. Before the guard ten
-  faces flashed four times a second (spectrum, mirror, line, polar, bells,
-  scope, VU, fire, aurora, helix) and the fire eight times in red; now at
-  most two in Calm and three in Intense, none in red. High-contrast stripes
-  (a trigger when they move) are measured and reported too; none of the
-  faces covers more than a fifth of the picture with them.
-
-If you or anyone watching is sensitive to flashing light, keep the motion
-Calm, watch from a distance in a lit room, or choose a calm face (the cover,
-the waterfall, the analysis tools) - or turn the picture off.
+What there is now: the *Calm* motion (the default) slows what drives the
+pictures' brightness and the generative pictures' pace; *Intense* is chosen
+only after a photosensitivity warning, and not where the desktop asks for
+reduced motion. If you or anyone watching is sensitive to flashing light or
+patterns, do not watch the pictures - turn them off ("Off" in the faces'
+menu) or choose the cover.
 
 ## Use
 

@@ -3568,8 +3568,9 @@ impl App {
                     "Intense motion makes the pictures faster and livelier, with more \
                      movement on the beat. A small share of people have seizures when they \
                      see flashing light or patterns; some do not know they are at risk. \
-                     Even intense, no picture flashes more than three times a second - but \
-                     if you or anyone watching has epilepsy or feels unwell, keep Calm.",
+                     The pictures are not yet guaranteed to stay below three flashes a second \
+                     for every kind of music. If you or anyone watching has epilepsy or feels \
+                     unwell, keep Calm - or turn the pictures off.",
                 );
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
