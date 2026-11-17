@@ -77,8 +77,16 @@ fn every_state_of_the_window() {
     // nothing to play
     let mut h = window(&home.join("empty"), vec![], egui::vec2(620.0, 860.0));
     settle(&mut h, 3);
-    assert!(h.query_by_label_contains("Files").is_some());
+    let size = egui::vec2(620.0, 860.0);
+    empty_state_says_what_to_do(&h, size);
     shoot(&mut h, "empty");
+    drop(h);
+    // ... in the smallest window too (420 x 420)
+    let size = egui::vec2(420.0, 420.0);
+    let mut h = window(&home.join("empty-small"), vec![], size);
+    settle(&mut h, 3);
+    empty_state_says_what_to_do(&h, size);
+    shoot(&mut h, "empty-small");
     drop(h);
 
     let a = home.join("Chord and noise.wav");
@@ -159,6 +167,37 @@ fn every_state_of_the_window() {
     // the equalizer's page
     h.get_by_label("Equalizer").click();
     play(&mut h, &mut out, 0.3);
+    // flat: no band filled (once each was filled from the bottom, as if
+    // cut by 12 dB); raised: filled from the 0 dB line up
+    let band = h.get_by_label("Equalizer 31").rect();
+    let shot = h.render().unwrap();
+    let (above, below) = colour_above_and_below(&shot, band);
+    assert!(
+        above + below < 3,
+        "a flat band filled: {above} above, {below} below"
+    );
+    shoot(&mut h, "equalizer-flat");
+    // (a click near the top of its rail)
+    let at = Pos2::new(band.center().x, band.top() + band.height() * 0.2);
+    h.event(Event::PointerMoved(at));
+    h.run_steps(1);
+    for pressed in [true, false] {
+        h.event(Event::PointerButton {
+            pos: at,
+            button: PointerButton::Primary,
+            pressed,
+            modifiers: Default::default(),
+        });
+        h.run_steps(1);
+    }
+    assert!(h.query_by_label_contains("+7").is_some() || h.query_by_label_contains("+8").is_some());
+    play(&mut h, &mut out, 0.3);
+    let shot = h.render().unwrap();
+    let (above, below) = colour_above_and_below(&shot, band);
+    assert!(
+        above > 10 && below < 3,
+        "a raised band: {above} above, {below} below"
+    );
     shoot(&mut h, "equalizer");
     h.get_by_label_contains("Playlist").click();
     play(&mut h, &mut out, 0.2);
@@ -173,6 +212,25 @@ fn every_state_of_the_window() {
     );
     shoot(&mut h, "large");
     h.key_press(egui::Key::Escape);
+    drop(h);
+
+    // the smallest window, playing: the controls are in it, side by side
+    let mut h = window(
+        &home.join("smallest"),
+        files.clone(),
+        egui::vec2(420.0, 420.0),
+    );
+    assert!(until(&mut h, 5.0, |a| a.is_loaded()));
+    play(&mut h, &mut out, 1.0);
+    shoot(&mut h, "smallest");
+    let window_rect = egui::Rect::from_min_size(Pos2::ZERO, egui::vec2(420.0, 420.0));
+    for name in ["Pause", "Next", "Repeat: off", "More", "Volume"] {
+        let r = h.get_by_label(name).rect();
+        assert!(window_rect.contains_rect(r), "{name} off the window: {r:?}");
+    }
+    let repeat = h.get_by_label("Repeat: off").rect();
+    let more = h.get_by_label("More").rect();
+    assert!(repeat.right() <= more.left(), "{repeat:?} under {more:?}");
     drop(h);
 
     // the narrowest window
@@ -220,4 +278,48 @@ fn every_state_of_the_window() {
     );
     shoot(&mut h, "no-output");
     NO_OUTPUT.store(false, Ordering::Relaxed);
+}
+
+/// The empty window's drop zone: its words, its three buttons inside the
+/// window, none over another.
+fn empty_state_says_what_to_do(h: &Harness<'static, App>, size: egui::Vec2) {
+    assert!(h.query_by_label("Drop music here").is_some());
+    let window = egui::Rect::from_min_size(Pos2::ZERO, size);
+    let rects: Vec<egui::Rect> = ["Open files…", "Open folder…", "Add a URL…"]
+        .iter()
+        .map(|name| {
+            let r = h.get_by_label_contains(name).rect();
+            assert!(window.contains_rect(r), "{name} off the window: {r:?}");
+            r
+        })
+        .collect();
+    for (i, a) in rects.iter().enumerate() {
+        for b in &rects[i + 1..] {
+            assert!(!a.shrink(1.0).intersects(*b), "{a:?} over {b:?}");
+        }
+    }
+    assert!(h.query_by_label_contains("play / pause").is_some());
+}
+
+/// Colourful pixels down a band's rail, above and below its 0 dB line
+/// (the middle of the slider), the handle's place left out.
+fn colour_above_and_below(shot: &image::RgbaImage, band: egui::Rect) -> (usize, usize) {
+    let x = band.center().x as u32;
+    let zero = band.center().y;
+    let (mut above, mut below) = (0, 0);
+    for y in (band.top() + 12.0) as u32..(band.bottom() - 12.0) as u32 {
+        if (y as f32 - zero).abs() < 14.0 {
+            continue;
+        }
+        let p = shot.get_pixel(x, y);
+        let (max, min) = (p[0].max(p[1]).max(p[2]), p[0].min(p[1]).min(p[2]));
+        if max > 60 && (max - min) as f32 > max as f32 * 0.4 {
+            if (y as f32) < zero {
+                above += 1;
+            } else {
+                below += 1;
+            }
+        }
+    }
+    (above, below)
 }

@@ -160,6 +160,9 @@ pub struct AmpSettings {
     pub loudness_target: f32,
     /// Seconds a track fades into the next (0: none, gapless).
     pub crossfade: f32,
+    /// The pictures' colours from the cover when there is one (the chosen
+    /// scheme otherwise).
+    pub cover_colours: bool,
 }
 
 /// The loudness targets offered: LUFS and what aims at it.
@@ -178,6 +181,7 @@ impl Default for AmpSettings {
             untagged_db: crate::engine::DEFAULT_UNTAGGED_DB,
             loudness_target: -23.0,
             crossfade: 0.0,
+            cover_colours: true,
         }
     }
 }
@@ -225,6 +229,9 @@ pub fn read_amp(path: &Path) -> AmpSettings {
     {
         settings.crossfade = (secs.clamp(0.0, 12.0) * 2.0).round() as f32 / 2.0;
     }
+    if let Some(on) = map.get("cover_colours").and_then(Value::as_bool) {
+        settings.cover_colours = on;
+    }
     settings
 }
 
@@ -245,6 +252,7 @@ pub fn write_amp(path: &Path, settings: &AmpSettings) -> std::io::Result<()> {
     );
     map.insert("loudness_target".into(), json!(settings.loudness_target));
     map.insert("crossfade".into(), json!(settings.crossfade));
+    map.insert("cover_colours".into(), json!(settings.cover_colours));
     write_object(path, &map)
 }
 
@@ -766,12 +774,15 @@ mod tests {
             untagged_db: -8.0,
             loudness_target: -14.0,
             crossfade: 4.5,
+            cover_colours: false,
         };
         write_amp(&path, &settings).unwrap();
         let back = read_amp(&path);
         assert_eq!(back.window, Some([700.0, 900.0]));
         assert_eq!(back.loudness_target, -14.0);
         assert_eq!(back.crossfade, 4.5);
+        assert!(!back.cover_colours);
+        assert!(AmpSettings::default().cover_colours);
         assert_eq!(back.replay_gain, "album");
         assert_eq!(back.preamp_db, 15.0);
         let raw: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();

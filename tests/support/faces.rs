@@ -52,6 +52,31 @@ pub struct FaceApp {
     pub live: bool,
     /// wgpu's state, when the harness renders with it.
     pub render_state: Option<eframe::egui_wgpu::RenderState>,
+    /// A cover (the cover face's), made on the first frame.
+    pub cover: Option<egui::TextureHandle>,
+}
+
+/// A made-up cover: a dusk sky, a sun, hills (256 x 256 RGBA).
+pub fn demo_cover() -> egui::ColorImage {
+    let n = 256usize;
+    let mut px = Vec::with_capacity(n * n);
+    for y in 0..n {
+        for x in 0..n {
+            let (u, v) = (x as f32 / n as f32, y as f32 / n as f32);
+            let sky = [40.0 + 180.0 * v, 30.0 + 60.0 * v, 110.0 - 40.0 * v];
+            let sun = ((u - 0.5).powi(2) + (v - 0.55).powi(2)).sqrt() < 0.18;
+            let hill = v > 0.68 + 0.06 * (u * 9.0).sin();
+            let c = if hill {
+                [20.0, 22.0 + 30.0 * u, 48.0]
+            } else if sun {
+                [250.0, 170.0 - 120.0 * (v - 0.37), 60.0]
+            } else {
+                sky
+            };
+            px.push(egui::Color32::from_rgb(c[0] as u8, c[1] as u8, c[2] as u8));
+        }
+    }
+    egui::ColorImage::new([n, n], px)
 }
 
 impl FaceApp {
@@ -68,6 +93,7 @@ impl FaceApp {
             title: "Afterglow – Demo Band".into(),
             live: true,
             render_state: None,
+            cover: None,
         }
     }
 
@@ -92,6 +118,14 @@ impl FaceApp {
 
     pub fn paint(&mut self, ui: &mut egui::Ui) {
         let rect = ui.max_rect();
+        if self.cover.is_none() {
+            self.cover = Some(ui.ctx().load_texture(
+                "cover",
+                demo_cover(),
+                egui::TextureOptions::LINEAR,
+            ));
+        }
+        let cover = self.cover.as_ref().map(|t| (t.id(), t.size_vec2()));
         let scheme = viz::scheme(&self.scheme, &Default::default());
         let frame = Frame {
             painter: ui.painter(),
@@ -107,6 +141,7 @@ impl FaceApp {
             opacity: 1.0,
             second: false,
             loudness_target: -23.0,
+            cover,
         };
         viz::draw(&frame, self.key, &mut self.state);
     }

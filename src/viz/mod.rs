@@ -101,6 +101,7 @@ pub const FACES: &[Face] = &[
     fine(face("chroma", "Chromagram", A)),
     fine(face("pianoroll", "Piano roll", A)),
     shader(fine(face("mel", "Mel spectrogram", A))),
+    face("cover", "Cover", G),
     shader(face("plasma", "Liquid", G)),
     shader(face("fire", "Fire", G)),
     shader(face("metaballs", "Metaballs", G)),
@@ -255,6 +256,106 @@ pub fn readable_on(colour: Color32, background: Color32, minimum: f32) -> Color3
         }
     }
     Color32::WHITE
+}
+
+const HUES: usize = 24;
+
+/// A picture's colourful hues (RGBA pixels), strongest first (weighed by
+/// how colourful and how bright): each its hue bucket, its mean colour and
+/// its weight. None for a grey picture (a few colourful pixels are none).
+pub fn hues(rgba: &[u8]) -> Option<Vec<(usize, (Color32, f64))>> {
+    let mut weight = [0.0f64; HUES];
+    let mut sum = [[0.0f64; 3]; HUES];
+    let mut all = 0.0f64;
+    for px in rgba.as_chunks::<4>().0.iter().step_by(3) {
+        let (r, g, b) = (
+            px[0] as f64 / 255.0,
+            px[1] as f64 / 255.0,
+            px[2] as f64 / 255.0,
+        );
+        let max = r.max(g).max(b);
+        let min = r.min(g).min(b);
+        all += 1.0;
+        let sat = if max > 0.0 { (max - min) / max } else { 0.0 };
+        if sat < 0.25 || max < 0.2 {
+            continue;
+        }
+        let d = max - min;
+        let hue = if max == r {
+            ((g - b) / d).rem_euclid(6.0)
+        } else if max == g {
+            (b - r) / d + 2.0
+        } else {
+            (r - g) / d + 4.0
+        } / 6.0;
+        let k = ((hue * HUES as f64) as usize).min(HUES - 1);
+        let w = sat * max;
+        weight[k] += w;
+        for (c, v) in sum[k].iter_mut().zip([r, g, b]) {
+            *c += v * w;
+        }
+    }
+    let mut out: Vec<(usize, (Color32, f64))> = (0..HUES)
+        .filter(|k| weight[*k] > 0.0)
+        .map(|k| {
+            let to = |v: f64| (v / weight[k] * 255.0).round().clamp(0.0, 255.0) as u8;
+            (
+                k,
+                (
+                    Color32::from_rgb(to(sum[k][0]), to(sum[k][1]), to(sum[k][2])),
+                    weight[k],
+                ),
+            )
+        })
+        .collect();
+    out.sort_by(|a, b| b.1.1.total_cmp(&a.1.1));
+    (out.first()?.1.1 >= all * 0.02).then_some(out)
+}
+
+/// A scheme from a cover's colours (RGBA pixels): its strongest hue the
+/// middle, the next distinct ones quiet and loud, a ground of its darkest
+/// tint, readable peaks. None for a cover without colour.
+pub fn cover_scheme(rgba: &[u8]) -> Option<Scheme> {
+    let hues = hues(rgba)?;
+    let (first, mid) = hues[0];
+    // the next hues at least 45 degrees from those taken, of some weight
+    let apart = |a: usize, b: usize| {
+        let d = a.abs_diff(b);
+        d.min(HUES - d) >= 3
+    };
+    let second = hues
+        .iter()
+        .find(|h| apart(h.0, first) && h.1.1 > mid.1 * 0.12);
+    let third = hues.iter().find(|h| {
+        apart(h.0, first) && second.is_none_or(|s| apart(h.0, s.0)) && h.1.1 > mid.1 * 0.08
+    });
+    let mid = mid.0;
+    let background = mix(Color32::from_rgb(0x0b, 0x0e, 0x14), mid, 0.10);
+    let lift = |c: Color32, minimum: f32| {
+        let mut c = c;
+        for _ in 0..12 {
+            if contrast(c, background) >= minimum {
+                break;
+            }
+            c = mix(c, Color32::WHITE, 0.12);
+        }
+        c
+    };
+    let low = lift(
+        second.map_or_else(|| mix(mid, background, 0.45), |h| h.1.0),
+        2.5,
+    );
+    let high = lift(
+        third.map_or_else(|| mix(mid, Color32::WHITE, 0.4), |h| h.1.0),
+        3.0,
+    );
+    Some(Scheme {
+        background,
+        low,
+        mid: lift(mid, 3.0),
+        high,
+        peak: readable_on(mix(Color32::WHITE, mid, 0.12), background, 4.5),
+    })
 }
 
 pub fn scheme(key: &str, custom: &std::collections::BTreeMap<String, String>) -> Scheme {
@@ -766,6 +867,8 @@ pub struct Frame<'a> {
     pub second: bool,
     /// The loudness meter's target (LUFS).
     pub loudness_target: f32,
+    /// The cover of what plays (its texture and size), for the cover face.
+    pub cover: Option<(egui::TextureId, egui::Vec2)>,
 }
 
 /// One frame of face `key`: a change of face fades over CROSSFADE seconds
@@ -894,7 +997,7 @@ mod tests {
                 .iter()
                 .filter(|f| matches!(f.group, Group::Analysis | Group::Generative))
                 .count(),
-            30
+            31
         );
         assert_eq!(known("hologram"), "spectrum");
         // keys are unique, groups in order
@@ -942,5 +1045,31 @@ mod tests {
             assert!(contrast(s.text(), s.background) >= 3.0, "{key}: labels");
         }
         assert!((contrast(Color32::WHITE, Color32::BLACK) - 21.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn a_scheme_from_a_cover() {
+        // a cover mostly deep blue with orange and a little green
+        let mut rgba = Vec::new();
+        for i in 0..4096 {
+            let c: [u8; 4] = match i % 10 {
+                0..=5 => [20, 40, 160, 255],
+                6..=8 => [230, 120, 20, 255],
+                _ => [40, 170, 60, 255],
+            };
+            rgba.extend_from_slice(&c);
+        }
+        let s = cover_scheme(&rgba).expect("colours");
+        assert!(
+            s.mid.b() > s.mid.r() && s.mid.b() > s.mid.g(),
+            "blue in the middle: {s:?}"
+        );
+        assert!(s.low.r() > s.low.b(), "orange next: {s:?}");
+        assert!(contrast(s.peak, s.background) >= 4.5);
+        assert!(contrast(s.low, s.background) >= 2.5);
+        assert!(contrast(s.mid, s.background) >= 3.0);
+        // a grey cover has none
+        let grey: Vec<u8> = (0..4096).flat_map(|_| [120, 120, 120, 255]).collect();
+        assert!(cover_scheme(&grey).is_none());
     }
 }

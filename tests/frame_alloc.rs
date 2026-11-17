@@ -126,6 +126,7 @@ fn a_frame_allocates_nothing_of_its_own() {
                         opacity: 1.0,
                         second: false,
                         loudness_target: -23.0,
+                        cover: None,
                     };
                     let ((), n) = counted(|| viz::draw(&frame, face.key, &mut state));
                     if k >= 20 {

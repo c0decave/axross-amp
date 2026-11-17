@@ -44,6 +44,8 @@ pub struct App {
     playlist: Playlist,
     info: TrackInfo,
     cover: Option<TextureHandle>,
+    /// The pictures' colours from the cover (when it has colour).
+    cover_scheme: Option<viz::Scheme>,
     /// The accent: from the cover (its strongest colour, readable on the
     /// window), else the window's blue.
     accent: Color32,
@@ -398,6 +400,7 @@ impl App {
             playlist,
             info: TrackInfo::default(),
             cover: None,
+            cover_scheme: None,
             accent: ACCENT,
             analyzer: Analyzer::new(),
             meters,
@@ -841,6 +844,7 @@ impl App {
         self.select(Some(index));
         self.info = TrackInfo::default();
         self.cover = None;
+        self.cover_scheme = None;
         self.stream_title.clear();
         self.notice.clear();
         self.duration = (track.duration_ms > 0).then(|| track.duration_ms as f64 / 1000.0);
@@ -914,6 +918,10 @@ impl App {
             self.playlist.version += 1;
         }
         self.cover = info.art.as_deref().map(|art| cover_texture(ctx, art));
+        self.cover_scheme = info
+            .art
+            .as_deref()
+            .and_then(|art| viz::cover_scheme(&art.rgba));
         let accent = info.art.as_deref().and_then(accent_of).unwrap_or(ACCENT);
         if accent != self.accent {
             self.accent = accent;
@@ -1924,6 +1932,15 @@ impl App {
             });
         });
         ui.label(RichText::new("Colours").strong());
+        if ui
+            .checkbox(
+                &mut self.amp.cover_colours,
+                "From the cover, when it has one",
+            )
+            .changed()
+        {
+            self.amp_dirty = true;
+        }
         let named = viz::SCHEMES.iter().map(|(k, n, _)| (*k, *n));
         for (key, name) in named.chain([("theme", "Follow the theme"), ("custom", "Custom")]) {
             if ui.radio(self.scheme_key == key, name).clicked() {
@@ -2028,8 +2045,15 @@ impl App {
                     }
                     ui.vertical(|ui| {
                         let (title, by) = self.now_playing_text();
+                        // the type scale: the title bold and large, who in
+                        // the accent, the album quieter, the format small
                         ui.add(
-                            egui::Label::new(RichText::new(title).size(20.0).strong()).truncate(),
+                            egui::Label::new(
+                                RichText::new(title)
+                                    .font(bold(21.0))
+                                    .color(Color32::from_rgb(0xf0, 0xf3, 0xf6)),
+                            )
+                            .truncate(),
                         );
                         if !by.is_empty() {
                             ui.add(
@@ -2042,8 +2066,10 @@ impl App {
                         // (the album, unless the line above names it)
                         if !self.info.album.is_empty() && !by.contains(&self.info.album) {
                             ui.add(
-                                egui::Label::new(RichText::new(&self.info.album).color(MUTED))
-                                    .truncate(),
+                                egui::Label::new(
+                                    RichText::new(&self.info.album).size(13.5).color(MUTED),
+                                )
+                                .truncate(),
                             );
                         }
                         if self.info.rate > 0 {
@@ -2052,13 +2078,121 @@ impl App {
                                     "{} · {} Hz · {} ch",
                                     self.info.codec, self.info.rate, self.info.channels
                                 ))
-                                .small()
+                                .size(11.5)
                                 .color(MUTED),
                             );
                         }
                     });
                 });
             });
+    }
+
+    /// Nothing to play: a place to drop music, the ways to add it, the keys.
+    fn empty_state(&mut self, ui: &mut Ui) {
+        let zone = ui.available_rect_before_wrap().shrink(6.0);
+        let dragging = ui.input(|i| !i.raw.hovered_files.is_empty());
+        let painter = ui.painter();
+        painter.rect_filled(
+            zone,
+            16.0,
+            viz::mix(PANEL, self.accent, if dragging { 0.18 } else { 0.06 }),
+        );
+        // a dashed edge round it
+        let edge = if dragging {
+            self.accent
+        } else {
+            viz::mix(PANEL, MUTED, 0.6)
+        };
+        let corners = [
+            zone.left_top(),
+            zone.right_top(),
+            zone.right_bottom(),
+            zone.left_bottom(),
+            zone.left_top(),
+        ];
+        for pair in corners.windows(2) {
+            painter.extend(egui::Shape::dashed_line(
+                &[
+                    pair[0] + (pair[1] - pair[0]).normalized() * 16.0,
+                    pair[1] - (pair[1] - pair[0]).normalized() * 16.0,
+                ],
+                Stroke::new(1.5, edge),
+                8.0,
+                6.0,
+            ));
+        }
+        let builder = egui::UiBuilder::new()
+            .max_rect(zone.shrink(20.0))
+            .layout(Layout::top_down(Align::Center));
+        ui.scope_builder(builder, |ui| {
+            ui.add_space((zone.height() * 0.18 - 40.0).max(8.0));
+            ui.label(RichText::new("♫").size(56.0).color(self.accent));
+            ui.add_space(4.0);
+            ui.label(
+                RichText::new("Drop music here")
+                    .font(bold(22.0))
+                    .color(Color32::from_rgb(0xf0, 0xf3, 0xf6)),
+            );
+            ui.label(
+                RichText::new("Files, folders and playlists - or open them, or a radio's URL")
+                    .size(13.5)
+                    .color(MUTED),
+            );
+            ui.add_space(14.0);
+            // (a row, centred, as wide as its buttons; one under another
+            // in a narrow window)
+            let size = vec2(132.0, 34.0);
+            let width = 3.0 * size.x + 2.0 * ui.spacing().item_spacing.x;
+            let buttons = |ui: &mut Ui, this: &mut Self| {
+                if ui
+                    .add(egui::Button::new("📄 Open files…").min_size(size))
+                    .clicked()
+                {
+                    this.picking = Picking::Files;
+                    this.dialog.pick_multiple();
+                }
+                if ui
+                    .add(egui::Button::new("📁 Open folder…").min_size(size))
+                    .clicked()
+                {
+                    this.picking = Picking::Folder;
+                    this.dialog.pick_directory();
+                }
+                if ui
+                    .add(egui::Button::new("📻 Add a URL…").min_size(size))
+                    .clicked()
+                {
+                    this.url_open = true;
+                }
+            };
+            if ui.available_width() >= width {
+                ui.horizontal(|ui| {
+                    ui.add_space((ui.available_width() - width) / 2.0);
+                    buttons(ui, self);
+                });
+            } else {
+                buttons(ui, self);
+            }
+            ui.add_space(22.0);
+            let keys = [
+                ("Space", "play / pause"),
+                ("← →", "seek (Shift: 30 s)"),
+                ("N  P", "next / previous"),
+                ("V", "the next picture"),
+                ("F11", "the picture full screen"),
+                ("Ctrl+F", "find in the playlist"),
+            ];
+            egui::Grid::new("keys")
+                .num_columns(2)
+                .spacing(vec2(14.0, 4.0))
+                .show(ui, |ui| {
+                    for (key, what) in keys {
+                        ui.label(RichText::new(key).monospace().color(self.accent));
+                        ui.label(RichText::new(what).size(13.0).color(MUTED));
+                        ui.end_row();
+                    }
+                });
+        });
     }
 
     /// One line of what plays (the large picture's): its cover and title.
@@ -2269,6 +2403,14 @@ impl App {
     }
 
     /// Frames a second at most: the option, lowered on a slow renderer.
+    /// The pictures' colours: the cover's when wanted and it has some.
+    fn scheme(&self) -> viz::Scheme {
+        match &self.cover_scheme {
+            Some(s) if self.amp.cover_colours && self.scheme_key != "custom" => *s,
+            _ => viz::scheme(&self.scheme_key, &self.custom_colours),
+        }
+    }
+
     fn fps_cap(&self) -> f32 {
         let fps = self.options.fps.clamp(10, 60) as f32;
         if self.slow { fps.min(SLOW_FPS) } else { fps }
@@ -2351,7 +2493,7 @@ impl App {
                 format!("Visualization: {name}"),
             )
         });
-        let scheme = viz::scheme(&self.scheme_key, &self.custom_colours);
+        let scheme = self.scheme();
         let dt = self.last_frame.elapsed().as_secs_f32().clamp(0.0, 0.2);
         self.last_frame = Instant::now();
         let written = self.engine.shared.tap_into(&mut self.tap);
@@ -2403,6 +2545,7 @@ impl App {
             opacity: 1.0,
             second: false,
             loudness_target: self.amp.loudness_target,
+            cover: self.cover.as_ref().map(|t| (t.id(), t.size_vec2())),
         };
         self.viz_state.gpu.interval = 1.0 / self.fps_cap();
         viz::draw(&frame, self.mode, &mut self.viz_state);
@@ -2724,18 +2867,14 @@ impl App {
             {
                 self.set_eq(gains, Some(&preset));
             }
-            if ui
-                .small_button("Flat")
-                .on_hover_text("Every band to 0 dB")
-                .clicked()
-            {
-                self.set_eq([0.0; 10], Some("Flat"));
-            }
         });
         ui.add_space(4.0);
         let height = (ui.available_height() - 40.0).clamp(90.0, 220.0);
         ui.add_enabled_ui(self.eq.enabled, |ui| {
             ui.horizontal_top(|ui| {
+                // (a place for the bands' fill under the sliders, filled
+                // once their places are known)
+                let fill_slot = ui.painter().add(egui::Shape::Noop);
                 // the scale: +12 at the top, 0, -12 at the bottom
                 let (scale, _) = ui.allocate_exact_size(vec2(34.0, height), Sense::hover());
                 let mut gains = self.eq.gains;
@@ -2743,10 +2882,14 @@ impl App {
                 let width =
                     ((ui.available_width() - 9.0 * ui.spacing().item_spacing.x) / 10.0).max(26.0);
                 let mut rails: Option<egui::Rect> = None;
+                let mut bands = [egui::Rect::NOTHING; 10];
                 for (i, band) in eq::BANDS.iter().enumerate() {
                     ui.allocate_ui(vec2(width, height + 30.0), |ui| {
                         ui.vertical_centered(|ui| {
                             ui.spacing_mut().slider_width = height;
+                            // (egui's rail not drawn: ours is, with the fill
+                            // from 0 dB, under the handle)
+                            ui.spacing_mut().slider_rail_height = 0.0;
                             let response = ui
                                 .add(
                                     egui::Slider::new(
@@ -2755,11 +2898,12 @@ impl App {
                                     )
                                     .vertical()
                                     .show_value(false)
-                                    .trailing_fill(true),
+                                    .trailing_fill(false),
                                 )
                                 .accessible_name(format!("Equalizer {}", band_name(*band)))
                                 .on_hover_text(format!("{} {:+.1} dB", band_name(*band), gains[i]));
                             changed |= response.changed();
+                            bands[i] = response.rect;
                             rails = Some(match rails {
                                 Some(r) => r.union(response.rect),
                                 None => response.rect,
@@ -2788,6 +2932,31 @@ impl App {
                     };
                     let painter = ui.painter();
                     let zero = y_of(0.0);
+                    // each band filled from the 0 dB line to its value (a
+                    // flat equalizer shows nothing raised or cut), under the
+                    // rails and handles
+                    let mut fills = Vec::new();
+                    let rail = ui.visuals().widgets.inactive.bg_fill;
+                    for (rect, gain) in bands.iter().zip(gains) {
+                        let x = rect.center().x;
+                        fills.push(egui::Shape::rect_filled(
+                            egui::Rect::from_x_y_ranges(x - 3.0..=x + 3.0, top..=bottom),
+                            3.0,
+                            rail,
+                        ));
+                        if gain.abs() >= 0.05 {
+                            let y = y_of(gain);
+                            fills.push(egui::Shape::rect_filled(
+                                egui::Rect::from_x_y_ranges(
+                                    x - 3.0..=x + 3.0,
+                                    zero.min(y)..=zero.max(y),
+                                ),
+                                3.0,
+                                self.accent,
+                            ));
+                        }
+                    }
+                    painter.set(fill_slot, egui::Shape::Vec(fills));
                     painter.line_segment(
                         [
                             egui::pos2(rails.left() - 4.0, zero),
@@ -3373,16 +3542,31 @@ impl eframe::App for App {
                     self.transport(ui);
                     return;
                 }
-                self.now_playing(ui);
-                ui.add_space(8.0);
-                // the picture large: half of what the controls leave, the
-                // rest for the playlist (all of it when the list is folded)
+                if self.playlist.tracks.is_empty() && self.adding.is_empty() {
+                    self.empty_state(ui);
+                    return;
+                }
+                // (a low window, or the cover as the picture: what plays
+                // in one line)
+                if ui.available_height() < 560.0 || self.mode == "cover" {
+                    self.title_line(ui);
+                } else {
+                    self.now_playing(ui);
+                    ui.add_space(8.0);
+                }
+                // the picture large: what the controls and the playlist's
+                // rows leave (a short list leaves more), at least 45 % of it
                 let lower = self.playlist_open || self.eq_page;
                 let room = ui.available_height() - 100.0;
                 let picture = if lower {
-                    (room * 0.5).clamp(140.0, 520.0)
+                    let list = if self.eq_page {
+                        240.0
+                    } else {
+                        (self.visible_rows().len() as f32 * 44.0 + 76.0).max(130.0)
+                    };
+                    (room - list).max(room * 0.45).clamp(80.0, 900.0)
                 } else {
-                    (room - 36.0).max(140.0)
+                    (room - 36.0).max(80.0)
                 };
                 self.visual(ui, picture);
                 ui.add_space(6.0);
@@ -3570,11 +3754,44 @@ fn style(ctx: &egui::Context) {
     {
         family.push("Hack".to_owned());
     }
+    // a bold face for titles, where the system has one (egui brings only a
+    // light one); else the titles are in that one too
+    let proportional = fonts
+        .families
+        .get(&egui::FontFamily::Proportional)
+        .cloned()
+        .unwrap_or_default();
+    let mut bold = proportional.clone();
+    if let Some(data) = BOLD_FONTS.iter().find_map(|p| std::fs::read(p).ok()) {
+        fonts.font_data.insert(
+            "axross-bold".to_owned(),
+            std::sync::Arc::new(egui::FontData::from_owned(data)),
+        );
+        bold.insert(0, "axross-bold".to_owned());
+    }
+    fonts
+        .families
+        .insert(egui::FontFamily::Name("bold".into()), bold);
     ctx.set_fonts(fonts);
     ctx.global_style_mut(|s| {
         s.spacing.item_spacing = vec2(8.0, 6.0);
         s.spacing.button_padding = vec2(10.0, 4.0);
     });
+}
+
+/// Bold system faces looked for (Linux, macOS, Windows), in order.
+const BOLD_FONTS: [&str; 6] = [
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+    "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+    "/usr/share/fonts/TTF/DejaVuSans-Bold.ttf",
+    "/usr/share/fonts/dejavu/DejaVuSans-Bold.ttf",
+    "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
+    "C:\\Windows\\Fonts\\segoeuib.ttf",
+];
+
+/// The bold face at `size` (the type scale's titles).
+fn bold(size: f32) -> egui::FontId {
+    egui::FontId::new(size, egui::FontFamily::Name("bold".into()))
 }
 
 /// The window's colours of selection and links in `accent`.
@@ -3590,48 +3807,7 @@ fn accent_style(ctx: &egui::Context, accent: Color32) {
 /// colourful and how bright), made readable on the window as text (WCAG AA,
 /// 4.5:1); none for a grey cover.
 pub fn accent_of(art: &crate::engine::Art) -> Option<Color32> {
-    const BUCKETS: usize = 24;
-    let mut weight = [0.0f64; BUCKETS];
-    let mut sum = [[0.0f64; 3]; BUCKETS];
-    let mut all = 0.0f64;
-    for px in art.rgba.as_chunks::<4>().0.iter().step_by(3) {
-        let (r, g, b) = (
-            px[0] as f64 / 255.0,
-            px[1] as f64 / 255.0,
-            px[2] as f64 / 255.0,
-        );
-        let max = r.max(g).max(b);
-        let min = r.min(g).min(b);
-        all += 1.0;
-        let s = if max > 0.0 { (max - min) / max } else { 0.0 };
-        if s < 0.25 || max < 0.2 {
-            continue;
-        }
-        let d = max - min;
-        let h = if max == r {
-            ((g - b) / d).rem_euclid(6.0)
-        } else if max == g {
-            (b - r) / d + 2.0
-        } else {
-            (r - g) / d + 4.0
-        } / 6.0;
-        let k = ((h * BUCKETS as f64) as usize).min(BUCKETS - 1);
-        let w = s * max;
-        weight[k] += w;
-        for (c, v) in sum[k].iter_mut().zip([r, g, b]) {
-            *c += v * w;
-        }
-    }
-    let (k, w) = weight
-        .iter()
-        .enumerate()
-        .max_by(|a, b| a.1.total_cmp(b.1))?;
-    // (a few colourful pixels in a grey cover are no accent)
-    if *w < all * 0.02 {
-        return None;
-    }
-    let to = |v: f64| (v / w * 255.0).round().clamp(0.0, 255.0) as u8;
-    let mut c = Color32::from_rgb(to(sum[k][0]), to(sum[k][1]), to(sum[k][2]));
+    let mut c = viz::hues(&art.rgba)?[0].1.0;
     let ground = Color32::from_rgb(0x0d, 0x11, 0x17);
     for _ in 0..20 {
         if viz::contrast(c, ground) >= 4.5 {

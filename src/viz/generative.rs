@@ -130,6 +130,7 @@ pub fn draw(f: &Frame<'_>, key: &str, state: &mut VizState) {
     let st = &mut state.generative;
     let p = f.painter;
     match key {
+        "cover" => cover(f, cv, st),
         "flowfield" => cv.draw(p, |pen| flowfield(f, pen, st, dt)),
         "synthwave" => cv.draw(p, |pen| synthwave(f, pen, st, dt)),
         "galaxy" => cv.draw(p, |pen| galaxy(f, pen, st, dt)),
@@ -306,6 +307,104 @@ fn seed(st: &mut State, x: usize, y: usize, r: usize) {
             let (xx, yy) = ((x + dx + RD_W - r) % RD_W, (y + dy + RD_H - r) % RD_H);
             st.rd_v[yy * RD_W + xx] = 0.9;
             st.rd_u[yy * RD_W + xx] = 0.3;
+        }
+    }
+}
+
+// -- the cover -----------------------------------------------------------------------
+
+/// The cover large, as the picture: dimmed behind it, a glow round it that
+/// swells with the bass, a ring at each beat, the spectrum faint below.
+fn cover(f: &Frame<'_>, cv: &mut super::Canvas, st: &mut State) {
+    let (a, s, r) = (f.a, f.s, f.rect);
+    let p = f.painter;
+    let side = (r.height() * 0.84).min(r.width() * 0.62);
+    let c = r.center();
+    let art = Rect::from_center_size(c, vec2(side, side));
+    let beat = a.beat.count != st.last_beat;
+    st.last_beat = a.beat.count;
+    if beat {
+        st.since_ring = 0.0;
+    }
+    st.since_ring += f.dt;
+    if let Some((texture, size)) = f.cover {
+        // the cover over the whole picture, dark: the room it plays in
+        let aspect = size.x / size.y.max(1.0);
+        let wide = r.width() / r.height().max(1.0);
+        let uv = if aspect > wide {
+            let k = wide / aspect;
+            Rect::from_min_max(pos2(0.5 - k / 2.0, 0.0), pos2(0.5 + k / 2.0, 1.0))
+        } else {
+            let k = aspect / wide;
+            Rect::from_min_max(pos2(0.0, 0.5 - k / 2.0), pos2(1.0, 0.5 + k / 2.0))
+        };
+        p.image(texture, r, uv, Color32::from_gray(64));
+    }
+    cv.draw(p, |pen| {
+        pen.rect(r, Color32::from_rgba_premultiplied(0, 0, 0, 90));
+        let swell = 1.0 + 0.18 * a.bass + 0.12 * a.beat.pulse;
+        pen.radial(
+            c,
+            side * 0.78 * swell,
+            glow(s.mid, 0.55),
+            Color32::TRANSPARENT,
+        );
+        pen.radial(
+            c,
+            side * 0.62,
+            glow(s.high, 0.25 * a.energy.min(1.0)),
+            Color32::TRANSPARENT,
+        );
+        // a ring that leaves the cover at each beat
+        let k = (st.since_ring / 0.9).min(1.0);
+        if k < 1.0 {
+            pen.ring(
+                c,
+                side * (0.55 + 0.4 * k),
+                1.0 + 2.0 * (1.0 - k),
+                glow(mix(s.mid, s.peak, 0.3), (1.0 - k) * 0.6),
+            );
+        }
+        // the spectrum, faint, along the bottom
+        let n = a.bars.len().max(1);
+        for i in 0..n {
+            let x = r.left() + (i as f32 + 0.5) / n as f32 * r.width();
+            let v = a.bars[i];
+            pen.rect(
+                Rect::from_min_max(
+                    pos2(x - 1.5, r.bottom() - v * r.height() * 0.18),
+                    pos2(x + 1.5, r.bottom()),
+                ),
+                glow(s.at(v), 0.35),
+            );
+        }
+    });
+    // (a soft shadow under it)
+    p.add(
+        egui::epaint::Shadow {
+            offset: [0, 10],
+            blur: 32,
+            spread: 2,
+            color: Color32::from_black_alpha(170),
+        }
+        .as_shape(art, egui::CornerRadius::same(12)),
+    );
+    match f.cover {
+        Some((texture, _)) => {
+            p.add(
+                egui::epaint::RectShape::filled(art, egui::CornerRadius::same(12), Color32::WHITE)
+                    .with_texture(texture, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0))),
+            );
+        }
+        None => {
+            p.rect_filled(art, 12.0, mix(s.background, s.mid, 0.25));
+            p.text(
+                c,
+                egui::Align2::CENTER_CENTER,
+                "♫",
+                FontId::proportional(side * 0.45),
+                mix(s.mid, s.peak, 0.4),
+            );
         }
     }
 }
