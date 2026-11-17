@@ -1118,7 +1118,19 @@ fn scan(shared: &Arc<Shared>, adapter: &str, transport: Transport) -> Result<(),
     let _ = thread::Builder::new()
         .name("amp-bluetooth-scan-limit".into())
         .spawn(move || {
-            thread::sleep(SCAN_LIMIT);
+            // (waits in steps: a client that goes, or a scan stopped
+            // before, ends the wait - no thread sleeps on for minutes)
+            let end = std::time::Instant::now() + SCAN_LIMIT;
+            while std::time::Instant::now() < end {
+                let over = {
+                    let inner = s.inner.lock().unwrap_or_else(|p| p.into_inner());
+                    inner.shut || inner.scans.get(&adapter) != Some(&number)
+                };
+                if over {
+                    return;
+                }
+                thread::sleep(Duration::from_millis(100));
+            }
             let ours = s.with(|inner| {
                 let ours = inner.scans.get(&adapter) == Some(&number)
                     && !inner.busy.contains_key(&adapter);
@@ -1363,6 +1375,9 @@ fn worker(
             Work::Message(msg) => handle(&shared, &conn, &msg),
         }
     }
+    // the connection closed: the reader's wait for the next message ends
+    // (it held the connection open, and itself, for as long as the bus was quiet)
+    let _ = conn.close();
 }
 
 fn bus_call<T>(

@@ -517,6 +517,29 @@ fn power_scan_pair_every_question_connect_and_forget_against_the_fake_bluez() {
         v.status == Status::Ready && v.adapters[0].powered
     });
     drop(bt);
+    // gone means gone: its threads end and its connection closes (the
+    // reader waited for a message that never came, for ever - a thread and
+    // a bus connection left behind every time the page was made anew)
+    let end = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < end && bluetooth_threads() > 0 {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert_eq!(bluetooth_threads(), 0, "Bluetooth threads left behind");
+}
+
+/// Threads of the Bluetooth client still running in this process.
+fn bluetooth_threads() -> usize {
+    std::fs::read_dir("/proc/self/task")
+        .map(|tasks| {
+            tasks
+                .flatten()
+                .filter(|t| {
+                    std::fs::read_to_string(t.path().join("comm"))
+                        .is_ok_and(|n| n.starts_with("amp-bluetooth"))
+                })
+                .count()
+        })
+        .unwrap_or(0)
 }
 
 fn bus_agents_empty(_bt: &Bluetooth, bus: &mut Bus) -> bool {

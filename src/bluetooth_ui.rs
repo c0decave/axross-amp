@@ -25,6 +25,8 @@ pub const OUTPUT_WAIT: Duration = Duration::from_secs(20);
 #[derive(Default)]
 pub struct BluetoothPage {
     pub client: Option<Bluetooth>,
+    /// The client is to be made anew (Try again).
+    retry: bool,
     pub selected: Option<String>,
     adapter: Option<String>,
     transport: Option<Transport>,
@@ -308,7 +310,11 @@ pub fn show(
         .auto_shrink([false, false])
         .show(ui, |ui| body(ui, page, &client, &view));
     dialogs(ui, page, &client, &view);
-    page.client = Some(client);
+    if std::mem::take(&mut page.retry) {
+        drop(client); // (the next frame connects anew)
+    } else {
+        page.client = Some(client);
+    }
     changes
 }
 
@@ -322,6 +328,13 @@ fn body(ui: &mut Ui, page: &mut BluetoothPage, client: &Bluetooth, view: &Blueto
             }
             ui.label(RichText::new(view.status.text()).color(MUTED));
         });
+        // no D-Bus, or BlueZ that would not tell: nothing changes by itself
+        // (BlueZ starting, an adapter plugged in are noticed without this)
+        if matches!(view.status, Status::Unavailable(_) | Status::Error(_))
+            && ui.button("Try again").clicked()
+        {
+            page.retry = true;
+        }
         message_line(ui, page);
         return;
     }
