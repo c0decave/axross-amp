@@ -1231,7 +1231,13 @@ impl App {
         if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
             open = false;
         }
+        // (the card's look: rounded, the panel's colour, room inside)
+        let card = egui::Frame::window(&ctx.global_style())
+            .corner_radius(CornerRadius::same(12))
+            .fill(viz::mix(PANEL, self.accent, 0.08))
+            .inner_margin(14.0);
         egui::Window::new("Track details")
+            .frame(card)
             .open(&mut open)
             .collapsible(false)
             .default_width(420.0)
@@ -1919,24 +1925,21 @@ impl App {
         // the tabs at the window's default width)
         ui.add_space(4.0);
         ui.horizontal(|ui| {
-            if ui
-                .button("➕ Files")
+            if icon_button(ui, Icon::Files, "Files", vec2(0.0, 0.0))
                 .on_hover_text("Add files and playlists")
                 .clicked()
             {
                 self.picking = Picking::Files;
                 self.dialog.pick_multiple();
             }
-            if ui
-                .button("📁 Folder")
+            if icon_button(ui, Icon::Folder, "Folder", vec2(0.0, 0.0))
                 .on_hover_text("Add a folder and everything in it")
                 .clicked()
             {
                 self.picking = Picking::Folder;
                 self.dialog.pick_directory();
             }
-            if ui
-                .button("📻 URL")
+            if icon_button(ui, Icon::Radio, "URL", vec2(0.0, 0.0))
                 .on_hover_text("Add an internet radio or a file on a web server")
                 .clicked()
             {
@@ -2280,24 +2283,15 @@ impl App {
             let size = vec2(132.0, 34.0);
             let width = 3.0 * size.x + 2.0 * ui.spacing().item_spacing.x;
             let buttons = |ui: &mut Ui, this: &mut Self| {
-                if ui
-                    .add(egui::Button::new("📄 Open files…").min_size(size))
-                    .clicked()
-                {
+                if icon_button(ui, Icon::Files, "Open files…", size).clicked() {
                     this.picking = Picking::Files;
                     this.dialog.pick_multiple();
                 }
-                if ui
-                    .add(egui::Button::new("📁 Open folder…").min_size(size))
-                    .clicked()
-                {
+                if icon_button(ui, Icon::Folder, "Open folder…", size).clicked() {
                     this.picking = Picking::Folder;
                     this.dialog.pick_directory();
                 }
-                if ui
-                    .add(egui::Button::new("📻 Add a URL…").min_size(size))
-                    .clicked()
-                {
+                if icon_button(ui, Icon::Radio, "Add a URL…", size).clicked() {
                     this.url_open = true;
                 }
             };
@@ -4126,6 +4120,104 @@ fn accent_style(ctx: &egui::Context, accent: Color32) {
     visuals.selection.stroke = Stroke::new(1.0, accent);
     visuals.hyperlink_color = accent;
     ctx.set_visuals(visuals);
+}
+
+/// The toolbar's icons, drawn (one set, one stroke: not emoji glyphs of
+/// whatever font has them).
+#[derive(Clone, Copy)]
+enum Icon {
+    Files,
+    Folder,
+    Radio,
+}
+
+/// A button with a drawn icon before its text.
+fn icon_button(ui: &mut Ui, icon: Icon, text: &str, min: egui::Vec2) -> egui::Response {
+    // (room for the icon: the text set off by spaces, the icon drawn there)
+    let response = ui
+        .add(egui::Button::new(format!("     {text}")).min_size(min))
+        .accessible_name(text);
+    let colour = ui.style().interact(&response).text_color();
+    let stroke = Stroke::new(1.4, colour);
+    let painter = ui.painter();
+    let left = if min.x > 0.0 {
+        // (a wide button: its text centred, the icon before it)
+        let galley = painter.layout_no_wrap(
+            format!("     {text}"),
+            egui::TextStyle::Button.resolve(ui.style()),
+            colour,
+        );
+        response.rect.center().x - galley.size().x / 2.0 + 2.0
+    } else {
+        response.rect.left() + ui.spacing().button_padding.x
+    };
+    let c = egui::pos2(left + 7.0, response.rect.center().y);
+    let r = egui::Rect::from_center_size(c, vec2(12.0, 14.0));
+    match icon {
+        Icon::Files => {
+            // a sheet with its corner folded
+            let fold = 4.0;
+            painter.add(egui::Shape::closed_line(
+                vec![
+                    r.left_top(),
+                    egui::pos2(r.right() - fold, r.top()),
+                    egui::pos2(r.right(), r.top() + fold),
+                    r.right_bottom(),
+                    r.left_bottom(),
+                ],
+                stroke,
+            ));
+            painter.line_segment(
+                [
+                    egui::pos2(r.right() - fold, r.top()),
+                    egui::pos2(r.right() - fold, r.top() + fold),
+                ],
+                stroke,
+            );
+            painter.line_segment(
+                [
+                    egui::pos2(r.right() - fold, r.top() + fold),
+                    egui::pos2(r.right(), r.top() + fold),
+                ],
+                stroke,
+            );
+        }
+        Icon::Folder => {
+            let r = egui::Rect::from_center_size(c, vec2(15.0, 11.0));
+            painter.add(egui::Shape::closed_line(
+                vec![
+                    egui::pos2(r.left(), r.top()),
+                    egui::pos2(r.left() + 5.0, r.top()),
+                    egui::pos2(r.left() + 7.0, r.top() + 2.0),
+                    egui::pos2(r.right(), r.top() + 2.0),
+                    r.right_bottom(),
+                    r.left_bottom(),
+                ],
+                stroke,
+            ));
+        }
+        Icon::Radio => {
+            // a mast sending: a dot and two arcs each side
+            painter.circle_filled(c + vec2(0.0, 1.0), 1.8, colour);
+            for radius in [4.5f32, 7.5] {
+                for side in [-1.0f32, 1.0] {
+                    let points: Vec<egui::Pos2> = (0..=6)
+                        .map(|i| {
+                            let a = (-0.6 + 1.2 * i as f32 / 6.0)
+                                + if side < 0.0 {
+                                    std::f32::consts::PI
+                                } else {
+                                    0.0
+                                };
+                            c + vec2(0.0, 1.0) + vec2(a.cos(), a.sin()) * radius
+                        })
+                        .collect();
+                    painter.add(egui::Shape::line(points, stroke));
+                }
+            }
+        }
+    }
+    response
 }
 
 /// What the start says of a slow renderer (its frame rates from the

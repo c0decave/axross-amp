@@ -1188,23 +1188,23 @@ pub fn shade(
             }
             for k in 0..3 {
                 let fk = k as f32;
-                let x = uv[0] * aspect * (1.2 + 0.4 * fk);
-                let curve = 0.28
-                    + 0.12 * fk
-                    + 0.08 * (x * 1.3 + t * (1.0 + fk * 0.3) + fk).sin()
-                    + 0.05 * fbm([x * 0.8, t + fk]);
+                let x = uv[0] * aspect * (1.0 + 0.3 * fk);
+                let foot = 0.62 - 0.12 * fk
+                    + 0.07 * (x * 1.1 + t * (0.8 + 0.25 * fk) + fk).sin()
+                    + 0.05 * fbm([x * 0.7, t + fk]);
                 let level = u.band(0.15 + 0.3 * fk + 0.2 * uv[0]);
-                let d = uv[1] - curve;
-                let rays = 0.55 + 0.45 * fbm([x * 6.0, t * 2.0 + fk * 3.0]);
-                let below = if d >= 0.0 {
-                    (-d * (5.0 - 3.0 * level)).exp()
+                let d = foot - uv[1];
+                let ray = fbm([x * 9.0, t * 0.6 + fk * 3.0]);
+                let rays = ray * ray * 1.6 + 0.2;
+                let up = if d >= 0.0 {
+                    (-d * (3.0 - 1.5 * level)).exp()
                 } else {
                     0.0
                 };
-                let above = (-(-d).max(0.0) * 40.0).exp();
-                let light = (below * rays + above * 0.6) * (0.25 + 0.9 * level + 0.3 * u.pulse());
-                let hue = mix3(c(1), c(2 + k % 2), uv[1]);
-                col = add(col, scale(hue, light * 0.6));
+                let edge = (-d.abs() * 60.0).exp();
+                let light = (up * rays + edge * 0.8) * (0.3 + 0.9 * level + 0.2 * u.pulse());
+                let tint = mix3(c(2), c(3 - k % 2), (d * 3.0).clamp(0.0, 1.0));
+                col = add(col, scale(tint, light * 0.55));
             }
             col
         }

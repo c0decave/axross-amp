@@ -1511,10 +1511,15 @@ fn typography(f: &Frame<'_>, pen: &mut Pen<'_>, st: &mut State, dt: f32) {
     };
     // a glow behind, then the word: quiet to loud along it, its peak on
     // the beat
-    put_glyphs(pen, &galley, uv, c, scale * 1.02, tilt, |glyph| {
-        let (lift, k) = arrive(glyph);
-        (lift, glow(s.mid, 0.35 * k))
-    });
+    // (a halo all round - copies a little off in eight directions - not
+    // a copy a little larger, which stood off like a misplaced shadow)
+    for k in 0..8 {
+        let off = Vec2::angled(k as f32 / 8.0 * TAU) * (2.0 + 1.5 * pulse);
+        put_glyphs(pen, &galley, uv, c, scale, tilt, |glyph| {
+            let (lift, a) = arrive(glyph);
+            (lift + off, glow(s.mid, 0.07 * a))
+        });
+    }
     put_glyphs(pen, &galley, uv, c, scale, tilt, |glyph| {
         let (lift, k) = arrive(glyph);
         let along = (glyph as f32 - 1.0) / (letters - 1.0).max(1.0);

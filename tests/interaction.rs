@@ -214,7 +214,7 @@ fn buttons_keys_equalizer_playlist_url_and_dropped_files() {
     assert!(s.tracks.iter().all(|t| !t.path.ends_with("b.wav")));
 
     // a stream by its URL: the dialog, then a track that is a stream
-    harness.get_by_label("📻 URL").click();
+    harness.get_by_label("URL").click();
     settle(&mut harness, 2);
     harness.get_by_label("Add and play").click_accesskit(); // (disabled until a URL is typed)
     settle(&mut harness, 1);

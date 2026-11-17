@@ -326,7 +326,33 @@ pub fn hues(rgba: &[u8]) -> Option<Vec<(usize, (Color32, f64))>> {
 pub fn cover_scheme(rgba: &[u8]) -> Option<Scheme> {
     let hues = hues(rgba)?;
     let [_, _, hue] = oklch(hues[0].1.0);
-    Some(ramp(hue))
+    // a second hue of the cover's, far enough from the first and of some
+    // weight, makes the quiet end (two related hues, not one ramp of mauve)
+    let main = hues[0].1.1;
+    let second = hues.iter().skip(1).find_map(|(_, (c, w))| {
+        let [_, chroma, h] = oklch(*c);
+        let apart = (h - hue).rem_euclid(360.0).min((hue - h).rem_euclid(360.0));
+        (apart >= 45.0 && *w > main * 0.1 && chroma > 0.04).then_some(h)
+    });
+    Some(match second {
+        Some(other) => ramp_between(hue, other),
+        None => ramp(hue),
+    })
+}
+
+/// As [`ramp`], the quiet end in a second hue: low in `other`, middle in
+/// `hue`, loud in `hue` turned a little away from `other`.
+pub fn ramp_between(hue: f32, other: f32) -> Scheme {
+    // (the turn away from the other hue, the shorter way round)
+    let d = (other - hue + 540.0).rem_euclid(360.0) - 180.0;
+    let away = if d > 0.0 { -30.0 } else { 30.0 };
+    Scheme {
+        background: from_oklch(0.17, 0.025, hue),
+        low: from_oklch(0.50, 0.14, other),
+        mid: from_oklch(0.66, 0.17, hue),
+        high: from_oklch(0.80, 0.14, hue + away),
+        peak: from_oklch(0.95, 0.04, hue + away),
+    }
 }
 
 /// A scheme designed round one hue (the cover's): lightness rising evenly
@@ -1146,6 +1172,11 @@ mod tests {
         assert!(
             s.mid.b() > s.mid.r() && s.mid.b() > s.mid.g(),
             "blue in the middle: {s:?}"
+        );
+        // two hues: the quiet end in the cover's orange, not the blue's
+        assert!(
+            s.low.r() > s.low.b(),
+            "the second hue at the quiet end: {s:?}"
         );
         let lch = [s.background, s.low, s.mid, s.high, s.peak].map(oklch);
         for pair in lch.windows(2) {

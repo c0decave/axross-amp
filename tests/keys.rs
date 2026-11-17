@@ -21,7 +21,7 @@ fn typing_a_url_is_no_shortcut() {
     let playing = h.state().playing();
     let mode = h.state().mode();
 
-    h.get_by_label("📻 URL").click();
+    h.get_by_label("URL").click();
     settle(&mut h, 2);
     let edit = h.get_by_role_and_label(egui::accesskit::Role::TextInput, "Stream URL");
     edit.type_text("not a url mnpv");

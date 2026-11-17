@@ -191,18 +191,22 @@ fn aurora(uv: vec2<f32>, aspect: f32) -> vec3<f32> {
     var c = colour(0) * (0.7 + 0.3 * uv.y);
     let star = hash(floor(uv * vec2<f32>(aspect, 1.0) * 140.0));
     c = c + colour(4) * step(0.997, star) * 0.6;
+    // curtains: a bright foot that waves, light rising from it in rays
+    // and fading upwards (not hills of light falling down)
     for (var k = 0; k < 3; k = k + 1) {
         let fk = f32(k);
-        let x = uv.x * aspect * (1.2 + 0.4 * fk);
-        let curve = 0.28 + 0.12 * fk + 0.08 * sin(x * 1.3 + t * (1.0 + fk * 0.3) + fk)
-            + 0.05 * fbm(vec2<f32>(x * 0.8, t + fk));
+        let x = uv.x * aspect * (1.0 + 0.3 * fk);
+        let foot = 0.62 - 0.12 * fk + 0.07 * sin(x * 1.1 + t * (0.8 + 0.25 * fk) + fk)
+            + 0.05 * fbm(vec2<f32>(x * 0.7, t + fk));
         let level = band(0.15 + 0.3 * fk + 0.2 * uv.x);
-        let d = uv.y - curve;
-        let rays = 0.55 + 0.45 * fbm(vec2<f32>(x * 6.0, t * 2.0 + fk * 3.0));
-        let below = exp(-max(d, 0.0) * (5.0 - 3.0 * level)) * step(0.0, d);
-        let above = exp(-max(-d, 0.0) * 40.0);
-        let light = (below * rays + above * 0.6) * (0.25 + 0.9 * level + 0.3 * u.t.y);
-        c = c + mix(colour(1), colour(2 + k % 2), uv.y) * light * 0.6;
+        let d = foot - uv.y;
+        let ray = fbm(vec2<f32>(x * 9.0, t * 0.6 + fk * 3.0));
+        let rays = ray * ray * 1.6 + 0.2;
+        let up = exp(-max(d, 0.0) * (3.0 - 1.5 * level)) * step(0.0, d);
+        let edge = exp(-abs(d) * 60.0);
+        let light = (up * rays + edge * 0.8) * (0.3 + 0.9 * level + 0.2 * u.t.y);
+        let tint = mix(colour(2), colour(3 - k % 2), clamp(d * 3.0, 0.0, 1.0));
+        c = c + tint * light * 0.55;
     }
     return c;
 }
