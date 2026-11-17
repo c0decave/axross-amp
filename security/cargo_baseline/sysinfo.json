@@ -1,0 +1,177 @@
+{
+ "name": "sysinfo",
+ "versions": {
+  "0.40.1": {
+   "accepted_findings": [
+    "hidden-process|src/windows/process.rs|a99cde1c21c1db24",
+    "hidden-process|src/windows/process.rs|dfe24724948315a6",
+    "yara|capability_process_spawn|src/unix/apple/cpu.rs|64cf14578806b6f6",
+    "yara|capability_process_spawn|src/unix/apple/macos/disk.rs|51addd2cf359c7a3",
+    "yara|capability_process_spawn|src/unix/groups.rs|088309c3f5ecb0fe",
+    "yara|capability_process_spawn|src/unix/linux/disk.rs|c4c90b92bc66ee78",
+    "yara|capability_process_spawn|src/windows/process.rs|85bee9db8576887d",
+    "yara|capability_process_spawn|test_bin/main.rs|6b7dbb60b62a4a96",
+    "yara|capability_process_spawn|tests/process.rs|19f780f05c5d58cb",
+    "yara|capability_process_spawn|tests/system.rs|5f745c302e763bdc",
+    "yara|lolbas_net|.github/workflows/freebsd.yml|d14f867c68108842",
+    "yara|lolbas_net|.github/workflows/netbsd.yml|ee43688ebb743463",
+    "yara|suspicious_network_tools|.github/workflows/freebsd.yml|d14f867c68108842",
+    "yara|suspicious_network_tools|.github/workflows/netbsd.yml|ee43688ebb743463"
+   ],
+   "archive": {
+    "build_scripts": {},
+    "files": 160,
+    "links": "",
+    "manifest": "d94467f9ed6c05f6d1691f05b9dec68cf7384f7b98c26a0f61ee5b9acd115644",
+    "native": {},
+    "native_profiles": {},
+    "native_sources": {
+     "examples": 1,
+     "src": 1
+    },
+    "proc_macro": false,
+    "sha256": "0e8a3edbe0394ce115f3917a00349dd242be09eb5a091ed509eaf67b55cfb8a8",
+    "vcs": {
+     "git": {
+      "sha1": "75dcd2c6814da3da9f0921f33ca3d83762a53ba9"
+     },
+     "path_in_vcs": ""
+    }
+   },
+   "crates_io": {
+    "checksum": "0e8a3edbe0394ce115f3917a00349dd242be09eb5a091ed509eaf67b55cfb8a8",
+    "crate_size": 307849,
+    "created_at": "2026-10-30T14:18:56.246395Z",
+    "description": "Library to get system information such as processes, CPUs, disks, components and networks",
+    "license": "MIT",
+    "published_by": "GuillaumeGomez",
+    "repository": "https://github.com/GuillaumeGomez/sysinfo",
+    "rust_version": "1.95"
+   },
+   "name": "sysinfo",
+   "reviewed": {
+    "by": "claude",
+    "date": "2026-11-17",
+    "note": "CREATE_NO_WINDOW for the Windows kill helper; a CI workflow with curl (shipped, never built). Nothing else flagged. No binary; checksum = crates.io's; published by GuillaumeGomez on 2026-10-30; other medium findings read: ['hidden-process']."
+   },
+   "scans": {
+    "capa": {},
+    "keys": [
+     "yara|capability_process_spawn|src/unix/apple/cpu.rs|64cf14578806b6f6",
+     "yara|capability_process_spawn|src/unix/apple/macos/disk.rs|51addd2cf359c7a3",
+     "yara|capability_process_spawn|src/unix/groups.rs|088309c3f5ecb0fe",
+     "yara|capability_process_spawn|src/unix/linux/disk.rs|c4c90b92bc66ee78",
+     "yara|capability_process_spawn|src/windows/process.rs|85bee9db8576887d",
+     "yara|capability_process_spawn|test_bin/main.rs|6b7dbb60b62a4a96",
+     "yara|capability_process_spawn|tests/process.rs|19f780f05c5d58cb",
+     "yara|capability_process_spawn|tests/system.rs|5f745c302e763bdc",
+     "yara|lolbas_net|.github/workflows/freebsd.yml|d14f867c68108842",
+     "yara|lolbas_net|.github/workflows/netbsd.yml|ee43688ebb743463",
+     "yara|suspicious_network_tools|.github/workflows/freebsd.yml|d14f867c68108842",
+     "yara|suspicious_network_tools|.github/workflows/netbsd.yml|ee43688ebb743463"
+    ],
+    "yara": [
+     "axross_backdoor_rules:suspicious_network_tools .github/workflows/freebsd.yml",
+     "axross_backdoor_rules:suspicious_network_tools .github/workflows/netbsd.yml",
+     "capability_network_lolbas:lolbas_net .github/workflows/freebsd.yml",
+     "capability_network_lolbas:lolbas_net .github/workflows/netbsd.yml",
+     "capability_process_spawn:capability_process_spawn src/unix/apple/cpu.rs",
+     "capability_process_spawn:capability_process_spawn src/unix/apple/macos/disk.rs",
+     "capability_process_spawn:capability_process_spawn src/unix/groups.rs",
+     "capability_process_spawn:capability_process_spawn src/unix/linux/disk.rs",
+     "capability_process_spawn:capability_process_spawn src/windows/process.rs",
+     "capability_process_spawn:capability_process_spawn test_bin/main.rs",
+     "capability_process_spawn:capability_process_spawn tests/process.rs",
+     "capability_process_spawn:capability_process_spawn tests/system.rs"
+    ]
+   },
+   "version": "0.40.1"
+  },
+  "0.40.4": {
+   "accepted_findings": [
+    "hidden-process|src/windows/process.rs|a99cde1c21c1db24",
+    "hidden-process|src/windows/process.rs|dfe24724948315a6",
+    "yara|capability_process_spawn|src/unix/apple/cpu.rs|64cf14578806b6f6",
+    "yara|capability_process_spawn|src/unix/apple/macos/disk.rs|51addd2cf359c7a3",
+    "yara|capability_process_spawn|src/unix/groups.rs|088309c3f5ecb0fe",
+    "yara|capability_process_spawn|src/unix/linux/disk.rs|1c2debeabfec8543",
+    "yara|capability_process_spawn|src/windows/process.rs|313e8a448a25ad8a",
+    "yara|capability_process_spawn|test_bin/main.rs|6b7dbb60b62a4a96",
+    "yara|capability_process_spawn|tests/process.rs|46090463cfb97133",
+    "yara|capability_process_spawn|tests/system.rs|ed3b7e864b3bdfc7",
+    "yara|lolbas_net|.github/workflows/freebsd.yml|d14f867c68108842",
+    "yara|lolbas_net|.github/workflows/netbsd.yml|ee43688ebb743463",
+    "yara|suspicious_network_tools|.github/workflows/freebsd.yml|d14f867c68108842",
+    "yara|suspicious_network_tools|.github/workflows/netbsd.yml|ee43688ebb743463"
+   ],
+   "archive": {
+    "build_scripts": {},
+    "files": 160,
+    "links": "",
+    "manifest": "dd04d6d127fde054b8c9c98cf8cd9fd892266c62b862dc65cc7ea9f2eb300f03",
+    "native": {},
+    "native_profiles": {},
+    "native_sources": {
+     "examples": 1,
+     "src": 1
+    },
+    "proc_macro": false,
+    "sha256": "3e80749408e2d8bec0ffa303012cf4e1b3b355f4a09087b4fdf7473680f6a2de",
+    "vcs": {
+     "git": {
+      "sha1": "931b94e6fe53dbd22ce43a259163c43c096b8542"
+     },
+     "path_in_vcs": ""
+    }
+   },
+   "crates_io": {
+    "checksum": "3e80749408e2d8bec0ffa303012cf4e1b3b355f4a09087b4fdf7473680f6a2de",
+    "crate_size": 308914,
+    "created_at": "2026-11-16T17:06:02.748588Z",
+    "description": "Library to get system information such as processes, CPUs, disks, components and networks",
+    "license": "MIT",
+    "published_by": "GuillaumeGomez",
+    "repository": "https://github.com/GuillaumeGomez/sysinfo",
+    "rust_version": "1.95"
+   },
+   "name": "sysinfo",
+   "reviewed": {
+    "by": "claude",
+    "date": "2026-11-17",
+    "note": "CREATE_NO_WINDOW for the Windows kill helper; a CI workflow with curl (shipped, never built). Nothing else flagged. No binary; checksum = crates.io's; published by GuillaumeGomez on 2026-11-16; other medium findings read: ['hidden-process']."
+   },
+   "scans": {
+    "capa": {},
+    "keys": [
+     "yara|capability_process_spawn|src/unix/apple/cpu.rs|64cf14578806b6f6",
+     "yara|capability_process_spawn|src/unix/apple/macos/disk.rs|51addd2cf359c7a3",
+     "yara|capability_process_spawn|src/unix/groups.rs|088309c3f5ecb0fe",
+     "yara|capability_process_spawn|src/unix/linux/disk.rs|1c2debeabfec8543",
+     "yara|capability_process_spawn|src/windows/process.rs|313e8a448a25ad8a",
+     "yara|capability_process_spawn|test_bin/main.rs|6b7dbb60b62a4a96",
+     "yara|capability_process_spawn|tests/process.rs|46090463cfb97133",
+     "yara|capability_process_spawn|tests/system.rs|ed3b7e864b3bdfc7",
+     "yara|lolbas_net|.github/workflows/freebsd.yml|d14f867c68108842",
+     "yara|lolbas_net|.github/workflows/netbsd.yml|ee43688ebb743463",
+     "yara|suspicious_network_tools|.github/workflows/freebsd.yml|d14f867c68108842",
+     "yara|suspicious_network_tools|.github/workflows/netbsd.yml|ee43688ebb743463"
+    ],
+    "yara": [
+     "axross_backdoor_rules:suspicious_network_tools .github/workflows/freebsd.yml",
+     "axross_backdoor_rules:suspicious_network_tools .github/workflows/netbsd.yml",
+     "capability_network_lolbas:lolbas_net .github/workflows/freebsd.yml",
+     "capability_network_lolbas:lolbas_net .github/workflows/netbsd.yml",
+     "capability_process_spawn:capability_process_spawn src/unix/apple/cpu.rs",
+     "capability_process_spawn:capability_process_spawn src/unix/apple/macos/disk.rs",
+     "capability_process_spawn:capability_process_spawn src/unix/groups.rs",
+     "capability_process_spawn:capability_process_spawn src/unix/linux/disk.rs",
+     "capability_process_spawn:capability_process_spawn src/windows/process.rs",
+     "capability_process_spawn:capability_process_spawn test_bin/main.rs",
+     "capability_process_spawn:capability_process_spawn tests/process.rs",
+     "capability_process_spawn:capability_process_spawn tests/system.rs"
+    ]
+   },
+   "version": "0.40.4"
+  }
+ }
+}

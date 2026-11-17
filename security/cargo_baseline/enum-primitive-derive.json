@@ -1,0 +1,47 @@
+{
+ "name": "enum-primitive-derive",
+ "versions": {
+  "0.3.0": {
+   "accepted_findings": [],
+   "archive": {
+    "build_scripts": {},
+    "files": 9,
+    "links": "",
+    "manifest": "cfdf4a558921bebded7a5a0697d54b0100ea280626858ac3ca723e87b1f7f4a6",
+    "native": {},
+    "native_profiles": {},
+    "native_sources": {},
+    "proc_macro": true,
+    "sha256": "ba7795da175654fe16979af73f81f26a8ea27638d8d9823d317016888a63dc4c",
+    "vcs": {
+     "git": {
+      "sha1": "d2097b92068e66eee8b8b3dcd898b4e03a00499e"
+     },
+     "path_in_vcs": ""
+    }
+   },
+   "crates_io": {
+    "checksum": "ba7795da175654fe16979af73f81f26a8ea27638d8d9823d317016888a63dc4c",
+    "crate_size": 4664,
+    "created_at": "2023-11-22T03:40:28.924366Z",
+    "description": "enum_primitive implementation using procedural macros to have a custom derive",
+    "license": "MIT",
+    "published_by": "cardoe",
+    "repository": "https://gitlab.com/cardoe/enum-primitive-derive.git",
+    "rust_version": "1.56"
+   },
+   "name": "enum-primitive-derive",
+   "reviewed": {
+    "by": "claude",
+    "date": "2026-11-17",
+    "note": "proc macro: generates code from its input only (no file, network, process or environment access in src/). No binary; checksum = crates.io's; published by cardoe on 2023-11-22."
+   },
+   "scans": {
+    "capa": {},
+    "keys": [],
+    "yara": []
+   },
+   "version": "0.3.0"
+  }
+ }
+}

@@ -1,0 +1,49 @@
+{
+ "name": "num-derive",
+ "versions": {
+  "0.4.2": {
+   "accepted_findings": [
+    "rs-url|src/lib.rs|787981d4d9a29a5a"
+   ],
+   "archive": {
+    "build_scripts": {},
+    "files": 22,
+    "links": "",
+    "manifest": "f64d9308aaece654fa4e65f990710a4c1d0aa85e4802c4567f70c6ac5eabea83",
+    "native": {},
+    "native_profiles": {},
+    "native_sources": {},
+    "proc_macro": true,
+    "sha256": "ed3955f1a9c7c0c15e092f9c887db08b1fc683305fdf6eb6684f22555355e202",
+    "vcs": {
+     "git": {
+      "sha1": "7cc33515dd2ae0eb43c5795c50ce49c554e8ba02"
+     },
+     "path_in_vcs": ""
+    }
+   },
+   "crates_io": {
+    "checksum": "ed3955f1a9c7c0c15e092f9c887db08b1fc683305fdf6eb6684f22555355e202",
+    "crate_size": 14709,
+    "created_at": "2024-02-06T21:00:45.637968Z",
+    "description": "Numeric syntax extensions",
+    "license": "MIT OR Apache-2.0",
+    "published_by": "cuviper",
+    "repository": "https://github.com/rust-num/num-derive",
+    "rust_version": "1.56.0"
+   },
+   "name": "num-derive",
+   "reviewed": {
+    "by": "claude",
+    "date": "2026-11-17",
+    "note": "proc macro: generates code from its input only (no file, network, process or environment access in src/). No binary; checksum = crates.io's; published by cuviper on 2024-02-06."
+   },
+   "scans": {
+    "capa": {},
+    "keys": [],
+    "yara": []
+   },
+   "version": "0.4.2"
+  }
+ }
+}

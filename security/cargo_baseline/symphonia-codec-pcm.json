@@ -1,0 +1,47 @@
+{
+ "name": "symphonia-codec-pcm",
+ "versions": {
+  "0.6.1": {
+   "accepted_findings": [],
+   "archive": {
+    "build_scripts": {},
+    "files": 7,
+    "links": "",
+    "manifest": "c4a1d3e2cc91c706756ed3a63c2583023eb432f2966241ae5526d5a1e7752be7",
+    "native": {},
+    "native_profiles": {},
+    "native_sources": {},
+    "proc_macro": false,
+    "sha256": "e04ba75686acbe43542fdd374571195f0530c0b7785ca25cc6840e9c6c4b6eea",
+    "vcs": {
+     "git": {
+      "sha1": "ee35874b571a35a9a6e15d3bc9a3aaf8f11fbeee"
+     },
+     "path_in_vcs": "symphonia-codec-pcm"
+    }
+   },
+   "crates_io": {
+    "checksum": "e04ba75686acbe43542fdd374571195f0530c0b7785ca25cc6840e9c6c4b6eea",
+    "crate_size": 12334,
+    "created_at": "2026-08-13T03:18:32.737164Z",
+    "description": "Pure Rust PCM audio decoder (a part of project Symphonia).",
+    "license": "MPL-2.0",
+    "published_by": "pdeljanov",
+    "repository": "https://github.com/pdeljanov/Symphonia",
+    "rust_version": "1.85"
+   },
+   "name": "symphonia-codec-pcm",
+   "reviewed": {
+    "by": "claude",
+    "date": "2026-11-17",
+    "note": "Nothing flagged: no build-time code. No binary; checksum = crates.io's; published by pdeljanov on 2026-08-13."
+   },
+   "scans": {
+    "capa": {},
+    "keys": [],
+    "yara": []
+   },
+   "version": "0.6.1"
+  }
+ }
+}

@@ -1,0 +1,53 @@
+{
+ "name": "cmake",
+ "versions": {
+  "0.1.58": {
+   "accepted_findings": [
+    "yara|capability_process_spawn|src/lib.rs|58920d46b25c7e2d"
+   ],
+   "archive": {
+    "build_scripts": {},
+    "files": 14,
+    "links": "",
+    "manifest": "c6cd9d423cdf7143c9492d533df48e2e269ba2a00bc56385623ffa812bb90ad6",
+    "native": {},
+    "native_profiles": {},
+    "native_sources": {},
+    "proc_macro": false,
+    "sha256": "c0f78a02292a74a88ac736019ab962ece0bc380e3f977bf72e376c5d78ff0678",
+    "vcs": {
+     "git": {
+      "sha1": "63190697197b34e5e5cd3cabf17da4fcab348bef"
+     },
+     "path_in_vcs": ""
+    }
+   },
+   "crates_io": {
+    "checksum": "c0f78a02292a74a88ac736019ab962ece0bc380e3f977bf72e376c5d78ff0678",
+    "crate_size": 20474,
+    "created_at": "2026-03-26T17:58:29.356302Z",
+    "description": "A build dependency for running `cmake` to build a native library\n",
+    "license": "MIT OR Apache-2.0",
+    "published_by": "rust-lang-owner",
+    "repository": "https://github.com/rust-lang/cmake-rs",
+    "rust_version": "1.65"
+   },
+   "name": "cmake",
+   "reviewed": {
+    "by": "claude",
+    "date": "2026-11-17",
+    "note": "Nothing flagged: no build-time code. No binary; checksum = crates.io's; published by rust-lang-owner on 2026-03-26."
+   },
+   "scans": {
+    "capa": {},
+    "keys": [
+     "yara|capability_process_spawn|src/lib.rs|58920d46b25c7e2d"
+    ],
+    "yara": [
+     "capability_process_spawn:capability_process_spawn src/lib.rs"
+    ]
+   },
+   "version": "0.1.58"
+  }
+ }
+}

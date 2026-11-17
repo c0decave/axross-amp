@@ -1,0 +1,47 @@
+{
+ "name": "symphonia-format-mkv",
+ "versions": {
+  "0.6.1": {
+   "accepted_findings": [],
+   "archive": {
+    "build_scripts": {},
+    "files": 14,
+    "links": "",
+    "manifest": "13b4c8f3edc3614069caed64e38de0cdea09ef1457409272e59f793dc366937d",
+    "native": {},
+    "native_profiles": {},
+    "native_sources": {},
+    "proc_macro": false,
+    "sha256": "d015c5c0558864665894b3f4cbd95e10abb01b9c868e751c72670f326a56360e",
+    "vcs": {
+     "git": {
+      "sha1": "ee35874b571a35a9a6e15d3bc9a3aaf8f11fbeee"
+     },
+     "path_in_vcs": "symphonia-format-mkv"
+    }
+   },
+   "crates_io": {
+    "checksum": "d015c5c0558864665894b3f4cbd95e10abb01b9c868e751c72670f326a56360e",
+    "crate_size": 50367,
+    "created_at": "2026-08-13T03:18:42.224216Z",
+    "description": "Pure Rust MKV/WebM demuxer (a part of project Symphonia).",
+    "license": "MPL-2.0",
+    "published_by": "pdeljanov",
+    "repository": "https://github.com/pdeljanov/Symphonia",
+    "rust_version": "1.85"
+   },
+   "name": "symphonia-format-mkv",
+   "reviewed": {
+    "by": "claude",
+    "date": "2026-11-17",
+    "note": "Nothing flagged: no build-time code. No binary; checksum = crates.io's; published by pdeljanov on 2026-08-13."
+   },
+   "scans": {
+    "capa": {},
+    "keys": [],
+    "yara": []
+   },
+   "version": "0.6.1"
+  }
+ }
+}

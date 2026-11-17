@@ -1,0 +1,101 @@
+{
+ "name": "uuid",
+ "versions": {
+  "1.29.0": {
+   "accepted_findings": [
+    "yara|capability_process_spawn|src/lib.rs|d865dc56af193a41"
+   ],
+   "archive": {
+    "build_scripts": {},
+    "files": 30,
+    "links": "",
+    "manifest": "d338bd6054dae96816515f28e3b35c89a8a87f8f281ab2568910844dbdd427e8",
+    "native": {},
+    "native_profiles": {},
+    "native_sources": {},
+    "proc_macro": false,
+    "sha256": "4a0e2d11620c50695fe12bbbfde96b3477fe606e7284c22d505c12ce51214514",
+    "vcs": {
+     "git": {
+      "sha1": "4643e607d0ded1f2f95c1c427456e17bd5edf708"
+     },
+     "path_in_vcs": ""
+    }
+   },
+   "crates_io": {
+    "checksum": "4a0e2d11620c50695fe12bbbfde96b3477fe606e7284c22d505c12ce51214514",
+    "crate_size": 67939,
+    "created_at": "2026-10-23T09:59:10.723650Z",
+    "description": "A library to generate and parse UUIDs.",
+    "license": "Apache-2.0 OR MIT",
+    "published_by": "KodrAus",
+    "repository": "https://github.com/uuid-rs/uuid",
+    "rust_version": "1.89.0"
+   },
+   "name": "uuid",
+   "reviewed": {
+    "by": "claude",
+    "date": "2026-11-17",
+    "note": "Nothing flagged: no build-time code. No binary; checksum = crates.io's; published by KodrAus on 2026-10-23."
+   },
+   "scans": {
+    "capa": {},
+    "keys": [
+     "yara|capability_process_spawn|src/lib.rs|d865dc56af193a41"
+    ],
+    "yara": [
+     "capability_process_spawn:capability_process_spawn src/lib.rs"
+    ]
+   },
+   "version": "1.29.0"
+  },
+  "1.29.2": {
+   "accepted_findings": [
+    "yara|capability_process_spawn|src/lib.rs|f3b186adc86e271f"
+   ],
+   "archive": {
+    "build_scripts": {},
+    "files": 30,
+    "links": "",
+    "manifest": "330e665d3522e67cd5e05b9701dd48dadd474507fb3ac8272ed259b0ba3548a7",
+    "native": {},
+    "native_profiles": {},
+    "native_sources": {},
+    "proc_macro": false,
+    "sha256": "bed99139f7dac9b5cfe5f17be4d66dc7079a34dee1d74bcc77217119240e267c",
+    "vcs": {
+     "git": {
+      "sha1": "5205a6ea18425e6781f2ac09e896d88153d9cd2d"
+     },
+     "path_in_vcs": ""
+    }
+   },
+   "crates_io": {
+    "checksum": "bed99139f7dac9b5cfe5f17be4d66dc7079a34dee1d74bcc77217119240e267c",
+    "crate_size": 69968,
+    "created_at": "2026-11-09T00:28:40.980597Z",
+    "description": "A library to generate and parse UUIDs.",
+    "license": "Apache-2.0 OR MIT",
+    "published_by": "KodrAus",
+    "repository": "https://github.com/uuid-rs/uuid",
+    "rust_version": "1.89.0"
+   },
+   "name": "uuid",
+   "reviewed": {
+    "by": "claude",
+    "date": "2026-11-17",
+    "note": "Nothing flagged: no build-time code. No binary; checksum = crates.io's; published by KodrAus on 2026-11-09."
+   },
+   "scans": {
+    "capa": {},
+    "keys": [
+     "yara|capability_process_spawn|src/lib.rs|f3b186adc86e271f"
+    ],
+    "yara": [
+     "capability_process_spawn:capability_process_spawn src/lib.rs"
+    ]
+   },
+   "version": "1.29.2"
+  }
+ }
+}

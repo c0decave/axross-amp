@@ -1,0 +1,46 @@
+{
+ "name": "primal-check",
+ "versions": {
+  "0.3.4": {
+   "accepted_findings": [],
+   "archive": {
+    "build_scripts": {},
+    "files": 8,
+    "links": "",
+    "manifest": "f1924dace2c6cd961496496d2197e68fc167c67b95b8ad3b3188554c97232e96",
+    "native": {},
+    "native_profiles": {},
+    "native_sources": {},
+    "proc_macro": false,
+    "sha256": "dc0d895b311e3af9902528fbb8f928688abbd95872819320517cc24ca6b2bd08",
+    "vcs": {
+     "git": {
+      "sha1": "1a06fdf87b5aad2ec119dad631cd7985667b022d"
+     },
+     "path_in_vcs": "primal-check"
+    }
+   },
+   "crates_io": {
+    "checksum": "dc0d895b311e3af9902528fbb8f928688abbd95872819320517cc24ca6b2bd08",
+    "crate_size": 8743,
+    "created_at": "2024-06-07T23:00:11.831416Z",
+    "description": "Fast standalone primality testing.",
+    "license": "MIT OR Apache-2.0",
+    "published_by": "cuviper",
+    "repository": "https://github.com/huonw/primal"
+   },
+   "name": "primal-check",
+   "reviewed": {
+    "by": "claude",
+    "date": "2026-11-17",
+    "note": "Nothing flagged: no build-time code. No binary; checksum = crates.io's; published by cuviper on 2024-06-07."
+   },
+   "scans": {
+    "capa": {},
+    "keys": [],
+    "yara": []
+   },
+   "version": "0.3.4"
+  }
+ }
+}

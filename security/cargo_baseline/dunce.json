@@ -1,0 +1,46 @@
+{
+ "name": "dunce",
+ "versions": {
+  "1.0.5": {
+   "accepted_findings": [],
+   "archive": {
+    "build_scripts": {},
+    "files": 9,
+    "links": "",
+    "manifest": "fac5d89a43f4db007d03b81a6c4fac5164cb66f2e0591d7213c9d9da4bf9b691",
+    "native": {},
+    "native_profiles": {},
+    "native_sources": {},
+    "proc_macro": false,
+    "sha256": "92773504d58c093f6de2459af4af33faa518c13451eb8f2b5698ed3d36e7c813",
+    "vcs": {
+     "git": {
+      "sha1": "1ee29a83526c9f4c3618e1335f0454c878a54dcf"
+     },
+     "path_in_vcs": ""
+    }
+   },
+   "crates_io": {
+    "checksum": "92773504d58c093f6de2459af4af33faa518c13451eb8f2b5698ed3d36e7c813",
+    "crate_size": 8244,
+    "created_at": "2024-08-04T01:36:46.487482Z",
+    "description": "Normalize Windows paths to the most compatible format, avoiding UNC where possible",
+    "license": "CC0-1.0 OR MIT-0 OR Apache-2.0",
+    "published_by": "kornelski",
+    "repository": "https://gitlab.com/kornelski/dunce"
+   },
+   "name": "dunce",
+   "reviewed": {
+    "by": "claude",
+    "date": "2026-11-17",
+    "note": "Nothing flagged: no build-time code. No binary; checksum = crates.io's; published by kornelski on 2024-08-04."
+   },
+   "scans": {
+    "capa": {},
+    "keys": [],
+    "yara": []
+   },
+   "version": "1.0.5"
+  }
+ }
+}

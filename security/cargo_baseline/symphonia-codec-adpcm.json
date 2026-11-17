@@ -1,0 +1,47 @@
+{
+ "name": "symphonia-codec-adpcm",
+ "versions": {
+  "0.6.1": {
+   "accepted_findings": [],
+   "archive": {
+    "build_scripts": {},
+    "files": 12,
+    "links": "",
+    "manifest": "c9ee494f07d033fc5693917efc4e70c32655f7f46df1f844a2cf369f232cce12",
+    "native": {},
+    "native_profiles": {},
+    "native_sources": {},
+    "proc_macro": false,
+    "sha256": "445932ecb0c59362fde9c082dd63a75380650c5077fdb8b80b8cac850442a74c",
+    "vcs": {
+     "git": {
+      "sha1": "ee35874b571a35a9a6e15d3bc9a3aaf8f11fbeee"
+     },
+     "path_in_vcs": "symphonia-codec-adpcm"
+    }
+   },
+   "crates_io": {
+    "checksum": "445932ecb0c59362fde9c082dd63a75380650c5077fdb8b80b8cac850442a74c",
+    "crate_size": 12196,
+    "created_at": "2026-08-13T03:18:21.048882Z",
+    "description": "Pure Rust ADPCM audio decoder (a part of project Symphonia).",
+    "license": "MPL-2.0",
+    "published_by": "pdeljanov",
+    "repository": "https://github.com/pdeljanov/Symphonia",
+    "rust_version": "1.85"
+   },
+   "name": "symphonia-codec-adpcm",
+   "reviewed": {
+    "by": "claude",
+    "date": "2026-11-17",
+    "note": "Nothing flagged: no build-time code. No binary; checksum = crates.io's; published by pdeljanov on 2026-08-13."
+   },
+   "scans": {
+    "capa": {},
+    "keys": [],
+    "yara": []
+   },
+   "version": "0.6.1"
+  }
+ }
+}

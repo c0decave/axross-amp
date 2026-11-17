@@ -1,0 +1,89 @@
+{
+ "name": "serde_spanned",
+ "versions": {
+  "1.1.2": {
+   "accepted_findings": [],
+   "archive": {
+    "build_scripts": {},
+    "files": 10,
+    "links": "",
+    "manifest": "f863a3d4ccd388a2dec38f6e557778c548c712bd4e0ba76eb2fdecfce8c83dd5",
+    "native": {},
+    "native_profiles": {},
+    "native_sources": {},
+    "proc_macro": false,
+    "sha256": "4e7523beb55eece201a2356bee0bbca0d1ab466c14c07703b2e0ee6d42cb0c2c",
+    "vcs": {
+     "git": {
+      "sha1": "f72038c2508112dfaaedb227a511f91bf9b2015c"
+     },
+     "path_in_vcs": "crates/serde_spanned"
+    }
+   },
+   "crates_io": {
+    "checksum": "4e7523beb55eece201a2356bee0bbca0d1ab466c14c07703b2e0ee6d42cb0c2c",
+    "crate_size": 11124,
+    "created_at": "2026-10-08T00:54:02.374642Z",
+    "description": "Serde-compatible spanned Value",
+    "license": "MIT OR Apache-2.0",
+    "published_by": "epage",
+    "repository": "https://github.com/toml-rs/toml",
+    "rust_version": "1.85"
+   },
+   "name": "serde_spanned",
+   "reviewed": {
+    "by": "claude",
+    "date": "2026-11-17",
+    "note": "Nothing flagged: no build-time code. No binary; checksum = crates.io's; published by epage on 2026-10-08."
+   },
+   "scans": {
+    "capa": {},
+    "keys": [],
+    "yara": []
+   },
+   "version": "1.1.2"
+  },
+  "1.1.3": {
+   "accepted_findings": [],
+   "archive": {
+    "build_scripts": {},
+    "files": 10,
+    "links": "",
+    "manifest": "4d968d0361ceb94bb6590c715276e39c980df835b9ade2fbfaf7f718b0492003",
+    "native": {},
+    "native_profiles": {},
+    "native_sources": {},
+    "proc_macro": false,
+    "sha256": "9c187e0a369471c550af028cba56d4f4fa2a489ad28151ae95a4d340a2a8b782",
+    "vcs": {
+     "git": {
+      "sha1": "563cb1a5d133e39d1008d4d4148ef35d3bba379f"
+     },
+     "path_in_vcs": "crates/serde_spanned"
+    }
+   },
+   "crates_io": {
+    "checksum": "9c187e0a369471c550af028cba56d4f4fa2a489ad28151ae95a4d340a2a8b782",
+    "crate_size": 11176,
+    "created_at": "2026-11-06T13:51:59.982009Z",
+    "description": "Serde-compatible spanned Value",
+    "license": "MIT OR Apache-2.0",
+    "published_by": "epage",
+    "repository": "https://github.com/toml-rs/toml",
+    "rust_version": "1.85"
+   },
+   "name": "serde_spanned",
+   "reviewed": {
+    "by": "claude",
+    "date": "2026-11-17",
+    "note": "Nothing flagged: no build-time code. No binary; checksum = crates.io's; published by epage on 2026-11-06."
+   },
+   "scans": {
+    "capa": {},
+    "keys": [],
+    "yara": []
+   },
+   "version": "1.1.3"
+  }
+ }
+}

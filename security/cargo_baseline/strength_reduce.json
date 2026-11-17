@@ -1,0 +1,46 @@
+{
+ "name": "strength_reduce",
+ "versions": {
+  "0.2.4": {
+   "accepted_findings": [],
+   "archive": {
+    "build_scripts": {},
+    "files": 13,
+    "links": "",
+    "manifest": "9eb310c039d695684f5ddddfbe76cfc10c58cc5d01c02c87c82cd4d1543c4152",
+    "native": {},
+    "native_profiles": {},
+    "native_sources": {},
+    "proc_macro": false,
+    "sha256": "fe895eb47f22e2ddd4dabc02bce419d2e643c8e3b585c78158b349195bc24d82",
+    "vcs": {
+     "git": {
+      "sha1": "5b0a43d9d672ee2ac4e471f201fb13417a0a0c71"
+     },
+     "path_in_vcs": ""
+    }
+   },
+   "crates_io": {
+    "checksum": "fe895eb47f22e2ddd4dabc02bce419d2e643c8e3b585c78158b349195bc24d82",
+    "crate_size": 17859,
+    "created_at": "2022-11-08T03:46:49.572569Z",
+    "description": "Faster integer division and modulus operations",
+    "license": "MIT OR Apache-2.0",
+    "published_by": "ejmahler",
+    "repository": "http://github.com/ejmahler/strength_reduce"
+   },
+   "name": "strength_reduce",
+   "reviewed": {
+    "by": "claude",
+    "date": "2026-11-17",
+    "note": "Nothing flagged: no build-time code. No binary; checksum = crates.io's; published by ejmahler on 2022-11-08."
+   },
+   "scans": {
+    "capa": {},
+    "keys": [],
+    "yara": []
+   },
+   "version": "0.2.4"
+  }
+ }
+}

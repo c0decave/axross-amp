@@ -1,0 +1,137 @@
+{
+ "name": "mio",
+ "versions": {
+  "1.2.4": {
+   "accepted_findings": [
+    "yara|capability_network_outbound|src/net/tcp/stream.rs|127757a47bbfc770",
+    "yara|capability_network_outbound|src/poll.rs|521292491313ae94",
+    "yara|capability_network_outbound|src/token.rs|31be1c8634260e78",
+    "yara|capability_process_spawn|src/poll.rs|521292491313ae94",
+    "yara|capability_process_spawn|src/token.rs|31be1c8634260e78",
+    "yara|capability_process_spawn|src/waker.rs|cd521418aede7036",
+    "yara|lolbas_net|examples/tcp_server.rs|3d8b0315eebca8de"
+   ],
+   "archive": {
+    "build_scripts": {},
+    "files": 71,
+    "links": "",
+    "manifest": "e8af486416cf19b736b947cd93c69f4aed768a394569dc2103d6fcd268574aa2",
+    "native": {},
+    "native_profiles": {},
+    "native_sources": {},
+    "proc_macro": false,
+    "sha256": "1788edb87fdc09c7e26304471e2f5be8cdefb1b6930d6e3985fc02ff53bf86ee",
+    "vcs": {
+     "git": {
+      "sha1": "79d1417c94e3a45c8bdd796e5422e22e8c488086"
+     },
+     "path_in_vcs": ""
+    }
+   },
+   "crates_io": {
+    "checksum": "1788edb87fdc09c7e26304471e2f5be8cdefb1b6930d6e3985fc02ff53bf86ee",
+    "crate_size": 110437,
+    "created_at": "2026-10-03T16:33:10.183266Z",
+    "description": "Lightweight non-blocking I/O.",
+    "license": "MIT",
+    "published_by": "Thomasdezeeuw",
+    "repository": "https://github.com/tokio-rs/mio",
+    "rust_version": "1.71"
+   },
+   "name": "mio",
+   "reviewed": {
+    "by": "claude",
+    "date": "2026-11-17",
+    "note": "Nothing flagged: no build-time code. No binary; checksum = crates.io's; published by Thomasdezeeuw on 2026-10-03."
+   },
+   "scans": {
+    "capa": {},
+    "keys": [
+     "yara|capability_network_outbound|src/net/tcp/stream.rs|127757a47bbfc770",
+     "yara|capability_network_outbound|src/poll.rs|521292491313ae94",
+     "yara|capability_network_outbound|src/token.rs|31be1c8634260e78",
+     "yara|capability_process_spawn|src/poll.rs|521292491313ae94",
+     "yara|capability_process_spawn|src/token.rs|31be1c8634260e78",
+     "yara|capability_process_spawn|src/waker.rs|cd521418aede7036",
+     "yara|lolbas_net|examples/tcp_server.rs|3d8b0315eebca8de"
+    ],
+    "yara": [
+     "capability_network_lolbas:lolbas_net examples/tcp_server.rs",
+     "capability_network_outbound:capability_network_outbound src/net/tcp/stream.rs",
+     "capability_network_outbound:capability_network_outbound src/poll.rs",
+     "capability_network_outbound:capability_network_outbound src/token.rs",
+     "capability_process_spawn:capability_process_spawn src/poll.rs",
+     "capability_process_spawn:capability_process_spawn src/token.rs",
+     "capability_process_spawn:capability_process_spawn src/waker.rs"
+    ]
+   },
+   "version": "1.2.4"
+  },
+  "1.2.5": {
+   "accepted_findings": [
+    "yara|capability_network_outbound|src/net/tcp/stream.rs|127757a47bbfc770",
+    "yara|capability_network_outbound|src/poll.rs|521292491313ae94",
+    "yara|capability_network_outbound|src/token.rs|31be1c8634260e78",
+    "yara|capability_process_spawn|src/poll.rs|521292491313ae94",
+    "yara|capability_process_spawn|src/token.rs|31be1c8634260e78",
+    "yara|capability_process_spawn|src/waker.rs|cd521418aede7036",
+    "yara|lolbas_net|examples/tcp_server.rs|3d8b0315eebca8de"
+   ],
+   "archive": {
+    "build_scripts": {},
+    "files": 71,
+    "links": "",
+    "manifest": "151db6acf74b6dc5272c61e56d662804d68a04f6cf31877527c93eece2977ae3",
+    "native": {},
+    "native_profiles": {},
+    "native_sources": {},
+    "proc_macro": false,
+    "sha256": "20521a903f02b0a573cd6840e9d0a5a0cc043d361fe924092cd70f8556cc9c4a",
+    "vcs": {
+     "git": {
+      "sha1": "101e5b7c92b1b5f8abc0ba3eb81b264943e13e37"
+     },
+     "path_in_vcs": ""
+    }
+   },
+   "crates_io": {
+    "checksum": "20521a903f02b0a573cd6840e9d0a5a0cc043d361fe924092cd70f8556cc9c4a",
+    "crate_size": 112931,
+    "created_at": "2026-11-13T17:07:23.414067Z",
+    "description": "Lightweight non-blocking I/O.",
+    "license": "MIT",
+    "published_by": "Thomasdezeeuw",
+    "repository": "https://github.com/tokio-rs/mio",
+    "rust_version": "1.71"
+   },
+   "name": "mio",
+   "reviewed": {
+    "by": "claude",
+    "date": "2026-11-17",
+    "note": "Nothing flagged: no build-time code. No binary; checksum = crates.io's; published by Thomasdezeeuw on 2026-11-13."
+   },
+   "scans": {
+    "capa": {},
+    "keys": [
+     "yara|capability_network_outbound|src/net/tcp/stream.rs|127757a47bbfc770",
+     "yara|capability_network_outbound|src/poll.rs|521292491313ae94",
+     "yara|capability_network_outbound|src/token.rs|31be1c8634260e78",
+     "yara|capability_process_spawn|src/poll.rs|521292491313ae94",
+     "yara|capability_process_spawn|src/token.rs|31be1c8634260e78",
+     "yara|capability_process_spawn|src/waker.rs|cd521418aede7036",
+     "yara|lolbas_net|examples/tcp_server.rs|3d8b0315eebca8de"
+    ],
+    "yara": [
+     "capability_network_lolbas:lolbas_net examples/tcp_server.rs",
+     "capability_network_outbound:capability_network_outbound src/net/tcp/stream.rs",
+     "capability_network_outbound:capability_network_outbound src/poll.rs",
+     "capability_network_outbound:capability_network_outbound src/token.rs",
+     "capability_process_spawn:capability_process_spawn src/poll.rs",
+     "capability_process_spawn:capability_process_spawn src/token.rs",
+     "capability_process_spawn:capability_process_spawn src/waker.rs"
+    ]
+   },
+   "version": "1.2.5"
+  }
+ }
+}

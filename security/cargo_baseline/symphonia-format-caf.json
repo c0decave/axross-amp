@@ -1,0 +1,47 @@
+{
+ "name": "symphonia-format-caf",
+ "versions": {
+  "0.6.1": {
+   "accepted_findings": [],
+   "archive": {
+    "build_scripts": {},
+    "files": 9,
+    "links": "",
+    "manifest": "a381b8ad7ea1b179b7d0f6c3ebbc39781a7a496903927cf84004b2a044a6e2dd",
+    "native": {},
+    "native_profiles": {},
+    "native_sources": {},
+    "proc_macro": false,
+    "sha256": "ab64327ee1920531c5bf86cf7e9cd1a599d57013ddc30691da62683cefc65191",
+    "vcs": {
+     "git": {
+      "sha1": "ee35874b571a35a9a6e15d3bc9a3aaf8f11fbeee"
+     },
+     "path_in_vcs": "symphonia-format-caf"
+    }
+   },
+   "crates_io": {
+    "checksum": "ab64327ee1920531c5bf86cf7e9cd1a599d57013ddc30691da62683cefc65191",
+    "crate_size": 18030,
+    "created_at": "2026-08-13T03:18:46.169462Z",
+    "description": "Pure Rust CAF demuxer (a part of project Symphonia).",
+    "license": "MPL-2.0",
+    "published_by": "pdeljanov",
+    "repository": "https://github.com/pdeljanov/Symphonia",
+    "rust_version": "1.85"
+   },
+   "name": "symphonia-format-caf",
+   "reviewed": {
+    "by": "claude",
+    "date": "2026-11-17",
+    "note": "Nothing flagged: no build-time code. No binary; checksum = crates.io's; published by pdeljanov on 2026-08-13."
+   },
+   "scans": {
+    "capa": {},
+    "keys": [],
+    "yara": []
+   },
+   "version": "0.6.1"
+  }
+ }
+}

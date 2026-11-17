@@ -1,0 +1,58 @@
+{
+ "name": "pulseaudio",
+ "versions": {
+  "0.3.2": {
+   "accepted_findings": [
+    "yara|capability_process_spawn|examples/record_async.rs|6300551cadae22a8",
+    "yara|capability_process_spawn|src/client.rs|88c790d55b24ceca",
+    "yara|capability_process_spawn|src/client/reactor.rs|c5ca2be5aee012b7"
+   ],
+   "archive": {
+    "build_scripts": {},
+    "files": 69,
+    "links": "",
+    "manifest": "6aaf9ce32a5846220de91624f377ddef3b6093442dc3d31415257083738307e5",
+    "native": {},
+    "native_profiles": {},
+    "native_sources": {},
+    "proc_macro": false,
+    "sha256": "9ba79a4c6904c987cc31fa50e9b750539404511c2dbd9ce95e5e58444177a21e",
+    "vcs": {
+     "git": {
+      "sha1": "dc9c95f3d5f9c05fd962e7d0a028233ab42d8abc"
+     },
+     "path_in_vcs": ""
+    }
+   },
+   "crates_io": {
+    "checksum": "9ba79a4c6904c987cc31fa50e9b750539404511c2dbd9ce95e5e58444177a21e",
+    "crate_size": 781607,
+    "created_at": "2026-10-16T06:58:29.593050Z",
+    "description": "A native rust implementation of the PulseAudio protocol.",
+    "license": "MIT",
+    "published_by": "colinmarc",
+    "repository": "https://github.com/colinmarc/pulseaudio-rs"
+   },
+   "name": "pulseaudio",
+   "reviewed": {
+    "by": "claude",
+    "date": "2026-11-17",
+    "note": "Nothing flagged: no build-time code. No binary; checksum = crates.io's; published by colinmarc on 2026-10-16."
+   },
+   "scans": {
+    "capa": {},
+    "keys": [
+     "yara|capability_process_spawn|examples/record_async.rs|6300551cadae22a8",
+     "yara|capability_process_spawn|src/client.rs|88c790d55b24ceca",
+     "yara|capability_process_spawn|src/client/reactor.rs|c5ca2be5aee012b7"
+    ],
+    "yara": [
+     "capability_process_spawn:capability_process_spawn examples/record_async.rs",
+     "capability_process_spawn:capability_process_spawn src/client.rs",
+     "capability_process_spawn:capability_process_spawn src/client/reactor.rs"
+    ]
+   },
+   "version": "0.3.2"
+  }
+ }
+}

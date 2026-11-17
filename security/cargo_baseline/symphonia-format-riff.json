@@ -1,0 +1,47 @@
+{
+ "name": "symphonia-format-riff",
+ "versions": {
+  "0.6.1": {
+   "accepted_findings": [],
+   "archive": {
+    "build_scripts": {},
+    "files": 12,
+    "links": "",
+    "manifest": "e12fc7d6cfb3af6e7978ef36842b2e5ea4ddeaa6be3b985e3df5f31fd1d3f48c",
+    "native": {},
+    "native_profiles": {},
+    "native_sources": {},
+    "proc_macro": false,
+    "sha256": "1ff70929083a8c1a5f6cd7c904b6071c7914ad04739b510c2f7239dfc9b7dabe",
+    "vcs": {
+     "git": {
+      "sha1": "ee35874b571a35a9a6e15d3bc9a3aaf8f11fbeee"
+     },
+     "path_in_vcs": "symphonia-format-riff"
+    }
+   },
+   "crates_io": {
+    "checksum": "1ff70929083a8c1a5f6cd7c904b6071c7914ad04739b510c2f7239dfc9b7dabe",
+    "crate_size": 29502,
+    "created_at": "2026-08-13T03:18:44.454664Z",
+    "description": "Pure Rust RIFF demuxer (a part of project Symphonia).",
+    "license": "MPL-2.0",
+    "published_by": "pdeljanov",
+    "repository": "https://github.com/pdeljanov/Symphonia",
+    "rust_version": "1.85"
+   },
+   "name": "symphonia-format-riff",
+   "reviewed": {
+    "by": "claude",
+    "date": "2026-11-17",
+    "note": "Nothing flagged: no build-time code. No binary; checksum = crates.io's; published by pdeljanov on 2026-08-13."
+   },
+   "scans": {
+    "capa": {},
+    "keys": [],
+    "yara": []
+   },
+   "version": "0.6.1"
+  }
+ }
+}

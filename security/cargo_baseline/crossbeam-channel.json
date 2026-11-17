@@ -1,0 +1,110 @@
+{
+ "name": "crossbeam-channel",
+ "versions": {
+  "0.5.17": {
+   "accepted_findings": [
+    "yara|capability_process_spawn|benches/crossbeam.rs|96cb1abd23cac3ef",
+    "yara|capability_process_spawn|examples/fibonacci.rs|4e88fa40048cdc31",
+    "yara|capability_process_spawn|examples/matching.rs|63c250e164607a7a",
+    "yara|capability_process_spawn|examples/stopwatch.rs|d02121258f08d56f",
+    "yara|capability_process_spawn|src/channel.rs|338d8bace28e022d",
+    "yara|capability_process_spawn|src/lib.rs|5b1c406fd1ce6140",
+    "yara|capability_process_spawn|src/select.rs|301c765751586204",
+    "yara|capability_process_spawn|src/select_macro.rs|f272e1ed981f4add",
+    "yara|capability_process_spawn|tests/after.rs|0154a8e152880db1",
+    "yara|capability_process_spawn|tests/array.rs|42ce94873a502d4c",
+    "yara|capability_process_spawn|tests/golang.rs|7b2ef219ba8a2184",
+    "yara|capability_process_spawn|tests/iter.rs|25dc02135bbae9d4",
+    "yara|capability_process_spawn|tests/list.rs|8dd4deb8d27b8246",
+    "yara|capability_process_spawn|tests/mpsc.rs|a88f2c756536328a",
+    "yara|capability_process_spawn|tests/ready.rs|4361352fa9425404",
+    "yara|capability_process_spawn|tests/select.rs|101ea8afd9a40d24",
+    "yara|capability_process_spawn|tests/select_macro.rs|e83bd33b34c47d70",
+    "yara|capability_process_spawn|tests/thread_locals.rs|f42fcddca959b3b4",
+    "yara|capability_process_spawn|tests/tick.rs|5f697bd14c48505d",
+    "yara|capability_process_spawn|tests/zero.rs|419ef36cafa3ae0d"
+   ],
+   "archive": {
+    "build_scripts": {},
+    "files": 43,
+    "links": "",
+    "manifest": "82ef069b1ee935fadc201f6a7a2c7c49965854e3783f7c8e8a624c832b2e8e8f",
+    "native": {},
+    "native_profiles": {},
+    "native_sources": {},
+    "proc_macro": false,
+    "sha256": "98b0cc327b5bc766e7fda9c9260cc0fa81b43a8e240440422dff70788e3f9ef1",
+    "vcs": {
+     "git": {
+      "sha1": "2920c984290229ab4e0ca0452ef09e48a82063f3"
+     },
+     "path_in_vcs": "crossbeam-channel"
+    }
+   },
+   "crates_io": {
+    "checksum": "98b0cc327b5bc766e7fda9c9260cc0fa81b43a8e240440422dff70788e3f9ef1",
+    "crate_size": 94171,
+    "created_at": "2026-09-05T17:47:21.507092Z",
+    "description": "Multi-producer multi-consumer channels for message passing",
+    "license": "MIT OR Apache-2.0",
+    "published_by": "taiki-e",
+    "repository": "https://github.com/crossbeam-rs/crossbeam",
+    "rust_version": "1.60"
+   },
+   "name": "crossbeam-channel",
+   "reviewed": {
+    "by": "claude",
+    "date": "2026-11-17",
+    "note": "Nothing flagged: no build-time code. No binary; checksum = crates.io's; published by taiki-e on 2026-09-05."
+   },
+   "scans": {
+    "capa": {},
+    "keys": [
+     "yara|capability_process_spawn|benches/crossbeam.rs|96cb1abd23cac3ef",
+     "yara|capability_process_spawn|examples/fibonacci.rs|4e88fa40048cdc31",
+     "yara|capability_process_spawn|examples/matching.rs|63c250e164607a7a",
+     "yara|capability_process_spawn|examples/stopwatch.rs|d02121258f08d56f",
+     "yara|capability_process_spawn|src/channel.rs|338d8bace28e022d",
+     "yara|capability_process_spawn|src/lib.rs|5b1c406fd1ce6140",
+     "yara|capability_process_spawn|src/select.rs|301c765751586204",
+     "yara|capability_process_spawn|src/select_macro.rs|f272e1ed981f4add",
+     "yara|capability_process_spawn|tests/after.rs|0154a8e152880db1",
+     "yara|capability_process_spawn|tests/array.rs|42ce94873a502d4c",
+     "yara|capability_process_spawn|tests/golang.rs|7b2ef219ba8a2184",
+     "yara|capability_process_spawn|tests/iter.rs|25dc02135bbae9d4",
+     "yara|capability_process_spawn|tests/list.rs|8dd4deb8d27b8246",
+     "yara|capability_process_spawn|tests/mpsc.rs|a88f2c756536328a",
+     "yara|capability_process_spawn|tests/ready.rs|4361352fa9425404",
+     "yara|capability_process_spawn|tests/select.rs|101ea8afd9a40d24",
+     "yara|capability_process_spawn|tests/select_macro.rs|e83bd33b34c47d70",
+     "yara|capability_process_spawn|tests/thread_locals.rs|f42fcddca959b3b4",
+     "yara|capability_process_spawn|tests/tick.rs|5f697bd14c48505d",
+     "yara|capability_process_spawn|tests/zero.rs|419ef36cafa3ae0d"
+    ],
+    "yara": [
+     "capability_process_spawn:capability_process_spawn benches/crossbeam.rs",
+     "capability_process_spawn:capability_process_spawn examples/fibonacci.rs",
+     "capability_process_spawn:capability_process_spawn examples/matching.rs",
+     "capability_process_spawn:capability_process_spawn examples/stopwatch.rs",
+     "capability_process_spawn:capability_process_spawn src/channel.rs",
+     "capability_process_spawn:capability_process_spawn src/lib.rs",
+     "capability_process_spawn:capability_process_spawn src/select.rs",
+     "capability_process_spawn:capability_process_spawn src/select_macro.rs",
+     "capability_process_spawn:capability_process_spawn tests/after.rs",
+     "capability_process_spawn:capability_process_spawn tests/array.rs",
+     "capability_process_spawn:capability_process_spawn tests/golang.rs",
+     "capability_process_spawn:capability_process_spawn tests/iter.rs",
+     "capability_process_spawn:capability_process_spawn tests/list.rs",
+     "capability_process_spawn:capability_process_spawn tests/mpsc.rs",
+     "capability_process_spawn:capability_process_spawn tests/ready.rs",
+     "capability_process_spawn:capability_process_spawn tests/select.rs",
+     "capability_process_spawn:capability_process_spawn tests/select_macro.rs",
+     "capability_process_spawn:capability_process_spawn tests/thread_locals.rs",
+     "capability_process_spawn:capability_process_spawn tests/tick.rs",
+     "capability_process_spawn:capability_process_spawn tests/zero.rs"
+    ]
+   },
+   "version": "0.5.17"
+  }
+ }
+}

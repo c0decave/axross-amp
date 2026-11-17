@@ -1,0 +1,97 @@
+{
+ "name": "cpal",
+ "versions": {
+  "0.18.2": {
+   "accepted_findings": [
+    "yara|capability_process_spawn|examples/custom.rs|8a0ced204e478256",
+    "yara|capability_process_spawn|src/device_description.rs|179e70a7fbf88d2a",
+    "yara|capability_process_spawn|src/host/alsa/mod.rs|ece7cc31f84d9460",
+    "yara|capability_process_spawn|src/host/asio/stream.rs|9de00dee3a8e3596",
+    "yara|capability_process_spawn|src/host/coreaudio/macos/mod.rs|8ac0856b57aa6bf5",
+    "yara|capability_process_spawn|src/host/jack/device.rs|3256be634cdebb2b",
+    "yara|capability_process_spawn|src/host/jack/mod.rs|a05f1ce8106c0cb2",
+    "yara|capability_process_spawn|src/host/pipewire/device.rs|18fd3b5089137963",
+    "yara|capability_process_spawn|src/host/pipewire/rt_promote.rs|38f1115a04f86ace",
+    "yara|capability_process_spawn|src/host/pipewire/stream.rs|c73850d82b15a16b",
+    "yara|capability_process_spawn|src/host/pulseaudio/mod.rs|f83a8d377a8a293d",
+    "yara|capability_process_spawn|src/host/pulseaudio/stream.rs|aa2b727ed1dbaeec",
+    "yara|capability_process_spawn|src/host/wasapi/stream.rs|b7ac0295e968dad1",
+    "yara|lolbas_net|.github/actions/setup-asio/action.yml|1449b48b8a7cbe7c",
+    "yara|lolbas_net|.github/workflows/quality.yml|e9b8437d234b4cf2"
+   ],
+   "archive": {
+    "build_scripts": {
+     "build.rs": "b0651bd72ccfff6bf04371dfa899738f75866cdd1a134217a52611ff9dffb46e"
+    },
+    "files": 80,
+    "links": "",
+    "manifest": "ec03a81f0dff061e640e9b86e5aaf433ea1ce00b6502d31c453f25a9ddb0fe7e",
+    "native": {},
+    "native_profiles": {},
+    "native_sources": {},
+    "proc_macro": false,
+    "sha256": "6f02e8d0327b42d3e2e4ab2119af397344eb9fc54a34bf0ddeaa1277af8681f1",
+    "vcs": {
+     "git": {
+      "sha1": "e1612d5d98152f8dc2a62e1b51ef7cbf4f7f26b7"
+     },
+     "path_in_vcs": ""
+    }
+   },
+   "crates_io": {
+    "checksum": "6f02e8d0327b42d3e2e4ab2119af397344eb9fc54a34bf0ddeaa1277af8681f1",
+    "crate_size": 233947,
+    "created_at": "2026-08-16T18:02:02.361461Z",
+    "description": "Low-level cross-platform audio I/O library.",
+    "license": "Apache-2.0",
+    "published_by": "rustaudio-publish-bot",
+    "repository": "https://github.com/RustAudio/cpal",
+    "rust_version": "1.85"
+   },
+   "name": "cpal",
+   "reviewed": {
+    "by": "claude",
+    "date": "2026-11-17",
+    "note": "build script (build.rs) reviewed: only prints cargo: cfg/link directives; no network. No binary; checksum = crates.io's; published by rustaudio-publish-bot on 2026-08-16."
+   },
+   "scans": {
+    "capa": {},
+    "keys": [
+     "yara|capability_process_spawn|examples/custom.rs|8a0ced204e478256",
+     "yara|capability_process_spawn|src/device_description.rs|179e70a7fbf88d2a",
+     "yara|capability_process_spawn|src/host/alsa/mod.rs|ece7cc31f84d9460",
+     "yara|capability_process_spawn|src/host/asio/stream.rs|9de00dee3a8e3596",
+     "yara|capability_process_spawn|src/host/coreaudio/macos/mod.rs|8ac0856b57aa6bf5",
+     "yara|capability_process_spawn|src/host/jack/device.rs|3256be634cdebb2b",
+     "yara|capability_process_spawn|src/host/jack/mod.rs|a05f1ce8106c0cb2",
+     "yara|capability_process_spawn|src/host/pipewire/device.rs|18fd3b5089137963",
+     "yara|capability_process_spawn|src/host/pipewire/rt_promote.rs|38f1115a04f86ace",
+     "yara|capability_process_spawn|src/host/pipewire/stream.rs|c73850d82b15a16b",
+     "yara|capability_process_spawn|src/host/pulseaudio/mod.rs|f83a8d377a8a293d",
+     "yara|capability_process_spawn|src/host/pulseaudio/stream.rs|aa2b727ed1dbaeec",
+     "yara|capability_process_spawn|src/host/wasapi/stream.rs|b7ac0295e968dad1",
+     "yara|lolbas_net|.github/actions/setup-asio/action.yml|1449b48b8a7cbe7c",
+     "yara|lolbas_net|.github/workflows/quality.yml|e9b8437d234b4cf2"
+    ],
+    "yara": [
+     "capability_network_lolbas:lolbas_net .github/actions/setup-asio/action.yml",
+     "capability_network_lolbas:lolbas_net .github/workflows/quality.yml",
+     "capability_process_spawn:capability_process_spawn examples/custom.rs",
+     "capability_process_spawn:capability_process_spawn src/device_description.rs",
+     "capability_process_spawn:capability_process_spawn src/host/alsa/mod.rs",
+     "capability_process_spawn:capability_process_spawn src/host/asio/stream.rs",
+     "capability_process_spawn:capability_process_spawn src/host/coreaudio/macos/mod.rs",
+     "capability_process_spawn:capability_process_spawn src/host/jack/device.rs",
+     "capability_process_spawn:capability_process_spawn src/host/jack/mod.rs",
+     "capability_process_spawn:capability_process_spawn src/host/pipewire/device.rs",
+     "capability_process_spawn:capability_process_spawn src/host/pipewire/rt_promote.rs",
+     "capability_process_spawn:capability_process_spawn src/host/pipewire/stream.rs",
+     "capability_process_spawn:capability_process_spawn src/host/pulseaudio/mod.rs",
+     "capability_process_spawn:capability_process_spawn src/host/pulseaudio/stream.rs",
+     "capability_process_spawn:capability_process_spawn src/host/wasapi/stream.rs"
+    ]
+   },
+   "version": "0.18.2"
+  }
+ }
+}

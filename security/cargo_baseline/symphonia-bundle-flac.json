@@ -1,0 +1,47 @@
+{
+ "name": "symphonia-bundle-flac",
+ "versions": {
+  "0.6.1": {
+   "accepted_findings": [],
+   "archive": {
+    "build_scripts": {},
+    "files": 12,
+    "links": "",
+    "manifest": "42c2c15d1bda1b04834dcbac685115ec3676d119c173d85a780677f449cdbe8a",
+    "native": {},
+    "native_profiles": {},
+    "native_sources": {},
+    "proc_macro": false,
+    "sha256": "6405d5c34ff6f8f7ca08a4101efe66d21e180f7322ef9359900a0e55698a7892",
+    "vcs": {
+     "git": {
+      "sha1": "ee35874b571a35a9a6e15d3bc9a3aaf8f11fbeee"
+     },
+     "path_in_vcs": "symphonia-bundle-flac"
+    }
+   },
+   "crates_io": {
+    "checksum": "6405d5c34ff6f8f7ca08a4101efe66d21e180f7322ef9359900a0e55698a7892",
+    "crate_size": 31240,
+    "created_at": "2026-08-13T03:18:25.571362Z",
+    "description": "Pure Rust FLAC demuxer and decoder (a part of project Symphonia).",
+    "license": "MPL-2.0",
+    "published_by": "pdeljanov",
+    "repository": "https://github.com/pdeljanov/Symphonia",
+    "rust_version": "1.85"
+   },
+   "name": "symphonia-bundle-flac",
+   "reviewed": {
+    "by": "claude",
+    "date": "2026-11-17",
+    "note": "Nothing flagged: no build-time code. No binary; checksum = crates.io's; published by pdeljanov on 2026-08-13."
+   },
+   "scans": {
+    "capa": {},
+    "keys": [],
+    "yara": []
+   },
+   "version": "0.6.1"
+  }
+ }
+}

@@ -1,0 +1,52 @@
+{
+ "name": "alsa",
+ "versions": {
+  "0.11.0": {
+   "accepted_findings": [
+    "yara|capability_process_spawn|src/direct/asound_ioctl.rs|019b155ac6a8850f"
+   ],
+   "archive": {
+    "build_scripts": {},
+    "files": 25,
+    "links": "",
+    "manifest": "6039d48e775c39a7a33d9c31fe8d4bb60dd2ec5b0212582be6bad76be30e557b",
+    "native": {},
+    "native_profiles": {},
+    "native_sources": {},
+    "proc_macro": false,
+    "sha256": "812947049edcd670a82cd5c73c3661d2e58468577ba8489de58e1a73c04cbd5d",
+    "vcs": {
+     "git": {
+      "sha1": "f4e5d2be8adb8f12c29d4ea1e5a48b670c50712f"
+     },
+     "path_in_vcs": ""
+    }
+   },
+   "crates_io": {
+    "checksum": "812947049edcd670a82cd5c73c3661d2e58468577ba8489de58e1a73c04cbd5d",
+    "crate_size": 76094,
+    "created_at": "2025-12-26T16:43:18.727166Z",
+    "description": "Thin but safe wrappers for ALSA (Linux sound API)",
+    "license": "Apache-2.0/MIT",
+    "published_by": "diwic",
+    "repository": "https://github.com/diwic/alsa-rs"
+   },
+   "name": "alsa",
+   "reviewed": {
+    "by": "claude",
+    "date": "2026-11-17",
+    "note": "Nothing flagged: no build-time code. No binary; checksum = crates.io's; published by diwic on 2025-12-26."
+   },
+   "scans": {
+    "capa": {},
+    "keys": [
+     "yara|capability_process_spawn|src/direct/asound_ioctl.rs|019b155ac6a8850f"
+    ],
+    "yara": [
+     "capability_process_spawn:capability_process_spawn src/direct/asound_ioctl.rs"
+    ]
+   },
+   "version": "0.11.0"
+  }
+ }
+}

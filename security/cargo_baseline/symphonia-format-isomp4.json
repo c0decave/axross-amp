@@ -1,0 +1,47 @@
+{
+ "name": "symphonia-format-isomp4",
+ "versions": {
+  "0.6.1": {
+   "accepted_findings": [],
+   "archive": {
+    "build_scripts": {},
+    "files": 54,
+    "links": "",
+    "manifest": "479ac22498fd72fc79068991033b51af84f729e1ac899cf03f46b41f3a3a2dd8",
+    "native": {},
+    "native_profiles": {},
+    "native_sources": {},
+    "proc_macro": false,
+    "sha256": "0e681a70e1870d34e02abf1dbc51e4267c3f1827801474e8870be8c689fc4dc3",
+    "vcs": {
+     "git": {
+      "sha1": "ee35874b571a35a9a6e15d3bc9a3aaf8f11fbeee"
+     },
+     "path_in_vcs": "symphonia-format-isomp4"
+    }
+   },
+   "crates_io": {
+    "checksum": "0e681a70e1870d34e02abf1dbc51e4267c3f1827801474e8870be8c689fc4dc3",
+    "crate_size": 54300,
+    "created_at": "2026-08-13T03:18:39.573207Z",
+    "description": "Pure Rust ISO/MP4 demuxer (a part of project Symphonia).",
+    "license": "MPL-2.0",
+    "published_by": "pdeljanov",
+    "repository": "https://github.com/pdeljanov/Symphonia",
+    "rust_version": "1.85"
+   },
+   "name": "symphonia-format-isomp4",
+   "reviewed": {
+    "by": "claude",
+    "date": "2026-11-17",
+    "note": "Nothing flagged: no build-time code. No binary; checksum = crates.io's; published by pdeljanov on 2026-08-13."
+   },
+   "scans": {
+    "capa": {},
+    "keys": [],
+    "yara": []
+   },
+   "version": "0.6.1"
+  }
+ }
+}

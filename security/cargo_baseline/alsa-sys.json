@@ -1,0 +1,54 @@
+{
+ "name": "alsa-sys",
+ "versions": {
+  "0.4.0": {
+   "accepted_findings": [],
+   "archive": {
+    "build_scripts": {
+     "build.rs": "b5b563b9e2a3908c20ec627c8feaadc9bb262a8ba4ab4936f91aec95c283810c"
+    },
+    "files": 13,
+    "links": "alsa",
+    "manifest": "469496a1b0b14513e0d848b2e12220296fdf6081a8b28a37b5ec6e36557f6b90",
+    "native": {},
+    "native_profiles": {},
+    "native_sources": {
+     ".": 1
+    },
+    "proc_macro": false,
+    "sha256": "ad7569085a265dd3f607ebecce7458eaab2132a84393534c95b18dcbc3f31e04",
+    "vcs": {
+     "git": {
+      "sha1": "2239f2e3ce3350934e7b1a6e206c267623b1e60d"
+     },
+     "path_in_vcs": ""
+    }
+   },
+   "crates_io": {
+    "bin_names": [
+     "regenerate_bindings"
+    ],
+    "checksum": "ad7569085a265dd3f607ebecce7458eaab2132a84393534c95b18dcbc3f31e04",
+    "crate_size": 35672,
+    "created_at": "2025-12-26T16:15:26.863340Z",
+    "description": "FFI bindings for the ALSA project (Advanced Linux Sound Architecture)",
+    "lib_links": "alsa",
+    "license": "MIT",
+    "published_by": "diwic",
+    "repository": "https://github.com/diwic/alsa-sys"
+   },
+   "name": "alsa-sys",
+   "reviewed": {
+    "by": "claude",
+    "date": "2026-11-17",
+    "note": "build script (build.rs) reviewed: uses pkg-config/bindgen; no network. No binary; checksum = crates.io's; published by diwic on 2025-12-26."
+   },
+   "scans": {
+    "capa": {},
+    "keys": [],
+    "yara": []
+   },
+   "version": "0.4.0"
+  }
+ }
+}

@@ -1,0 +1,65 @@
+{
+ "name": "futures-channel",
+ "versions": {
+  "0.3.34": {
+   "accepted_findings": [
+    "yara|capability_process_spawn|src/oneshot.rs|1e4e33c75d72b5d1",
+    "yara|capability_process_spawn|tests/channel.rs|88f4a41d82b5c1b0",
+    "yara|capability_process_spawn|tests/mpsc-close.rs|4b934c6f3c4bd233",
+    "yara|capability_process_spawn|tests/mpsc.rs|3853d3fbda7442f5",
+    "yara|capability_process_spawn|tests/oneshot.rs|0f97d28852a1fd13"
+   ],
+   "archive": {
+    "build_scripts": {},
+    "files": 19,
+    "links": "",
+    "manifest": "3191db0422a90f0a4dfb6a4671e2eb358f6e4fd329ffb1f6564c814f28dc2001",
+    "native": {},
+    "native_profiles": {},
+    "native_sources": {},
+    "proc_macro": false,
+    "sha256": "b1f9e3d69d39e4862ffed03ed071a76f9a13ba1d9109d355b0f0aa6b15e393c4",
+    "vcs": {
+     "git": {
+      "sha1": "705e6b5c0f06535b1aac1cb1989a172b3d45be8c"
+     },
+     "path_in_vcs": "futures-channel"
+    }
+   },
+   "crates_io": {
+    "checksum": "b1f9e3d69d39e4862ffed03ed071a76f9a13ba1d9109d355b0f0aa6b15e393c4",
+    "crate_size": 33165,
+    "created_at": "2026-08-11T12:13:10.334104Z",
+    "description": "Channels for asynchronous communication using futures-rs.\n",
+    "license": "MIT OR Apache-2.0",
+    "published_by": "taiki-e",
+    "repository": "https://github.com/rust-lang/futures-rs",
+    "rust_version": "1.71"
+   },
+   "name": "futures-channel",
+   "reviewed": {
+    "by": "claude",
+    "date": "2026-11-17",
+    "note": "Nothing flagged: no build-time code. No binary; checksum = crates.io's; published by taiki-e on 2026-08-11."
+   },
+   "scans": {
+    "capa": {},
+    "keys": [
+     "yara|capability_process_spawn|src/oneshot.rs|1e4e33c75d72b5d1",
+     "yara|capability_process_spawn|tests/channel.rs|88f4a41d82b5c1b0",
+     "yara|capability_process_spawn|tests/mpsc-close.rs|4b934c6f3c4bd233",
+     "yara|capability_process_spawn|tests/mpsc.rs|3853d3fbda7442f5",
+     "yara|capability_process_spawn|tests/oneshot.rs|0f97d28852a1fd13"
+    ],
+    "yara": [
+     "capability_process_spawn:capability_process_spawn src/oneshot.rs",
+     "capability_process_spawn:capability_process_spawn tests/channel.rs",
+     "capability_process_spawn:capability_process_spawn tests/mpsc-close.rs",
+     "capability_process_spawn:capability_process_spawn tests/mpsc.rs",
+     "capability_process_spawn:capability_process_spawn tests/oneshot.rs"
+    ]
+   },
+   "version": "0.3.34"
+  }
+ }
+}

@@ -1,0 +1,47 @@
+{
+ "name": "num-integer",
+ "versions": {
+  "0.1.47": {
+   "accepted_findings": [],
+   "archive": {
+    "build_scripts": {},
+    "files": 17,
+    "links": "",
+    "manifest": "2ecf94e63268351bf57d7b40b6f6821e9d887412937f871b7ba21d9daa745b88",
+    "native": {},
+    "native_profiles": {},
+    "native_sources": {},
+    "proc_macro": false,
+    "sha256": "7ce2d95d4b3734dc35aa2f45e1aa22cd416814592a4f9d9205e11affd5b8e10b",
+    "vcs": {
+     "git": {
+      "sha1": "765fd9b3eb9397471d41b9f613e530f6d9d6383f"
+     },
+     "path_in_vcs": ""
+    }
+   },
+   "crates_io": {
+    "checksum": "7ce2d95d4b3734dc35aa2f45e1aa22cd416814592a4f9d9205e11affd5b8e10b",
+    "crate_size": 23502,
+    "created_at": "2026-08-12T00:11:57.840357Z",
+    "description": "Integer traits and functions",
+    "license": "MIT OR Apache-2.0",
+    "published_by": "cuviper",
+    "repository": "https://github.com/rust-num/num-integer",
+    "rust_version": "1.31"
+   },
+   "name": "num-integer",
+   "reviewed": {
+    "by": "claude",
+    "date": "2026-11-17",
+    "note": "Nothing flagged: no build-time code. No binary; checksum = crates.io's; published by cuviper on 2026-08-12."
+   },
+   "scans": {
+    "capa": {},
+    "keys": [],
+    "yara": []
+   },
+   "version": "0.1.47"
+  }
+ }
+}

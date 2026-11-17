@@ -1,0 +1,46 @@
+{
+ "name": "coreaudio-rs",
+ "versions": {
+  "0.14.2": {
+   "accepted_findings": [],
+   "archive": {
+    "build_scripts": {},
+    "files": 23,
+    "links": "",
+    "manifest": "8ecf6a2d852a762718dde0c0f01b73a2460f33b2da1304e903861484e5e37454",
+    "native": {},
+    "native_profiles": {},
+    "native_sources": {},
+    "proc_macro": false,
+    "sha256": "7d5d7dca3ebcf65a035582c9ad4385371a9d9ee6537474d2a278f4e1e475bb58",
+    "vcs": {
+     "git": {
+      "sha1": "f07c02c7419328650112d4b276cffd785b0be4ee"
+     },
+     "path_in_vcs": ""
+    }
+   },
+   "crates_io": {
+    "checksum": "7d5d7dca3ebcf65a035582c9ad4385371a9d9ee6537474d2a278f4e1e475bb58",
+    "crate_size": 44962,
+    "created_at": "2026-04-29T05:53:33.784168Z",
+    "description": "A friendly rust interface for Apple's CoreAudio API.",
+    "license": "MIT/Apache-2.0",
+    "published_by": "mitchmindtree",
+    "repository": "https://github.com/RustAudio/coreaudio-rs.git"
+   },
+   "name": "coreaudio-rs",
+   "reviewed": {
+    "by": "claude",
+    "date": "2026-11-17",
+    "note": "Nothing flagged: no build-time code. No binary; checksum = crates.io's; published by mitchmindtree on 2026-04-29."
+   },
+   "scans": {
+    "capa": {},
+    "keys": [],
+    "yara": []
+   },
+   "version": "0.14.2"
+  }
+ }
+}

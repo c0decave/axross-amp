@@ -1,0 +1,80 @@
+{
+ "name": "url",
+ "versions": {
+  "2.5.8": {
+   "accepted_findings": [
+    "raw-ip-url|src/lib.rs|8c2bd705976f398a",
+    "raw-ip-url|src/lib.rs|b5b18c3dd4d69c14",
+    "raw-ip-url|src/lib.rs|f5fa06ffce9298d5",
+    "raw-ip-url|tests/unit.rs|018ac7792cc93ab1",
+    "raw-ip-url|tests/unit.rs|0b2b959cf8267722",
+    "raw-ip-url|tests/unit.rs|245aed92d73e8a72",
+    "raw-ip-url|tests/unit.rs|2a0a3383126ce6f1",
+    "raw-ip-url|tests/unit.rs|35e590b4c470db8b",
+    "raw-ip-url|tests/unit.rs|5e149599b7a61075",
+    "raw-ip-url|tests/unit.rs|65756937b4346f0a",
+    "raw-ip-url|tests/unit.rs|72353c839f387c06",
+    "raw-ip-url|tests/unit.rs|856000015ce68855",
+    "raw-ip-url|tests/unit.rs|8fbc8ea9614ee773",
+    "raw-ip-url|tests/unit.rs|8fd51d5f34144146",
+    "raw-ip-url|tests/unit.rs|90155b771c3d5c0c",
+    "raw-ip-url|tests/unit.rs|92a08ed14d5cc797",
+    "raw-ip-url|tests/unit.rs|b5218fa502a0c189",
+    "raw-ip-url|tests/unit.rs|c544b65bddf870c0",
+    "raw-ip-url|tests/unit.rs|c9520b0f9b29b5b6",
+    "raw-ip-url|tests/unit.rs|cdd2ef6458f2db50",
+    "raw-ip-url|tests/unit.rs|de1a491689d51679",
+    "raw-ip-url|tests/unit.rs|e86698778f72ce98",
+    "raw-ip-url|tests/unit.rs|ef29b5f2dd5d8231",
+    "raw-ip-url|tests/unit.rs|f30128c88b551652",
+    "yara|capability_network_outbound|src/lib.rs|51f47a93654528f3",
+    "yara|threat_network_exfiltration|tests/unit.rs|7eb96c1194fba03f"
+   ],
+   "archive": {
+    "build_scripts": {},
+    "files": 19,
+    "links": "",
+    "manifest": "1b0fd16c79ac9628cd0e240d9400cff7ac620a2524135802c1193232eae62f9d",
+    "native": {},
+    "native_profiles": {},
+    "native_sources": {},
+    "proc_macro": false,
+    "sha256": "ff67a8a4397373c3ef660812acab3268222035010ab8680ec4215f38ba3d0eed",
+    "vcs": {
+     "git": {
+      "sha1": "d6ea13c5f8e7e6e627f6390161b3e185bda5e5ce"
+     },
+     "path_in_vcs": "url"
+    }
+   },
+   "crates_io": {
+    "checksum": "ff67a8a4397373c3ef660812acab3268222035010ab8680ec4215f38ba3d0eed",
+    "crate_size": 86512,
+    "created_at": "2026-01-05T22:14:31.414927Z",
+    "description": "URL library for Rust, based on the WHATWG URL Standard",
+    "license": "MIT OR Apache-2.0",
+    "published_by": "Manishearth",
+    "repository": "https://github.com/servo/rust-url",
+    "rust_version": "1.63"
+   },
+   "name": "url",
+   "reviewed": {
+    "by": "claude",
+    "date": "2026-11-17",
+    "note": "127.0.0.1 and 1.35.33.49 URLs: parser tests and doc examples. Nothing else flagged. No binary; checksum = crates.io's; published by Manishearth on 2026-01-05; other medium findings read: ['raw-ip-url']."
+   },
+   "scans": {
+    "capa": {},
+    "keys": [
+     "yara|capability_network_outbound|src/lib.rs|51f47a93654528f3",
+     "yara|threat_network_exfiltration|tests/unit.rs|7eb96c1194fba03f"
+    ],
+    "yara": [
+     "capability_network_outbound:capability_network_outbound src/lib.rs",
+     "threat_network_exfiltration:threat_network_exfiltration tests/unit.rs"
+    ]
+   },
+   "version": "2.5.8"
+  }
+ }
+}

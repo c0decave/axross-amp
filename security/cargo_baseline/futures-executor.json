@@ -1,0 +1,62 @@
+{
+ "name": "futures-executor",
+ "versions": {
+  "0.3.34": {
+   "accepted_findings": [
+    "yara|capability_process_spawn|benches/thread_notify.rs|e601968527bee857",
+    "yara|capability_process_spawn|src/local_pool.rs|8f7af3cac38ce4db",
+    "yara|capability_process_spawn|src/thread_pool.rs|b8468c274db32af6",
+    "yara|capability_process_spawn|tests/local_pool.rs|f14fd260fd445c3b"
+   ],
+   "archive": {
+    "build_scripts": {},
+    "files": 14,
+    "links": "",
+    "manifest": "b26ddd9825f3eee40fe415bb12ab49ce8ab8ba0e60a273b7aa35151a681d8e65",
+    "native": {},
+    "native_profiles": {},
+    "native_sources": {},
+    "proc_macro": false,
+    "sha256": "031b47cf1a3c6cc8bc2fc76cd437f521619387907d469316e7c0bc278f1f5432",
+    "vcs": {
+     "git": {
+      "sha1": "705e6b5c0f06535b1aac1cb1989a172b3d45be8c"
+     },
+     "path_in_vcs": "futures-executor"
+    }
+   },
+   "crates_io": {
+    "checksum": "031b47cf1a3c6cc8bc2fc76cd437f521619387907d469316e7c0bc278f1f5432",
+    "crate_size": 18560,
+    "created_at": "2026-08-11T12:13:23.714779Z",
+    "description": "Executors for asynchronous tasks based on the futures-rs library.\n",
+    "license": "MIT OR Apache-2.0",
+    "published_by": "taiki-e",
+    "repository": "https://github.com/rust-lang/futures-rs",
+    "rust_version": "1.71"
+   },
+   "name": "futures-executor",
+   "reviewed": {
+    "by": "claude",
+    "date": "2026-11-17",
+    "note": "Nothing flagged: no build-time code. No binary; checksum = crates.io's; published by taiki-e on 2026-08-11."
+   },
+   "scans": {
+    "capa": {},
+    "keys": [
+     "yara|capability_process_spawn|benches/thread_notify.rs|e601968527bee857",
+     "yara|capability_process_spawn|src/local_pool.rs|8f7af3cac38ce4db",
+     "yara|capability_process_spawn|src/thread_pool.rs|b8468c274db32af6",
+     "yara|capability_process_spawn|tests/local_pool.rs|f14fd260fd445c3b"
+    ],
+    "yara": [
+     "capability_process_spawn:capability_process_spawn benches/thread_notify.rs",
+     "capability_process_spawn:capability_process_spawn src/local_pool.rs",
+     "capability_process_spawn:capability_process_spawn src/thread_pool.rs",
+     "capability_process_spawn:capability_process_spawn tests/local_pool.rs"
+    ]
+   },
+   "version": "0.3.34"
+  }
+ }
+}

@@ -1,0 +1,47 @@
+{
+ "name": "futures-sink",
+ "versions": {
+  "0.3.34": {
+   "accepted_findings": [],
+   "archive": {
+    "build_scripts": {},
+    "files": 8,
+    "links": "",
+    "manifest": "80db2a078c1af604b62a98d3a14cafeba0d5bf45b2a0f3171a4c45822d8bcf62",
+    "native": {},
+    "native_profiles": {},
+    "native_sources": {},
+    "proc_macro": false,
+    "sha256": "1944426bf7d03f1d14f708785e4b33efd750b36d48a157b836b3efc15ede8e1d",
+    "vcs": {
+     "git": {
+      "sha1": "705e6b5c0f06535b1aac1cb1989a172b3d45be8c"
+     },
+     "path_in_vcs": "futures-sink"
+    }
+   },
+   "crates_io": {
+    "checksum": "1944426bf7d03f1d14f708785e4b33efd750b36d48a157b836b3efc15ede8e1d",
+    "crate_size": 8107,
+    "created_at": "2026-08-11T12:13:06.160611Z",
+    "description": "The asynchronous `Sink` trait for the futures-rs library.\n",
+    "license": "MIT OR Apache-2.0",
+    "published_by": "taiki-e",
+    "repository": "https://github.com/rust-lang/futures-rs",
+    "rust_version": "1.36"
+   },
+   "name": "futures-sink",
+   "reviewed": {
+    "by": "claude",
+    "date": "2026-11-17",
+    "note": "Nothing flagged: no build-time code. No binary; checksum = crates.io's; published by taiki-e on 2026-08-11."
+   },
+   "scans": {
+    "capa": {},
+    "keys": [],
+    "yara": []
+   },
+   "version": "0.3.34"
+  }
+ }
+}

@@ -1,0 +1,47 @@
+{
+ "name": "objc2-audio-toolbox",
+ "versions": {
+  "0.3.2": {
+   "accepted_findings": [],
+   "archive": {
+    "build_scripts": {},
+    "files": 36,
+    "links": "",
+    "manifest": "aa8e9c9affe2af818b553ae84642bd97acc7a6a3bdb906342f1a0c2d5eda448b",
+    "native": {},
+    "native_profiles": {},
+    "native_sources": {},
+    "proc_macro": false,
+    "sha256": "6948501a91121d6399b79abaa33a8aa4ea7857fe019f341b8c23ad6e81b79b08",
+    "vcs": {
+     "git": {
+      "sha1": "7b1abfd750a2cacaea71d6a56ecfb83cb7de560b"
+     },
+     "path_in_vcs": "framework-crates/objc2-audio-toolbox"
+    }
+   },
+   "crates_io": {
+    "checksum": "6948501a91121d6399b79abaa33a8aa4ea7857fe019f341b8c23ad6e81b79b08",
+    "crate_size": 186265,
+    "created_at": "2025-10-04T16:17:28.487130Z",
+    "description": "Bindings to the AudioToolbox framework",
+    "license": "Zlib OR Apache-2.0 OR MIT",
+    "published_by": "madsmtm",
+    "repository": "https://github.com/madsmtm/objc2",
+    "rust_version": "1.71"
+   },
+   "name": "objc2-audio-toolbox",
+   "reviewed": {
+    "by": "claude",
+    "date": "2026-11-17",
+    "note": "Nothing flagged: no build-time code. No binary; checksum = crates.io's; published by madsmtm on 2025-10-04."
+   },
+   "scans": {
+    "capa": {},
+    "keys": [],
+    "yara": []
+   },
+   "version": "0.3.2"
+  }
+ }
+}

@@ -1,0 +1,47 @@
+{
+ "name": "symphonia-codec-alac",
+ "versions": {
+  "0.6.1": {
+   "accepted_findings": [],
+   "archive": {
+    "build_scripts": {},
+    "files": 7,
+    "links": "",
+    "manifest": "1dd95d7ed6bb0793ea171a88c259f94f876a428c3613b43781b08fb4bd223f7c",
+    "native": {},
+    "native_profiles": {},
+    "native_sources": {},
+    "proc_macro": false,
+    "sha256": "920a78f96f3cf62932d0c497959c0cc2100ef36b03c7ca1417b260f432a482d8",
+    "vcs": {
+     "git": {
+      "sha1": "ee35874b571a35a9a6e15d3bc9a3aaf8f11fbeee"
+     },
+     "path_in_vcs": "symphonia-codec-alac"
+    }
+   },
+   "crates_io": {
+    "checksum": "920a78f96f3cf62932d0c497959c0cc2100ef36b03c7ca1417b260f432a482d8",
+    "crate_size": 14611,
+    "created_at": "2026-08-13T03:18:23.428798Z",
+    "description": "Pure Rust ALAC decoder (a part of project Symphonia).",
+    "license": "MPL-2.0",
+    "published_by": "pdeljanov",
+    "repository": "https://github.com/pdeljanov/Symphonia",
+    "rust_version": "1.85"
+   },
+   "name": "symphonia-codec-alac",
+   "reviewed": {
+    "by": "claude",
+    "date": "2026-11-17",
+    "note": "Nothing flagged: no build-time code. No binary; checksum = crates.io's; published by pdeljanov on 2026-08-13."
+   },
+   "scans": {
+    "capa": {},
+    "keys": [],
+    "yara": []
+   },
+   "version": "0.6.1"
+  }
+ }
+}

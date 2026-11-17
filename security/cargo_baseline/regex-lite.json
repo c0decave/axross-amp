@@ -1,0 +1,49 @@
+{
+ "name": "regex-lite",
+ "versions": {
+  "0.1.9": {
+   "accepted_findings": [
+    "rs-include-bytes|tests/lib.rs|ae13b357760b77ce"
+   ],
+   "archive": {
+    "build_scripts": {},
+    "files": 20,
+    "links": "",
+    "manifest": "4a53983cd6a805bd8a489515f60a3b06f5055bd569812562999f17c083398148",
+    "native": {},
+    "native_profiles": {},
+    "native_sources": {},
+    "proc_macro": false,
+    "sha256": "cab834c73d247e67f4fae452806d17d3c7501756d98c8808d7c9c7aa7d18f973",
+    "vcs": {
+     "git": {
+      "sha1": "0c07fae444adf0802d84455e689f1143d2dd7790"
+     },
+     "path_in_vcs": "regex-lite"
+    }
+   },
+   "crates_io": {
+    "checksum": "cab834c73d247e67f4fae452806d17d3c7501756d98c8808d7c9c7aa7d18f973",
+    "crate_size": 96166,
+    "created_at": "2026-02-03T13:47:43.407798Z",
+    "description": "A lightweight regex engine that optimizes for binary size and compilation time.\n",
+    "license": "MIT OR Apache-2.0",
+    "published_by": "BurntSushi",
+    "repository": "https://github.com/rust-lang/regex",
+    "rust_version": "1.65"
+   },
+   "name": "regex-lite",
+   "reviewed": {
+    "by": "claude",
+    "date": "2026-11-17",
+    "note": "Nothing flagged: no build-time code. No binary; checksum = crates.io's; published by BurntSushi on 2026-02-03."
+   },
+   "scans": {
+    "capa": {},
+    "keys": [],
+    "yara": []
+   },
+   "version": "0.1.9"
+  }
+ }
+}

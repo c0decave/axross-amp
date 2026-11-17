@@ -1,0 +1,83 @@
+{
+ "name": "futures",
+ "versions": {
+  "0.3.34": {
+   "accepted_findings": [
+    "yara|capability_process_spawn|tests/bilock.rs|bd0bf617352528f6",
+    "yara|capability_process_spawn|tests/eventual.rs|9050809e5196d087",
+    "yara|capability_process_spawn|tests/future_shared.rs|4f2cba1e74dacc4f",
+    "yara|capability_process_spawn|tests/lock_mutex.rs|eb47121b84209635",
+    "yara|capability_process_spawn|tests/oneshot.rs|d2ccd1a175576a38",
+    "yara|capability_process_spawn|tests/ready_queue.rs|6380025061025c27",
+    "yara|capability_process_spawn|tests/recurse.rs|b01b3d73b69ad90a",
+    "yara|capability_process_spawn|tests/stream.rs|17247f3237250562",
+    "yara|capability_process_spawn|tests/stream_buffer_unordered.rs|143ee19056b9ee9e",
+    "yara|capability_process_spawn|tests/stream_futures_unordered.rs|6b40acf833fb8192",
+    "yara|capability_process_spawn|tests/task_atomic_waker.rs|8e85b4bc13607886"
+   ],
+   "archive": {
+    "build_scripts": {},
+    "files": 68,
+    "links": "",
+    "manifest": "cc203c75d9bfb9ffe3ac1e4175ca62422a80a347b6ef0ee20d246b388d8544eb",
+    "native": {},
+    "native_profiles": {},
+    "native_sources": {},
+    "proc_macro": false,
+    "sha256": "9a31d2a3fbaaeb2af2368bbdd904aa8e812d3c04a1ee10d3171f52d556e5d0a3",
+    "vcs": {
+     "git": {
+      "sha1": "705e6b5c0f06535b1aac1cb1989a172b3d45be8c"
+     },
+     "path_in_vcs": "futures"
+    }
+   },
+   "crates_io": {
+    "checksum": "9a31d2a3fbaaeb2af2368bbdd904aa8e812d3c04a1ee10d3171f52d556e5d0a3",
+    "crate_size": 61966,
+    "created_at": "2026-08-11T12:13:28.064590Z",
+    "description": "An implementation of futures and streams featuring zero allocations,\ncomposability, and iterator-like interfaces.\n",
+    "license": "MIT OR Apache-2.0",
+    "published_by": "taiki-e",
+    "repository": "https://github.com/rust-lang/futures-rs",
+    "rust_version": "1.71"
+   },
+   "name": "futures",
+   "reviewed": {
+    "by": "claude",
+    "date": "2026-11-17",
+    "note": "Nothing flagged: no build-time code. No binary; checksum = crates.io's; published by taiki-e on 2026-08-11."
+   },
+   "scans": {
+    "capa": {},
+    "keys": [
+     "yara|capability_process_spawn|tests/bilock.rs|bd0bf617352528f6",
+     "yara|capability_process_spawn|tests/eventual.rs|9050809e5196d087",
+     "yara|capability_process_spawn|tests/future_shared.rs|4f2cba1e74dacc4f",
+     "yara|capability_process_spawn|tests/lock_mutex.rs|eb47121b84209635",
+     "yara|capability_process_spawn|tests/oneshot.rs|d2ccd1a175576a38",
+     "yara|capability_process_spawn|tests/ready_queue.rs|6380025061025c27",
+     "yara|capability_process_spawn|tests/recurse.rs|b01b3d73b69ad90a",
+     "yara|capability_process_spawn|tests/stream.rs|17247f3237250562",
+     "yara|capability_process_spawn|tests/stream_buffer_unordered.rs|143ee19056b9ee9e",
+     "yara|capability_process_spawn|tests/stream_futures_unordered.rs|6b40acf833fb8192",
+     "yara|capability_process_spawn|tests/task_atomic_waker.rs|8e85b4bc13607886"
+    ],
+    "yara": [
+     "capability_process_spawn:capability_process_spawn tests/bilock.rs",
+     "capability_process_spawn:capability_process_spawn tests/eventual.rs",
+     "capability_process_spawn:capability_process_spawn tests/future_shared.rs",
+     "capability_process_spawn:capability_process_spawn tests/lock_mutex.rs",
+     "capability_process_spawn:capability_process_spawn tests/oneshot.rs",
+     "capability_process_spawn:capability_process_spawn tests/ready_queue.rs",
+     "capability_process_spawn:capability_process_spawn tests/recurse.rs",
+     "capability_process_spawn:capability_process_spawn tests/stream.rs",
+     "capability_process_spawn:capability_process_spawn tests/stream_buffer_unordered.rs",
+     "capability_process_spawn:capability_process_spawn tests/stream_futures_unordered.rs",
+     "capability_process_spawn:capability_process_spawn tests/task_atomic_waker.rs"
+    ]
+   },
+   "version": "0.3.34"
+  }
+ }
+}

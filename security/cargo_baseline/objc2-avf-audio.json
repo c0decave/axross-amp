@@ -1,0 +1,47 @@
+{
+ "name": "objc2-avf-audio",
+ "versions": {
+  "0.3.2": {
+   "accepted_findings": [],
+   "archive": {
+    "build_scripts": {},
+    "files": 52,
+    "links": "",
+    "manifest": "450be4685011a0ad72aa1af6739dcb6f9ab1910afb21b63712934030d8ead9f8",
+    "native": {},
+    "native_profiles": {},
+    "native_sources": {},
+    "proc_macro": false,
+    "sha256": "13a380031deed8e99db00065c45937da434ca987c034e13b87e4441f9e4090be",
+    "vcs": {
+     "git": {
+      "sha1": "7b1abfd750a2cacaea71d6a56ecfb83cb7de560b"
+     },
+     "path_in_vcs": "framework-crates/objc2-avf-audio"
+    }
+   },
+   "crates_io": {
+    "checksum": "13a380031deed8e99db00065c45937da434ca987c034e13b87e4441f9e4090be",
+    "crate_size": 114936,
+    "created_at": "2025-10-04T16:17:40.065326Z",
+    "description": "Bindings to the AVFAudio framework",
+    "license": "Zlib OR Apache-2.0 OR MIT",
+    "published_by": "madsmtm",
+    "repository": "https://github.com/madsmtm/objc2",
+    "rust_version": "1.71"
+   },
+   "name": "objc2-avf-audio",
+   "reviewed": {
+    "by": "claude",
+    "date": "2026-11-17",
+    "note": "Nothing flagged: no build-time code. No binary; checksum = crates.io's; published by madsmtm on 2025-10-04."
+   },
+   "scans": {
+    "capa": {},
+    "keys": [],
+    "yara": []
+   },
+   "version": "0.3.2"
+  }
+ }
+}

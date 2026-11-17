@@ -1,0 +1,46 @@
+{
+ "name": "directories",
+ "versions": {
+  "6.0.0": {
+   "accepted_findings": [],
+   "archive": {
+    "build_scripts": {},
+    "files": 15,
+    "links": "",
+    "manifest": "36aee982c7f28aad0b8e80a944dde7e83bd3fd8628b458ccd0b32e71d63355bd",
+    "native": {},
+    "native_profiles": {},
+    "native_sources": {},
+    "proc_macro": false,
+    "sha256": "16f5094c54661b38d03bd7e50df373292118db60b585c08a411c6d840017fe7d",
+    "vcs": {
+     "git": {
+      "sha1": "7ff1b6d3222e752c76d0e9aa786b399f620320af"
+     },
+     "path_in_vcs": ""
+    }
+   },
+   "crates_io": {
+    "checksum": "16f5094c54661b38d03bd7e50df373292118db60b585c08a411c6d840017fe7d",
+    "crate_size": 17842,
+    "created_at": "2025-01-12T17:19:05.177535Z",
+    "description": "A tiny mid-level library that provides platform-specific standard locations of directories for config, cache and other data on Linux, Windows and macOS by leveraging the mechanisms defined by the XDG base/user directory specifications on Linux, the Known Folder API on Windows, and the Standard Direc",
+    "license": "MIT OR Apache-2.0",
+    "published_by": "soc",
+    "repository": "https://github.com/soc/directories-rs"
+   },
+   "name": "directories",
+   "reviewed": {
+    "by": "claude",
+    "date": "2026-11-17",
+    "note": "Nothing flagged: no build-time code. No binary; checksum = crates.io's; published by soc on 2025-01-12."
+   },
+   "scans": {
+    "capa": {},
+    "keys": [],
+    "yara": []
+   },
+   "version": "6.0.0"
+  }
+ }
+}

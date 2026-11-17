@@ -1,0 +1,62 @@
+{
+ "name": "rustfft",
+ "versions": {
+  "6.4.1": {
+   "accepted_findings": [
+    "yara|capability_filesystem_read|tools/p2comparison.py|6e4d164cb78a0218",
+    "yara|capability_filesystem_read|tools/p2comparison_neon.py|4755b84536f6ad65",
+    "yara|capability_filesystem_read|tools/p2comparison_wasm_simd.py|fb755f0b78e41aac",
+    "yara|capability_process_spawn|examples/concurrency.rs|555562653daaa689"
+   ],
+   "archive": {
+    "build_scripts": {},
+    "files": 84,
+    "links": "",
+    "manifest": "20cdb700aab5e8f8339794d334305601cc6f8e7e0a0d660ffa206212a229c5ee",
+    "native": {},
+    "native_profiles": {},
+    "native_sources": {},
+    "proc_macro": false,
+    "sha256": "21db5f9893e91f41798c88680037dba611ca6674703c1a18601b01a72c8adb89",
+    "vcs": {
+     "git": {
+      "sha1": "4758ab0dd6f256c50ac8987c75c9cb96152dc2ca"
+     },
+     "path_in_vcs": ""
+    }
+   },
+   "crates_io": {
+    "checksum": "21db5f9893e91f41798c88680037dba611ca6674703c1a18601b01a72c8adb89",
+    "crate_size": 337421,
+    "created_at": "2025-09-18T03:59:45.041669Z",
+    "description": "High-performance FFT library written in pure Rust.",
+    "license": "MIT OR Apache-2.0",
+    "published_by": "ejmahler",
+    "repository": "https://github.com/ejmahler/RustFFT",
+    "rust_version": "1.61"
+   },
+   "name": "rustfft",
+   "reviewed": {
+    "by": "claude",
+    "date": "2026-11-17",
+    "note": "Nothing flagged: no build-time code. No binary; checksum = crates.io's; published by ejmahler on 2025-09-18."
+   },
+   "scans": {
+    "capa": {},
+    "keys": [
+     "yara|capability_filesystem_read|tools/p2comparison.py|6e4d164cb78a0218",
+     "yara|capability_filesystem_read|tools/p2comparison_neon.py|4755b84536f6ad65",
+     "yara|capability_filesystem_read|tools/p2comparison_wasm_simd.py|fb755f0b78e41aac",
+     "yara|capability_process_spawn|examples/concurrency.rs|555562653daaa689"
+    ],
+    "yara": [
+     "capability_filesystem_read:capability_filesystem_read tools/p2comparison.py",
+     "capability_filesystem_read:capability_filesystem_read tools/p2comparison_neon.py",
+     "capability_filesystem_read:capability_filesystem_read tools/p2comparison_wasm_simd.py",
+     "capability_process_spawn:capability_process_spawn examples/concurrency.rs"
+    ]
+   },
+   "version": "6.4.1"
+  }
+ }
+}

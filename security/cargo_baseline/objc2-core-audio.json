@@ -1,0 +1,47 @@
+{
+ "name": "objc2-core-audio",
+ "versions": {
+  "0.3.2": {
+   "accepted_findings": [],
+   "archive": {
+    "build_scripts": {},
+    "files": 12,
+    "links": "",
+    "manifest": "dfff8810dc2f3103bbcfa70efcd8bfa0821649dd63c78474d6196955de8bdc0f",
+    "native": {},
+    "native_profiles": {},
+    "native_sources": {},
+    "proc_macro": false,
+    "sha256": "e1eebcea8b0dbff5f7c8504f3107c68fc061a3eb44932051c8cf8a68d969c3b2",
+    "vcs": {
+     "git": {
+      "sha1": "7b1abfd750a2cacaea71d6a56ecfb83cb7de560b"
+     },
+     "path_in_vcs": "framework-crates/objc2-core-audio"
+    }
+   },
+   "crates_io": {
+    "checksum": "e1eebcea8b0dbff5f7c8504f3107c68fc061a3eb44932051c8cf8a68d969c3b2",
+    "crate_size": 32748,
+    "created_at": "2025-10-04T16:17:14.504565Z",
+    "description": "Bindings to the CoreAudio framework",
+    "license": "Zlib OR Apache-2.0 OR MIT",
+    "published_by": "madsmtm",
+    "repository": "https://github.com/madsmtm/objc2",
+    "rust_version": "1.71"
+   },
+   "name": "objc2-core-audio",
+   "reviewed": {
+    "by": "claude",
+    "date": "2026-11-17",
+    "note": "Nothing flagged: no build-time code. No binary; checksum = crates.io's; published by madsmtm on 2025-10-04."
+   },
+   "scans": {
+    "capa": {},
+    "keys": [],
+    "yara": []
+   },
+   "version": "0.3.2"
+  }
+ }
+}

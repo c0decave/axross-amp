@@ -1,0 +1,155 @@
+{
+ "name": "opusic-sys",
+ "versions": {
+  "0.7.6": {
+   "accepted_findings": [
+    "rs-command|build.rs|23c61fa8de9c7528",
+    "yara|capability_filesystem_read|opus/meson/read-sources-list.py|4bd4fa3e44fdf837",
+    "yara|capability_process_spawn|build.rs|da2f4acacd0cf0d8",
+    "yara|capability_process_spawn|opus/meson/get-version.py|178701fcd416cd7d",
+    "yara|lolbas_net|opus/README|9bdf02594da8c33a"
+   ],
+   "archive": {
+    "build_scripts": {
+     "build.rs": "da2f4acacd0cf0d84ec7c888d4c93b8cee85cb3bd0701d4a7f8da9f396ddf844"
+    },
+    "files": 497,
+    "links": "",
+    "manifest": "9e6200505c926b2f420cc231d26bd9dc1394f5187d1d4c514af23c0ed81c1d67",
+    "native": {},
+    "native_profiles": {},
+    "native_sources": {
+     "opus": 403,
+     "src": 1
+    },
+    "proc_macro": false,
+    "sha256": "8534a2ed5b65350f90c63b3e160a8edd8b812fcf3182a88fd7fcee3b6fca673a",
+    "vcs": {
+     "git": {
+      "sha1": "53f02a707e230478bd1ac5c0d90e63df4226af51"
+     },
+     "path_in_vcs": ""
+    }
+   },
+   "crates_io": {
+    "checksum": "8534a2ed5b65350f90c63b3e160a8edd8b812fcf3182a88fd7fcee3b6fca673a",
+    "crate_size": 10431885,
+    "created_at": "2026-10-26T22:39:03.224929Z",
+    "description": "Bindings to libopus",
+    "license": "BSD-3-Clause",
+    "published_by": "DoumanAsh",
+    "repository": "https://github.com/DoumanAsh/opusic-sys",
+    "rust_version": "1.82.0"
+   },
+   "name": "opusic-sys",
+   "reviewed": {
+    "by": "claude",
+    "date": "2026-11-17",
+    "note": "Vendors libopus 1.6.1 (opus/ identical to 0.7.7, which was compared with the release tarball; build.rs differs only in CPU-feature and static-runtime handling) and builds it with CMake (cmake crate) in its build script; the build script reads Cargo/Android variables, runs `ninja --version`, no network. opus/ compared file by file with the official opus-1.6.1.tar.gz (downloads.xiph.org, SHA-256 6ffcb593...a1 = Xiph's SHA256SUMS.txt): 481 of 482 files identical, CMakeLists.txt = upstream + the crate's opus.patch (MSVC runtime selection, ENABLE_OSCE_BWE), checked by applying the patch. The DNN weight files are only compiled with the dred/osce features, which axross-amp does not enable. No binary, no YARA threat. No binary; checksum = crates.io's; published by DoumanAsh on 2026-10-26."
+   },
+   "scans": {
+    "capa": {},
+    "keys": [
+     "yara|capability_filesystem_read|opus/meson/read-sources-list.py|4bd4fa3e44fdf837",
+     "yara|capability_process_spawn|build.rs|da2f4acacd0cf0d8",
+     "yara|capability_process_spawn|opus/meson/get-version.py|178701fcd416cd7d",
+     "yara|lolbas_net|opus/README|9bdf02594da8c33a"
+    ],
+    "yara": [
+     "capability_filesystem_read:capability_filesystem_read opus/meson/read-sources-list.py",
+     "capability_network_lolbas:lolbas_net opus/README",
+     "capability_process_spawn:capability_process_spawn build.rs",
+     "capability_process_spawn:capability_process_spawn opus/meson/get-version.py"
+    ]
+   },
+   "upstream": {
+    "date": "2026-11-17",
+    "differ": [
+     "CMakeLists.txt"
+    ],
+    "identical": 481,
+    "only_in_crate": [],
+    "only_upstream": 0,
+    "prefix": "opus/",
+    "sha256": "6ffcb593207be92584df15b32466ed64bbec99109f007c82205f0194572411a1",
+    "url": "https://downloads.xiph.org/releases/opus/opus-1.6.1.tar.gz"
+   },
+   "version": "0.7.6"
+  },
+  "0.7.7": {
+   "accepted_findings": [
+    "rs-command|build.rs|23c61fa8de9c7528",
+    "yara|capability_filesystem_read|opus/meson/read-sources-list.py|4bd4fa3e44fdf837",
+    "yara|capability_process_spawn|build.rs|35a189a2233d13bd",
+    "yara|capability_process_spawn|opus/meson/get-version.py|178701fcd416cd7d",
+    "yara|lolbas_net|opus/README|9bdf02594da8c33a"
+   ],
+   "archive": {
+    "build_scripts": {
+     "build.rs": "35a189a2233d13bdcac51766ad96916e78c2e8d77736f8797a2e83ca4f5ae8a3"
+    },
+    "files": 497,
+    "links": "",
+    "manifest": "990664dcdd575c109a037411d9e488cea8a0927b7fe36bea9c3c105cf96de8b1",
+    "native": {},
+    "native_profiles": {},
+    "native_sources": {
+     "opus": 403,
+     "src": 1
+    },
+    "proc_macro": false,
+    "sha256": "986d749e9dc12035f11bf3ecc83a2a696ff7534d4143be9469a4a0faa25b9fd1",
+    "vcs": {
+     "git": {
+      "sha1": "4b98811c3a21916bc19fad1ea19646194386343c"
+     },
+     "path_in_vcs": ""
+    }
+   },
+   "crates_io": {
+    "checksum": "986d749e9dc12035f11bf3ecc83a2a696ff7534d4143be9469a4a0faa25b9fd1",
+    "crate_size": 10431974,
+    "created_at": "2026-11-04T09:17:04.368891Z",
+    "description": "Bindings to libopus",
+    "license": "BSD-3-Clause",
+    "published_by": "DoumanAsh",
+    "repository": "https://github.com/DoumanAsh/opusic-sys",
+    "rust_version": "1.82.0"
+   },
+   "name": "opusic-sys",
+   "reviewed": {
+    "by": "claude",
+    "date": "2026-11-17",
+    "note": "Vendors libopus 1.6.1 and builds it with CMake (cmake crate) in its build script; the build script reads Cargo/Android variables, runs `ninja --version`, no network. opus/ compared file by file with the official opus-1.6.1.tar.gz (downloads.xiph.org, SHA-256 6ffcb593...a1 = Xiph's SHA256SUMS.txt): 481 of 482 files identical, CMakeLists.txt = upstream + the crate's opus.patch (MSVC runtime selection, ENABLE_OSCE_BWE), checked by applying the patch. The DNN weight files are only compiled with the dred/osce features, which axross-amp does not enable. No binary, no YARA threat. No binary; checksum = crates.io's; published by DoumanAsh on 2026-11-04."
+   },
+   "scans": {
+    "capa": {},
+    "keys": [
+     "yara|capability_filesystem_read|opus/meson/read-sources-list.py|4bd4fa3e44fdf837",
+     "yara|capability_process_spawn|build.rs|35a189a2233d13bd",
+     "yara|capability_process_spawn|opus/meson/get-version.py|178701fcd416cd7d",
+     "yara|lolbas_net|opus/README|9bdf02594da8c33a"
+    ],
+    "yara": [
+     "capability_filesystem_read:capability_filesystem_read opus/meson/read-sources-list.py",
+     "capability_network_lolbas:lolbas_net opus/README",
+     "capability_process_spawn:capability_process_spawn build.rs",
+     "capability_process_spawn:capability_process_spawn opus/meson/get-version.py"
+    ]
+   },
+   "upstream": {
+    "date": "2026-11-17",
+    "differ": [
+     "CMakeLists.txt"
+    ],
+    "identical": 481,
+    "only_in_crate": [],
+    "only_upstream": 0,
+    "prefix": "opus/",
+    "sha256": "6ffcb593207be92584df15b32466ed64bbec99109f007c82205f0194572411a1",
+    "url": "https://downloads.xiph.org/releases/opus/opus-1.6.1.tar.gz"
+   },
+   "version": "0.7.7"
+  }
+ }
+}

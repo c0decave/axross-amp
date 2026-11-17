@@ -1,0 +1,45 @@
+{
+ "name": "dasp_sample",
+ "versions": {
+  "0.11.0": {
+   "accepted_findings": [],
+   "archive": {
+    "build_scripts": {},
+    "files": 9,
+    "links": "",
+    "manifest": "8fe0e8d9c2f8713c7adc2cee4db5684092fd1dfba4bb9b3716ae716782d8159c",
+    "native": {},
+    "native_profiles": {},
+    "native_sources": {},
+    "proc_macro": false,
+    "sha256": "0c87e182de0887fd5361989c677c4e8f5000cd9491d6d563161a8f3a5519fc7f",
+    "vcs": {
+     "git": {
+      "sha1": "97c3bb9b2363c0b46ac1633858bf1054fd02a980"
+     }
+    }
+   },
+   "crates_io": {
+    "checksum": "0c87e182de0887fd5361989c677c4e8f5000cd9491d6d563161a8f3a5519fc7f",
+    "crate_size": 11617,
+    "created_at": "2020-05-29T18:54:51.888981Z",
+    "description": "An abstraction for audio PCM DSP samples, along with useful conversions and operations.",
+    "license": "MIT OR Apache-2.0",
+    "published_by": "mitchmindtree",
+    "repository": "https://github.com/rustaudio/sample.git"
+   },
+   "name": "dasp_sample",
+   "reviewed": {
+    "by": "claude",
+    "date": "2026-11-17",
+    "note": "Nothing flagged: no build-time code. No binary; checksum = crates.io's; published by mitchmindtree on 2020-05-29."
+   },
+   "scans": {
+    "capa": {},
+    "keys": [],
+    "yara": []
+   },
+   "version": "0.11.0"
+  }
+ }
+}

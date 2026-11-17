@@ -1,0 +1,47 @@
+{
+ "name": "num-complex",
+ "versions": {
+  "0.4.6": {
+   "accepted_findings": [],
+   "archive": {
+    "build_scripts": {},
+    "files": 13,
+    "links": "",
+    "manifest": "219e030efa3598c48fa146151e0e9b12d8769da13b6baed445d3ff5ef9fa0c30",
+    "native": {},
+    "native_profiles": {},
+    "native_sources": {},
+    "proc_macro": false,
+    "sha256": "73f88a1307638156682bada9d7604135552957b7818057dcef22705b4d509495",
+    "vcs": {
+     "git": {
+      "sha1": "91fdc06356c0c868cb88b5a180859023c57e6e50"
+     },
+     "path_in_vcs": ""
+    }
+   },
+   "crates_io": {
+    "checksum": "73f88a1307638156682bada9d7604135552957b7818057dcef22705b4d509495",
+    "crate_size": 30352,
+    "created_at": "2024-05-07T23:51:24.022830Z",
+    "description": "Complex numbers implementation for Rust",
+    "license": "MIT OR Apache-2.0",
+    "published_by": "cuviper",
+    "repository": "https://github.com/rust-num/num-complex",
+    "rust_version": "1.60"
+   },
+   "name": "num-complex",
+   "reviewed": {
+    "by": "claude",
+    "date": "2026-11-17",
+    "note": "Nothing flagged: no build-time code. No binary; checksum = crates.io's; published by cuviper on 2024-05-07."
+   },
+   "scans": {
+    "capa": {},
+    "keys": [],
+    "yara": []
+   },
+   "version": "0.4.6"
+  }
+ }
+}

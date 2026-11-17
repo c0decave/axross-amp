@@ -1,0 +1,89 @@
+{
+ "name": "toml_datetime",
+ "versions": {
+  "1.1.2+spec-1.1.0": {
+   "accepted_findings": [],
+   "archive": {
+    "build_scripts": {},
+    "files": 11,
+    "links": "",
+    "manifest": "c42f687e68973b5ce988686e9b8c7935dd71da25c0d58dc5495c988a863bd278",
+    "native": {},
+    "native_profiles": {},
+    "native_sources": {},
+    "proc_macro": false,
+    "sha256": "2b86d767906c6c42421dcba507eb9d203e779497710a47782a224bb871653053",
+    "vcs": {
+     "git": {
+      "sha1": "f72038c2508112dfaaedb227a511f91bf9b2015c"
+     },
+     "path_in_vcs": "crates/toml_datetime"
+    }
+   },
+   "crates_io": {
+    "checksum": "2b86d767906c6c42421dcba507eb9d203e779497710a47782a224bb871653053",
+    "crate_size": 18204,
+    "created_at": "2026-10-08T00:54:03.238939Z",
+    "description": "A TOML-compatible datetime type",
+    "license": "MIT OR Apache-2.0",
+    "published_by": "epage",
+    "repository": "https://github.com/toml-rs/toml",
+    "rust_version": "1.85"
+   },
+   "name": "toml_datetime",
+   "reviewed": {
+    "by": "claude",
+    "date": "2026-11-17",
+    "note": "Nothing flagged: no build-time code. No binary; checksum = crates.io's; published by epage on 2026-10-08."
+   },
+   "scans": {
+    "capa": {},
+    "keys": [],
+    "yara": []
+   },
+   "version": "1.1.2+spec-1.1.0"
+  },
+  "1.1.3+spec-1.1.0": {
+   "accepted_findings": [],
+   "archive": {
+    "build_scripts": {},
+    "files": 11,
+    "links": "",
+    "manifest": "d3f6f9210299f57a657b8d45ae558dae8ca090a760b15d1e51220a20e3f9ee2b",
+    "native": {},
+    "native_profiles": {},
+    "native_sources": {},
+    "proc_macro": false,
+    "sha256": "173f25c883cd2176a2d8212155638c0a60d484a9d84546d270866f40f56b6e49",
+    "vcs": {
+     "git": {
+      "sha1": "563cb1a5d133e39d1008d4d4148ef35d3bba379f"
+     },
+     "path_in_vcs": "crates/toml_datetime"
+    }
+   },
+   "crates_io": {
+    "checksum": "173f25c883cd2176a2d8212155638c0a60d484a9d84546d270866f40f56b6e49",
+    "crate_size": 18227,
+    "created_at": "2026-11-06T13:52:00.591421Z",
+    "description": "A TOML-compatible datetime type",
+    "license": "MIT OR Apache-2.0",
+    "published_by": "epage",
+    "repository": "https://github.com/toml-rs/toml",
+    "rust_version": "1.85"
+   },
+   "name": "toml_datetime",
+   "reviewed": {
+    "by": "claude",
+    "date": "2026-11-17",
+    "note": "Nothing flagged: no build-time code. No binary; checksum = crates.io's; published by epage on 2026-11-06."
+   },
+   "scans": {
+    "capa": {},
+    "keys": [],
+    "yara": []
+   },
+   "version": "1.1.3+spec-1.1.0"
+  }
+ }
+}

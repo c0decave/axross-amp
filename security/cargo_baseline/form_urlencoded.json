@@ -1,0 +1,48 @@
+{
+ "name": "form_urlencoded",
+ "versions": {
+  "1.2.2": {
+   "accepted_findings": [],
+   "archive": {
+    "build_scripts": {},
+    "files": 7,
+    "links": "",
+    "manifest": "553e7ec1d9b601c5e9244cb7a918b3f2a3d56b72310990f552ae0dc2f2046d4f",
+    "native": {},
+    "native_profiles": {},
+    "native_sources": {},
+    "proc_macro": false,
+    "sha256": "cb4cb245038516f5f85277875cdaa4f7d2c9a0fa0468de06ed190163b1581fcf",
+    "vcs": {
+     "git": {
+      "dirty": true,
+      "sha1": "91377f48bf35011d042aa5abef9e7f2a0a625aaa"
+     },
+     "path_in_vcs": "form_urlencoded"
+    }
+   },
+   "crates_io": {
+    "checksum": "cb4cb245038516f5f85277875cdaa4f7d2c9a0fa0468de06ed190163b1581fcf",
+    "crate_size": 9347,
+    "created_at": "2025-08-21T08:47:43.939560Z",
+    "description": "Parser and serializer for the application/x-www-form-urlencoded syntax, as used by HTML forms.",
+    "license": "MIT OR Apache-2.0",
+    "published_by": "valenting",
+    "repository": "https://github.com/servo/rust-url",
+    "rust_version": "1.51"
+   },
+   "name": "form_urlencoded",
+   "reviewed": {
+    "by": "claude",
+    "date": "2026-11-17",
+    "note": "Nothing flagged: no build-time code. No binary; checksum = crates.io's; published by valenting on 2025-08-21."
+   },
+   "scans": {
+    "capa": {},
+    "keys": [],
+    "yara": []
+   },
+   "version": "1.2.2"
+  }
+ }
+}
