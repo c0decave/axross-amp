@@ -31,6 +31,9 @@ const SLOW_BUDGET_CORES: f64 = 0.6;
 const MIN_SLOW_FPS: f32 = 3.0;
 /// A calm face (the cover) needs few frames: its glow moves slowly.
 const CALM_FPS: f32 = 8.0;
+/// The least height the playlist keeps under the picture (three rows and
+/// its filter), whatever the window.
+const LEAST_LIST: f32 = 170.0;
 const POSITION_EVERY: Duration = Duration::from_secs(30);
 /// The equalizer is written this long after its last change (axross's 250 ms).
 const EQ_SETTLE: Duration = Duration::from_millis(250);
@@ -83,6 +86,11 @@ pub struct App {
     stats: Option<(PathBuf, u64, Instant)>,
     playlist_open: bool,
     big_visual: bool,
+    /// The playlist shown under the large picture too.
+    big_list: bool,
+    /// The height of what lies between the picture and the playlist (the
+    /// position, the transport, the switch), as last laid out.
+    controls_height: f32,
     /// The current track's waveform, read for the overview face: its
     /// path, what is read so far, the flag that stops the reading.
     overview: Option<(String, Arc<Mutex<viz::Overview>>, Arc<AtomicBool>)>,
@@ -441,6 +449,8 @@ impl App {
             stats: std::env::var_os("AMP_STATS").map(|p| (PathBuf::from(p), 0, Instant::now())),
             playlist_open: saved.playlist_open,
             big_visual: false,
+            big_list: false,
+            controls_height: 110.0,
             overview: None,
             pending_click: None,
             generation: 0,
@@ -1698,8 +1708,12 @@ impl App {
         if pressed(Key::F11) {
             self.set_fullscreen(ui.ctx(), !self.fullscreen);
         }
-        if pressed(Key::Escape) && self.fullscreen {
-            self.set_fullscreen(ui.ctx(), false);
+        if pressed(Key::Escape) {
+            if self.fullscreen {
+                self.set_fullscreen(ui.ctx(), false);
+            } else if self.big_visual {
+                self.big_visual = false;
+            }
         }
         if pressed(Key::M) {
             self.set_muted(!self.muted);
@@ -2749,10 +2763,17 @@ impl App {
                     .request_repaint_after(std::time::Duration::from_secs_f64(wait));
             }
         }
-        let response = response.on_hover_text(format!(
-            "{} - click: next face, double-click: larger, right click: options (V, F11)",
-            viz::name(self.mode)
-        ));
+        let response = response.on_hover_text(if self.big_visual {
+            format!(
+                "{} - click: next face, double-click or Esc: normal size, right click: options",
+                viz::name(self.mode)
+            )
+        } else {
+            format!(
+                "{} - click: next face, double-click (or F11): larger, right click: options",
+                viz::name(self.mode)
+            )
+        });
         response.context_menu(|ui| self.visual_menu(ui));
     }
 
@@ -3682,13 +3703,49 @@ impl eframe::App for App {
                 }
                 self.no_sound_banner(ui);
                 if self.big_visual {
-                    // the picture large, what plays above it
-                    self.title_line(ui);
-                    let h = ui.available_height() - 92.0;
-                    self.visual(ui, h.max(120.0));
+                    // the picture large, what plays above it - and in sight,
+                    // the way back and the playlist (under the picture when
+                    // asked for)
+                    ui.horizontal(|ui| {
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            if ui
+                                .button("Normal size")
+                                .on_hover_text("Esc, or a double-click on the picture")
+                                .clicked()
+                            {
+                                if self.fullscreen {
+                                    self.set_fullscreen(ui.ctx(), false);
+                                } else {
+                                    self.big_visual = false;
+                                }
+                            }
+                            let list = if self.big_list {
+                                "Hide the playlist"
+                            } else {
+                                "Show the playlist"
+                            };
+                            if ui.button(list).clicked() {
+                                self.big_list = !self.big_list;
+                            }
+                            ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                                self.title_line(ui)
+                            });
+                        });
+                    });
+                    let all = ui.available_height();
+                    let list = if self.big_list {
+                        (all * 0.38).max(LEAST_LIST)
+                    } else {
+                        0.0
+                    };
+                    self.visual(ui, (all - 92.0 - list).max(120.0));
                     ui.add_space(6.0);
                     self.position(ui);
                     self.transport(ui);
+                    if self.big_list {
+                        ui.add_space(4.0);
+                        self.playlist_view(ui);
+                    }
                     return;
                 }
                 if self.playlist.tracks.is_empty() && self.adding.is_empty() {
@@ -3705,24 +3762,33 @@ impl eframe::App for App {
                 }
                 // the picture large: what the controls and the playlist's
                 // rows leave (a short list leaves more), at least 45 % of it
+                // (what lies between the picture and the list, as tall as
+                // it was last laid out - not a guess)
                 let lower = self.playlist_open || self.eq_page;
-                let room = ui.available_height() - 100.0;
+                let room = ui.available_height() - self.controls_height;
                 let picture = if lower {
                     let list = if self.eq_page {
                         240.0
                     } else {
                         (self.visible_rows().len() as f32 * 44.0 + 76.0).max(130.0)
                     };
-                    (room - list).max(room * 0.45).clamp(80.0, 900.0)
+                    // the picture gives way first: the list keeps at least
+                    // three rows whatever the window
+                    (room - list)
+                        .max(room * 0.45)
+                        .min(room - LEAST_LIST)
+                        .clamp(80.0, 900.0)
                 } else {
                     (room - 36.0).max(80.0)
                 };
                 self.visual(ui, picture);
+                let top = ui.cursor().top();
                 ui.add_space(6.0);
                 self.position(ui);
                 self.transport(ui);
                 ui.add_space(6.0);
                 self.lower_switch(ui);
+                self.controls_height = ui.cursor().top() - top;
                 if self.eq_page {
                     self.equalizer_page(ui);
                 } else if self.playlist_open {
