@@ -75,8 +75,7 @@ pub struct App {
     /// The player on the desktop's bus (MPRIS), and its cover's file:// URL.
     #[cfg(target_os = "linux")]
     mpris: Option<crate::mpris::Mpris>,
-    #[cfg(target_os = "linux")]
-    covers: crate::mpris::Covers,
+
     art_url: String,
     /// The track playing came by itself (the one before ended): a track that
     /// cannot be played is then skipped; one the user chose stays, with why.
@@ -365,8 +364,7 @@ impl App {
             window_title: String::new(),
             #[cfg(target_os = "linux")]
             mpris: None,
-            #[cfg(target_os = "linux")]
-            covers: Default::default(),
+
             art_url: String::new(),
             automatic: false,
             duration: None,
@@ -784,14 +782,14 @@ impl App {
             }
             self.playlist.version += 1;
         }
-        self.cover = info
-            .cover
-            .as_deref()
-            .and_then(|bytes| cover_texture(ctx, bytes));
+        self.cover = info.art.as_deref().map(|art| cover_texture(ctx, art));
         self.art_url.clear();
         #[cfg(target_os = "linux")]
         if self.mpris.is_some() {
-            self.art_url = self.covers.show(info.cover.as_deref());
+            // (written by the writer thread: its file:// URL comes back)
+            self.saver.save(crate::saver::Job::Cover(
+                info.art.as_ref().map(|a| a.png.clone()),
+            ));
         }
         self.info = info;
         // what was said about opening it is over (a note about a track
@@ -1259,6 +1257,9 @@ impl App {
         }
         for (kept, version) in self.saver.adopted() {
             self.adopt(&kept, version);
+        }
+        if let Some(url) = self.saver.art_url() {
+            self.art_url = url;
         }
         let due = self.last_save.elapsed() >= SAVE_EVERY;
         // while playing, the position is kept every 30 s (as axross: a crash
@@ -2854,7 +2855,7 @@ impl eframe::App for App {
     fn on_exit(&mut self) {
         self.save(true);
         #[cfg(target_os = "linux")]
-        self.covers.show(None);
+        self.saver.save(crate::saver::Job::Cover(None));
     }
 }
 
@@ -2941,12 +2942,11 @@ pub fn clock(secs: f64) -> String {
     }
 }
 
-fn cover_texture(ctx: &egui::Context, bytes: &[u8]) -> Option<TextureHandle> {
-    let image = image::load_from_memory(bytes).ok()?;
-    let image = image.thumbnail(256, 256).to_rgba8();
-    let size = [image.width() as usize, image.height() as usize];
-    let colour = egui::ColorImage::from_rgba_unmultiplied(size, image.as_raw());
-    Some(ctx.load_texture("cover", colour, egui::TextureOptions::LINEAR))
+/// The cover (made small on the reading thread) as a texture: an upload.
+fn cover_texture(ctx: &egui::Context, art: &crate::engine::Art) -> TextureHandle {
+    let size = [art.width as usize, art.height as usize];
+    let colour = egui::ColorImage::from_rgba_unmultiplied(size, &art.rgba);
+    ctx.load_texture("cover", colour, egui::TextureOptions::LINEAR)
 }
 
 /// The look: dark, rounded, one blue accent.

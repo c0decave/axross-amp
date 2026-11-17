@@ -453,9 +453,29 @@ fn real_sound_from_every_format_with_eq_volume_seek_streams_and_errors() {
     let covered = home.join("covered.mp3");
     with_cover(&corpus.join("tone.mp3"), &png, &covered);
     let played = play(covered.to_str().unwrap(), 0, |_| {});
-    let cover = played.info.and_then(|i| i.cover);
-    report.push(format!("cover: {:?} bytes", cover.as_ref().map(Vec::len)));
-    assert_eq!(cover.as_deref(), Some(png.as_slice()));
+    let art = played.info.and_then(|i| i.art);
+    report.push(format!(
+        "cover: {:?}",
+        art.as_ref().map(|a| (a.width, a.height))
+    ));
+    let art = art.expect("a cover");
+    assert_eq!(&art.rgba[..3], &[200, 30, 60], "the cover's colour");
+    // a large cover: made small on the reading thread, the large one not
+    // handed to the window
+    let mut big = image::RgbImage::new(2000, 1500);
+    for p in big.pixels_mut() {
+        *p = image::Rgb([10, 120, 240]);
+    }
+    let mut big_png = Vec::new();
+    image::DynamicImage::ImageRgb8(big)
+        .write_to(&mut std::io::Cursor::new(&mut big_png), image::ImageFormat::Png)
+        .unwrap();
+    with_cover(&corpus.join("tone.mp3"), &big_png, &covered);
+    let info = play(covered.to_str().unwrap(), 0, |_| {}).info.unwrap();
+    assert!(info.cover.is_none(), "the large cover reached the window");
+    let art = info.art.unwrap();
+    assert_eq!((art.width, art.height), (256, 192));
+    assert!(art.png.starts_with(b"\x89PNG"));
 
     // ReplayGain: a track gain of -6 dB, the track mode on: half the level
     let txxx = |key: &str, value: &str| {

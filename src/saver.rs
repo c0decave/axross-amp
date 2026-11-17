@@ -20,6 +20,9 @@ pub enum Job {
     Amp(AmpSettings),
     /// The output device chosen (`amp_output` in audio.json).
     Output(String),
+    /// The cover shown to the desktop (a PNG; None: none) - written where
+    /// MPRIS points to it (Linux).
+    Cover(Option<Vec<u8>>),
 }
 
 enum Message {
@@ -33,6 +36,7 @@ pub struct Saver {
     errors: Receiver<String>,
     writes: Arc<AtomicUsize>,
     adopted: Receiver<(Map<String, Value>, u64)>,
+    art: Receiver<String>,
 }
 
 /// The newest of each kind, waiting to be written.
@@ -42,6 +46,7 @@ struct Pending {
     eq: Option<EqSettings>,
     amp: Option<AmpSettings>,
     output: Option<String>,
+    cover: Option<Option<Vec<u8>>>,
 }
 
 impl Saver {
@@ -51,12 +56,15 @@ impl Saver {
         let (tx, rx) = crossbeam_channel::unbounded::<Message>();
         let (etx, errors) = crossbeam_channel::unbounded();
         let (atx, adopted) = crossbeam_channel::unbounded();
+        let (art_tx, art) = crossbeam_channel::unbounded();
         let writes = Arc::new(AtomicUsize::new(0));
         let w = writes.clone();
         let _ = std::thread::Builder::new()
             .name("amp-saver".into())
             .spawn(move || {
                 let mut base = Some(base);
+                #[cfg(target_os = "linux")]
+                let mut covers = crate::mpris::Covers::default();
                 while let Ok(first) = rx.recv() {
                     let mut pending = Pending::default();
                     let mut flushes = Vec::new();
@@ -67,6 +75,7 @@ impl Saver {
                                 Job::Eq(e) => pending.eq = Some(e),
                                 Job::Amp(a) => pending.amp = Some(a),
                                 Job::Output(o) => pending.output = Some(o),
+                                Job::Cover(c) => pending.cover = Some(c),
                             },
                             Message::Flush(ack) => flushes.push(ack),
                         }
@@ -104,6 +113,12 @@ impl Saver {
                             fail("the settings", err);
                         }
                     }
+                    if let Some(cover) = pending.cover {
+                        #[cfg(target_os = "linux")]
+                        let _ = art_tx.send(covers.show(cover.as_deref()));
+                        #[cfg(not(target_os = "linux"))]
+                        let _ = (cover, &art_tx);
+                    }
                     for ack in flushes {
                         let _ = ack.send(());
                     }
@@ -114,6 +129,7 @@ impl Saver {
             errors,
             writes,
             adopted,
+            art,
         }
     }
 
@@ -138,6 +154,11 @@ impl Saver {
     /// values), with the playlist's version the state was taken at.
     pub fn adopted(&self) -> Vec<(Map<String, Value>, u64)> {
         self.adopted.try_iter().collect()
+    }
+
+    /// The cover's file:// URL, when it changed ("" none).
+    pub fn art_url(&self) -> Option<String> {
+        self.art.try_iter().last()
     }
 
     /// Files written so far (tests).

@@ -196,7 +196,11 @@ pub struct TrackInfo {
     pub disc_number: Option<u64>,
     /// Every text tag as the file has it: (key, value) - the track's details.
     pub tags: Vec<(String, String)>,
+    /// The cover as the file has it (read where it is played: made into
+    /// `art` there and let go - a picture of 16 MB never reaches the window).
     pub cover: Option<Vec<u8>>,
+    /// The cover made small (at most 256 px), on the reading thread.
+    pub art: Option<Arc<Art>>,
     pub seekable: bool,
     pub rate: u32,
     pub channels: usize,
@@ -242,6 +246,36 @@ pub enum Event {
     },
     /// The output device in use (or why there is no sound).
     Output(String),
+}
+
+/// A cover made small for showing: its pixels (RGBA) and as a PNG (for the
+/// desktop's MPRIS).
+#[derive(Debug, PartialEq)]
+pub struct Art {
+    pub width: u32,
+    pub height: u32,
+    pub rgba: Vec<u8>,
+    pub png: Vec<u8>,
+}
+
+/// The cover of `info` made small, the large one let go.
+fn make_art(info: &mut TrackInfo) {
+    let Some(bytes) = info.cover.take() else {
+        return;
+    };
+    let Ok(image) = image::load_from_memory(&bytes) else {
+        return;
+    };
+    let small = image.thumbnail(256, 256).to_rgba8();
+    let mut png = Vec::new();
+    let encoded = image::DynamicImage::ImageRgba8(small.clone())
+        .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png);
+    info.art = Some(Arc::new(Art {
+        width: small.width(),
+        height: small.height(),
+        rgba: small.into_raw(),
+        png: if encoded.is_ok() { png } else { Vec::new() },
+    }));
 }
 
 /// What the UI reads while the engine runs. Nothing in it is locked: the
@@ -1683,6 +1717,7 @@ fn produce(
                     Ok((mut decoding, mut info)) => {
                         info.station = answer.station.clone();
                         info.station_genre = answer.genre.clone();
+                        make_art(&mut info);
                         let duration = info.duration;
                         if loaded {
                             send(Event::Notice {
@@ -1890,7 +1925,7 @@ fn read_file(
     queued: Arc<AtomicUsize>,
     stop: Arc<AtomicBool>,
 ) {
-    let (mut d, info) = match open(&path, 48_000, generation, loudness) {
+    let (mut d, mut info) = match open(&path, 48_000, generation, loudness) {
         Ok(opened) => opened,
         Err(why) => {
             let _ = tx.send(Feed::Failed(why));
@@ -1898,6 +1933,7 @@ fn read_file(
         }
     };
     d.resample = false;
+    make_art(&mut info);
     let landed_ms = if start_ms > 0 {
         d.seek(start_ms as f64 / 1000.0).unwrap_or(0)
     } else {
