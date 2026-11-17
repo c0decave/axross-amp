@@ -123,13 +123,29 @@ impl GainMode {
     }
 }
 
-/// ReplayGain's settings: the mode and a pre-amplification (dB) for the
-/// tracks that have a gain.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+/// ReplayGain's settings: the mode, a pre-amplification (dB) for the
+/// tracks that have a gain, and the gain of those that have none (an
+/// untagged track of today is mastered louder than ReplayGain's level).
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Loudness {
     pub mode: GainMode,
     pub preamp_db: f32,
+    pub untagged_db: f32,
 }
+
+impl Default for Loudness {
+    fn default() -> Self {
+        Loudness {
+            mode: GainMode::Off,
+            preamp_db: 0.0,
+            untagged_db: DEFAULT_UNTAGGED_DB,
+        }
+    }
+}
+
+/// The gain of a track without ReplayGain tags while ReplayGain is on: about
+/// how much louder than its 89 dB level a track mastered today is.
+pub const DEFAULT_UNTAGGED_DB: f32 = -6.0;
 
 impl Loudness {
     /// The factor for a track with these tags: the gain chosen (the other
@@ -148,7 +164,7 @@ impl Loudness {
             ),
         };
         let Some(gain) = gain else {
-            return 1.0;
+            return 10f32.powf(self.untagged_db.clamp(-15.0, 15.0) / 20.0);
         };
         let mut factor = 10f32.powf((gain + self.preamp_db.clamp(-15.0, 15.0)) / 20.0);
         if let Some(peak) = peak.filter(|p| *p > 0.0) {
@@ -237,6 +253,9 @@ pub struct Shared {
     pub tap: Tap,
     /// The output reported that it is gone (the decoder thread opens it anew).
     lost: AtomicBool,
+    /// Frames read from the ring that are not heard yet: the output's
+    /// latency (what the device says) and the buffer it was handed.
+    latency: AtomicU64,
 }
 
 /// The fades that keep pause, seek, stop and a new track from clicking.
@@ -278,7 +297,32 @@ impl Shared {
             device_rate: AtomicU32::new(48_000),
             tap: Tap::new(TAP_FRAMES),
             lost: AtomicBool::new(false),
+            latency: AtomicU64::new(0),
         }
+    }
+
+    /// The output's latency, in frames read but not yet heard (the output
+    /// callback says it; tests too).
+    pub fn set_latency(&self, frames: u64) {
+        self.latency.store(frames, Ordering::Relaxed);
+    }
+
+    /// The frames heard so far (read from the ring, less those still on
+    /// their way to the speakers).
+    fn heard(&self) -> u64 {
+        self.ring
+            .read()
+            .saturating_sub(self.latency.load(Ordering::Relaxed))
+    }
+
+    /// The latest frames heard (the visualizations: in step with the sound,
+    /// not ahead of it by the output's latency).
+    pub fn tap_into(&self, out: &mut Vec<f32>) {
+        let delay = self
+            .latency
+            .load(Ordering::Relaxed)
+            .min(TAP_FRAMES as u64 / 2);
+        self.tap.read_delayed(out, delay);
     }
 
     /// As when the output reports that its device is gone (tests).
@@ -291,8 +335,7 @@ impl Shared {
     pub fn position(&self) -> f64 {
         let rate = self.device_rate.load(Ordering::Relaxed).max(1) as f64;
         let frames = self
-            .ring
-            .read()
+            .heard()
             .saturating_sub(self.origin.load(Ordering::Relaxed));
         self.base_ms.load(Ordering::Relaxed) as f64 / 1000.0 + frames as f64 / rate
     }
@@ -543,7 +586,14 @@ where
     device
         .build_output_stream(
             config,
-            move |data: &mut [T], _: &cpal::OutputCallbackInfo| {
+            move |data: &mut [T], info: &cpal::OutputCallbackInfo| {
+                // what is written now is heard this much later, the buffer's
+                // length on top: the position and the pictures wait for it
+                let ts = info.timestamp();
+                let ahead = ts.playback.duration_since(ts.callback).as_secs_f64();
+                let rate = shared.device_rate.load(Ordering::Relaxed) as f64;
+                let frames = (ahead * rate) as u64 + (data.len() / channels) as u64;
+                shared.set_latency(frames.min(rate as u64)); // (a second at most: sanity)
                 for chunk in data.chunks_mut(piece) {
                     let mixed = &mut mixed[..chunk.len()];
                     shared.render(mixed, channels, &mut state);
@@ -1008,6 +1058,31 @@ fn tag_text(tags: &[symphonia::core::meta::Tag], info: &mut TrackInfo) {
     }
 }
 
+/// A codec as people call it ("pcm_s16le": "PCM 16-bit").
+pub fn codec_name(short: &str) -> String {
+    let lower = short.to_ascii_lowercase();
+    if let Some(rest) = lower.strip_prefix("pcm_") {
+        // pcm_s16le, pcm_f32be, pcm_u8, pcm_alaw ...
+        let bits: String = rest.chars().filter(char::is_ascii_digit).collect();
+        return match (rest.starts_with('f'), bits.is_empty()) {
+            (_, true) => format!("PCM ({})", rest.to_ascii_uppercase()),
+            (true, false) => format!("PCM {bits}-bit float"),
+            (false, false) => format!("PCM {bits}-bit"),
+        };
+    }
+    match lower.as_str() {
+        "" => "audio".into(),
+        "mp3" | "mp2" | "mp1" => lower.to_ascii_uppercase(),
+        "flac" => "FLAC".into(),
+        "vorbis" => "Vorbis".into(),
+        "opus" => "Opus".into(),
+        "aac" => "AAC".into(),
+        "alac" => "ALAC (Apple Lossless)".into(),
+        "adpcm_ima_wav" | "adpcm_ms" => "ADPCM".into(),
+        other => other.to_ascii_uppercase(),
+    }
+}
+
 /// A local file as a media source.
 fn open_file(path: &str) -> Result<(MediaSourceStream<'static>, Hint), String> {
     let meta = std::fs::metadata(path).map_err(|e| {
@@ -1019,6 +1094,9 @@ fn open_file(path: &str) -> Result<(MediaSourceStream<'static>, Hint), String> {
     })?;
     if !meta.is_file() {
         return Err("not a file".into());
+    }
+    if meta.len() == 0 {
+        return Err("the file is empty".into());
     }
     let file = File::open(path).map_err(|e| e.to_string())?;
     Ok((
@@ -1070,10 +1148,12 @@ fn open_media(
         channels: params.channels.as_ref().map(|c| c.count()).unwrap_or(2),
         bits: params.bits_per_sample,
         seekable,
-        codec: codecs()
-            .get_audio_decoder(params.codec)
-            .map(|d| d.codec.info.short_name.to_uppercase())
-            .unwrap_or_else(|| "audio".into()),
+        codec: codec_name(
+            codecs()
+                .get_audio_decoder(params.codec)
+                .map(|d| d.codec.info.short_name)
+                .unwrap_or(""),
+        ),
         ..Default::default()
     };
     if let (Some(tb), Some(frames)) = (track.time_base, track.num_frames)
@@ -1920,7 +2000,7 @@ impl Player {
     /// The queued track heard now: its position begins.
     fn check_boundary(&mut self) {
         let boundary = self.shared.boundary.load(Ordering::Relaxed);
-        if boundary == u64::MAX || self.shared.ring.read() < boundary {
+        if boundary == u64::MAX || self.shared.heard() < boundary {
             return;
         }
         self.shared.origin.store(boundary, Ordering::Relaxed);
@@ -2332,6 +2412,28 @@ mod tests {
     }
 
     #[test]
+    fn the_position_and_the_pictures_wait_for_the_output() {
+        let shared = Shared::new();
+        shared.playing.store(true, Ordering::Relaxed);
+        let samples: Vec<f32> = (0..9600).flat_map(|i| [i as f32, 0.0]).collect();
+        shared.push(&samples);
+        let mut state = RenderState::default();
+        let mut out = vec![0.0f32; 4800 * 2];
+        shared.render(&mut out, 2, &mut state);
+        assert!((shared.position() - 0.1).abs() < 1e-9);
+        // 50 ms on their way to the speakers
+        shared.set_latency(2400);
+        assert!((shared.position() - 0.05).abs() < 1e-9);
+        let mut tap = Vec::new();
+        shared.tap_into(&mut tap);
+        assert_eq!(
+            tap[tap.len() - 2],
+            2399.0,
+            "the frame heard now, not the last read"
+        );
+    }
+
+    #[test]
     fn one_output_channel_hears_both_sides() {
         let shared = Shared::new();
         shared.playing.store(true, Ordering::Relaxed);
@@ -2367,20 +2469,29 @@ mod tests {
         let track = Loudness {
             mode: GainMode::Track,
             preamp_db: 0.0,
+            ..Default::default()
         };
         assert!((db(track.factor(&info)) + 6.0).abs() < 0.01);
         let album = Loudness {
             mode: GainMode::Album,
             preamp_db: 0.0,
+            ..Default::default()
         };
         assert!((db(album.factor(&info)) + 3.0).abs() < 0.01);
         // +9 dB in all would take a 0.5 peak past full scale: held at 2
         let loud = Loudness {
             mode: GainMode::Track,
             preamp_db: 15.0,
+            ..Default::default()
         };
         assert!((loud.factor(&info) - 2.0).abs() < 1e-4);
-        assert_eq!(track.factor(&TrackInfo::default()), 1.0);
+        // a track without tags: the gain for those (by default -6 dB)
+        let untagged = track.factor(&TrackInfo::default());
+        assert!(
+            (db(untagged) - DEFAULT_UNTAGGED_DB).abs() < 0.01,
+            "{}",
+            db(untagged)
+        );
         assert_eq!(gain_value("-6.54 dB"), Some(-6.54));
         assert_eq!(gain_value("+1.2dB"), Some(1.2));
         assert_eq!(gain_value("0.988"), Some(0.988));
@@ -2407,6 +2518,17 @@ mod tests {
                 .as_deref(),
             Some("no such file")
         );
+        assert_eq!(info.codec, "PCM 16-bit");
+        let empty = path.with_extension("mp3");
+        std::fs::write(&empty, b"").unwrap();
+        assert_eq!(
+            open(empty.to_str().unwrap(), 44_100, 3, Loudness::default())
+                .err()
+                .as_deref(),
+            Some("the file is empty")
+        );
+        assert_eq!(codec_name("pcm_f32le"), "PCM 32-bit float");
+        assert_eq!(codec_name("vorbis"), "Vorbis");
     }
 
     pub fn write_wav(path: &Path, rate: u32, channels: u16, frames: u32) {

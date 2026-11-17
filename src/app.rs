@@ -892,6 +892,11 @@ impl App {
                 ui.radio_value(&mut amp.replay_gain, key.to_owned(), name);
             }
             ui.add(
+                egui::Slider::new(&mut amp.untagged_db, -15.0..=0.0)
+                    .step_by(0.5)
+                    .text("Without tags dB"),
+            );
+            ui.add(
                 egui::Slider::new(&mut amp.preamp_db, -15.0..=15.0)
                     .step_by(0.5)
                     .text("Pre-amp dB"),
@@ -1958,7 +1963,7 @@ impl App {
         let scheme = viz::scheme(&self.scheme_key, &self.custom_colours);
         let dt = self.last_frame.elapsed().as_secs_f32().clamp(0.0, 0.2);
         self.last_frame = Instant::now();
-        self.engine.shared.tap.read_into(&mut self.tap);
+        self.engine.shared.tap_into(&mut self.tap);
         let rate = self
             .engine
             .shared
@@ -2125,8 +2130,17 @@ impl App {
                     }))
                     .selected(shuffle),
                 )
-                .accessible_name("Shuffle")
-                .on_hover_text("Shuffle")
+                // (the state in words: not by its colour only)
+                .accessible_name(if shuffle {
+                    "Shuffle: on"
+                } else {
+                    "Shuffle: off"
+                })
+                .on_hover_text(if shuffle {
+                    "Shuffle: on"
+                } else {
+                    "Shuffle: off"
+                })
                 .clicked()
             {
                 self.playlist.set_shuffle(!shuffle);
@@ -2147,7 +2161,7 @@ impl App {
                     }))
                     .selected(on),
                 )
-                .accessible_name("Repeat")
+                .accessible_name(tip)
                 .on_hover_text(tip)
                 .clicked()
             {
@@ -2844,6 +2858,7 @@ fn loudness(amp: &state::AmpSettings) -> crate::engine::Loudness {
     crate::engine::Loudness {
         mode: crate::engine::GainMode::from_key(&amp.replay_gain),
         preamp_db: amp.preamp_db,
+        untagged_db: amp.untagged_db,
     }
 }
 

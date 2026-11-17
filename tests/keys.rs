@@ -60,7 +60,7 @@ fn space_on_a_focused_button_presses_only_the_button() {
     let mut h = harness(&dir, files);
     assert!(until(&mut h, 5.0, |a| a.is_loaded() && a.playing()));
     // the Shuffle button gets the keyboard's focus, Space presses it
-    h.get_by_label("Shuffle").focus();
+    h.get_by_label_contains("Shuffle").focus();
     settle(&mut h, 1);
     h.key_press(Key::Space);
     settle(&mut h, 3);

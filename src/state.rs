@@ -153,6 +153,8 @@ pub struct AmpSettings {
     /// ReplayGain: "off", "track" or "album", and the pre-amplification (dB).
     pub replay_gain: String,
     pub preamp_db: f32,
+    /// The gain of a track without ReplayGain tags (dB).
+    pub untagged_db: f32,
 }
 
 impl Default for AmpSettings {
@@ -161,6 +163,7 @@ impl Default for AmpSettings {
             window: None,
             replay_gain: "off".into(),
             preamp_db: 0.0,
+            untagged_db: crate::engine::DEFAULT_UNTAGGED_DB,
         }
     }
 }
@@ -187,6 +190,13 @@ pub fn read_amp(path: &Path) -> AmpSettings {
     {
         settings.preamp_db = db.clamp(-15.0, 15.0) as f32;
     }
+    if let Some(db) = map
+        .get("untagged_db")
+        .and_then(Value::as_f64)
+        .filter(|d| d.is_finite())
+    {
+        settings.untagged_db = db.clamp(-15.0, 15.0) as f32;
+    }
     settings
 }
 
@@ -200,6 +210,10 @@ pub fn write_amp(path: &Path, settings: &AmpSettings) -> std::io::Result<()> {
     map.insert(
         "preamp_db".into(),
         json!((settings.preamp_db as f64 * 10.0).round() / 10.0),
+    );
+    map.insert(
+        "untagged_db".into(),
+        json!((settings.untagged_db as f64 * 10.0).round() / 10.0),
     );
     write_object(path, &map)
 }
@@ -670,6 +684,7 @@ mod tests {
             window: Some([700.4, 900.0]),
             replay_gain: "album".into(),
             preamp_db: 99.0,
+            untagged_db: -8.0,
         };
         write_amp(&path, &settings).unwrap();
         let back = read_amp(&path);

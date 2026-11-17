@@ -479,6 +479,7 @@ fn real_sound_from_every_format_with_eq_volume_seek_streams_and_errors() {
         e.send(Command::Loudness(axross_amp::engine::Loudness {
             mode: axross_amp::engine::GainMode::Track,
             preamp_db: 0.0,
+            ..Default::default()
         }))
     });
     let info = played.info.unwrap();

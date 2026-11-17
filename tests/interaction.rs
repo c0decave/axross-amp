@@ -98,14 +98,17 @@ fn buttons_keys_equalizer_playlist_url_and_dropped_files() {
     harness.get_by_label("Previous").click();
     settle(&mut harness, 3);
     assert_eq!(harness.state().snapshot().current, 0);
-    harness.get_by_label("Shuffle").click();
+    harness.get_by_label_contains("Shuffle").click();
     settle(&mut harness, 2);
     assert!(harness.state().snapshot().shuffle);
-    for want in ["all", "one", "off"] {
-        harness.get_by_label("Repeat").click();
+    for (want, said) in [("all", "all"), ("one", "this track"), ("off", "off")] {
+        harness.get_by_label_contains("Repeat").click();
         settle(&mut harness, 2);
         assert_eq!(harness.state().snapshot().repeat, want);
+        // a screen reader hears the state, not only a colour
+        assert!(harness.query_by_label(&format!("Repeat: {said}")).is_some());
     }
+    assert!(harness.query_by_label("Shuffle: on").is_some());
 
     // keys: volume up / down, mute, next visualization
     let volume = harness.state().snapshot().volume;
@@ -191,7 +194,7 @@ fn buttons_keys_equalizer_playlist_url_and_dropped_files() {
     );
 
     // the playlist: Delete removes the selected track
-    harness.get_by_label("Shuffle").click(); // (off again: Next is the next one)
+    harness.get_by_label_contains("Shuffle").click(); // (off again: Next is the next one)
     settle(&mut harness, 2);
     assert!(!harness.state().snapshot().shuffle);
     harness.get_by_label("Next").click(); // (selects and plays b)

@@ -198,6 +198,18 @@ impl Tap {
         }
     }
 
+    /// As [`Tap::read_into`], the newest `delay` frames left out.
+    pub fn read_delayed(&self, out: &mut Vec<f32>, delay: u64) {
+        out.clear();
+        let n = self.written.load(Ordering::Acquire).saturating_sub(delay);
+        let count = n.min(self.frames as u64 - delay.min(self.frames as u64));
+        for k in (n - count)..n {
+            let at = (k % self.frames as u64) as usize * 2;
+            out.push(f32::from_bits(self.buf[at].load(Ordering::Relaxed)));
+            out.push(f32::from_bits(self.buf[at + 1].load(Ordering::Relaxed)));
+        }
+    }
+
     /// Forget what was played (nothing to show).
     pub fn clear(&self) {
         // (the frames stay; the count says none was played)
