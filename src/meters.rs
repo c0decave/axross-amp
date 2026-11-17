@@ -213,7 +213,13 @@ fn run(shared: &Shared, readings: &Mutex<Readings>, track: &AtomicU64, stop: &At
         if since_notes >= NOTES_EVERY * rate as u64 / 48_000 {
             since_notes = 0;
             mono.clear();
-            mono.extend(stereo.as_chunks::<2>().0.iter().map(|f| (f[0] + f[1]) * 0.5));
+            mono.extend(
+                stereo
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
+                    .map(|f| (f[0] + f[1]) * 0.5),
+            );
             notes.update(&mono, rate);
             key = key_of(&notes.track_chroma);
         }

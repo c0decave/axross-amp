@@ -592,6 +592,54 @@ impl Pen<'_> {
         }
     }
 
+    /// The area between the line in `self.points` and `base` (y, below it),
+    /// coloured by height alone: `colour(y)` at every vertex, the area cut
+    /// at the heights `levels` (so the colour between two of them is a
+    /// straight blend, the same across the picture: no column stands out).
+    pub fn fill_by_height(&mut self, base: f32, levels: &[f32], colour: impl Fn(f32) -> Color32) {
+        let top = self
+            .points
+            .iter()
+            .map(|p| p.y)
+            .fold(f32::INFINITY, f32::min);
+        // the slabs between the heights, from the top of the line to the base
+        let mut cuts = [0.0f32; 34];
+        let mut n = 0;
+        cuts[n] = top;
+        n += 1;
+        for l in levels {
+            if *l > top && *l < base && n < cuts.len() - 1 {
+                cuts[n] = *l;
+                n += 1;
+            }
+        }
+        cuts[n] = base;
+        n += 1;
+        cuts[..n].sort_unstable_by(f32::total_cmp);
+        for w in 1..self.points.len() {
+            let (p, q) = (self.points[w - 1], self.points[w]);
+            let strip = [p, q, pos2(q.x, base), pos2(p.x, base)];
+            for k in 1..n {
+                let (ya, yb) = (cuts[k - 1], cuts[k]);
+                if yb - ya < 1e-4 {
+                    continue;
+                }
+                let mut poly = [Pos2::ZERO; 8];
+                let count = clip_band(&strip, ya, yb, &mut poly);
+                if count < 3 {
+                    continue;
+                }
+                let i0 = self.mesh.vertices.len() as u32;
+                for v in &poly[..count] {
+                    self.mesh.colored_vertex(*v, colour(v.y));
+                }
+                for t in 1..count as u32 - 1 {
+                    self.mesh.add_triangle(i0, i0 + t, i0 + t + 1);
+                }
+            }
+        }
+    }
+
     /// A quad of four corners and their colours.
     pub fn quad(&mut self, p: [Pos2; 4], c: [Color32; 4]) {
         let i = self.mesh.vertices.len() as u32;
@@ -609,6 +657,36 @@ impl Pen<'_> {
         }
         self.mesh.add_triangle(i, i + 1, i + 2);
     }
+}
+
+/// The part of the convex `shape` between the heights `ya` and `yb` (ya
+/// above): its corners into `out`, how many.
+fn clip_band(shape: &[Pos2; 4], ya: f32, yb: f32, out: &mut [Pos2; 8]) -> usize {
+    let mut a = [Pos2::ZERO; 8];
+    let mut n = 0;
+    // (Sutherland-Hodgman: below ya, then above yb)
+    let clip = |input: &[Pos2], keep: &dyn Fn(Pos2) -> bool, edge: f32, out: &mut [Pos2; 8]| {
+        let mut m = 0;
+        for i in 0..input.len() {
+            let (cur, prev) = (input[i], input[(i + input.len() - 1) % input.len()]);
+            let (cin, pin) = (keep(cur), keep(prev));
+            if cin != pin && m < 8 {
+                let t = (edge - prev.y) / (cur.y - prev.y);
+                out[m] = pos2(prev.x + (cur.x - prev.x) * t, edge);
+                m += 1;
+            }
+            if cin && m < 8 {
+                out[m] = cur;
+                m += 1;
+            }
+        }
+        m
+    };
+    n += clip(shape, &|p: Pos2| p.y >= ya, ya, &mut a);
+    if n < 3 {
+        return 0;
+    }
+    clip(&a[..n], &|p: Pos2| p.y <= yb, yb, out)
 }
 
 /// What a face keeps between frames.

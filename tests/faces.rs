@@ -207,3 +207,70 @@ fn what_the_shader_faces_cost_the_gpu() {
         println!("{line}");
     }
 }
+
+#[test]
+fn the_analyzer_curve_is_filled_by_height_without_streaks() {
+    // each column coloured by its own height showed as vertical streaks:
+    // along a row of the filled area the colour must hardly change
+    let mut h = faces::harness("analyzer", vec2(620.0, 300.0), true, 3.0);
+    for _ in 0..60 {
+        faces::frame(&mut h);
+    }
+    let image = h.render().unwrap();
+    // the plot's own ground (above the curve, under the labels)
+    let ground = {
+        // (the commonest colour of a row high in the plot)
+        let mut counts = std::collections::HashMap::new();
+        for x in 60..590u32 {
+            *counts.entry(image.get_pixel(x, 50).0).or_insert(0) += 1;
+        }
+        image::Rgba(counts.into_iter().max_by_key(|(_, n)| *n).unwrap().0)
+    };
+    let near = |a: &image::Rgba<u8>, b: &image::Rgba<u8>| {
+        (0..3)
+            .map(|c| (a[c] as i32 - b[c] as i32).abs())
+            .sum::<i32>()
+            < 12
+    };
+    // where the curve is in each column (the first pixel from the top that
+    // is not the ground), and the plot's bottom
+    let tops: Vec<u32> = (0..image.width())
+        .map(|x| {
+            // (a grid line is one pixel with the ground under it: the fill goes on)
+            // (from under the readout in the top corner)
+            (48..276u32)
+                .find(|y| (0..4).all(|d| !near(image.get_pixel(x, y + d), &ground)))
+                .unwrap_or(280)
+        })
+        .collect();
+    // every row of the plot well under the curve: the colour is the
+    // row's (by height alone) but where a line of the curve crosses
+    let (mut off, mut all) = (0usize, 0usize);
+    for y in 48..276u32 {
+        let row: Vec<image::Rgba<u8>> = (60..590u32)
+            .filter(|x| y >= tops[*x as usize] + 12)
+            .map(|x| *image.get_pixel(x, y))
+            .collect();
+        if row.len() < 20 {
+            continue;
+        }
+        let median = |c: usize| {
+            let mut v: Vec<u8> = row.iter().map(|p| p[c]).collect();
+            v.sort_unstable();
+            v[v.len() / 2] as i32
+        };
+        let m = [median(0), median(1), median(2)];
+        all += row.len();
+        off += row
+            .iter()
+            .filter(|p| (0..3).map(|c| (p[c] as i32 - m[c]).abs()).sum::<i32>() > 8)
+            .count();
+    }
+    let share = off as f32 / all.max(1) as f32;
+    assert!(all > 10_000, "too little under the curve: {all}");
+    assert!(
+        share < 0.15,
+        "{:.1} % of the fill off its row's colour",
+        share * 100.0
+    );
+}

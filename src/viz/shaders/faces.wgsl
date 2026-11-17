@@ -178,7 +178,8 @@ fn tunnel(p: vec2<f32>) -> vec3<f32> {
     let turn = a / TAU + 0.15 * sin(depth * 0.7 + u.m.x);
     let rings = 0.5 + 0.5 * sin(depth * 6.0);
     let stripes = 0.5 + 0.5 * sin(turn * TAU * 8.0 + depth);
-    let level = band(fract(turn + 1.0));
+    // (folded round the circle: no seam where the angle wraps)
+    let level = band(abs(2.0 * fract(turn) - 1.0));
     let light = rings * stripes * (0.4 + 0.8 * level) + 0.25 * u.t.y * rings;
     let fog = clamp(r * 2.2, 0.0, 1.0);
     return mix(colour(0), cycle(depth * 0.05 + level * 0.3) * (0.3 + light), fog) + colour(4) * pow(rings * stripes, 8.0) * fog * 0.5;

@@ -343,20 +343,20 @@ fn badge(p: &Painter, at: Pos2, align: Align2, text: &str, s: &Scheme) {
 
 /// The area under `pen.points`, quiet at `quiet_y`, loud at `loud_y`.
 fn under_gradient(pen: &mut Pen<'_>, s: &Scheme, base: f32, quiet_y: f32, loud_y: f32) {
+    // coloured by height alone (each column by its own height showed as
+    // streaks), cut every 24th of the height
     let t = |y: f32| ((y - quiet_y) / (loud_y - quiet_y)).clamp(0.0, 1.0);
-    let fade = |c: Color32, k: f32| mix(s.background, c, k);
-    for w in 1..pen.points.len() {
-        let (a, b) = (pen.points[w - 1], pen.points[w]);
-        pen.quad(
-            [pos2(a.x, base), pos2(b.x, base), b, a],
-            [
-                fade(s.low, 0.25),
-                fade(s.low, 0.25),
-                fade(s.at(t(b.y)), 0.8),
-                fade(s.at(t(a.y)), 0.8),
-            ],
-        );
+    // (fine enough that the blend between two is the colour itself, and
+    // one at the gradient's middle stop)
+    let mut levels = [0.0f32; 26];
+    for (k, l) in levels.iter_mut().enumerate().take(25) {
+        *l = quiet_y + (loud_y - quiet_y) * k as f32 / 24.0;
     }
+    levels[25] = quiet_y + (loud_y - quiet_y) * 0.6;
+    pen.fill_by_height(base, &levels, |y| {
+        let k = t(y);
+        mix(s.background, s.at(k), 0.25 + 0.55 * k)
+    });
 }
 
 // -- loudness ------------------------------------------------------------------------

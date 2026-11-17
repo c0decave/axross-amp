@@ -706,7 +706,7 @@ fn shade(face: u32, u: &Uniforms, uv: [f32; 2], aspect: f32, picture: Option<&Pi
             let turn = a / std::f32::consts::TAU + 0.15 * (depth * 0.7 + u.phase()).sin();
             let rings = 0.5 + 0.5 * (depth * 6.0).sin();
             let stripes = 0.5 + 0.5 * (turn * std::f32::consts::TAU * 8.0 + depth).sin();
-            let level = u.band(fract(turn + 1.0));
+            let level = u.band((2.0 * fract(turn) - 1.0).abs());
             let light = rings * stripes * (0.4 + 0.8 * level) + 0.25 * u.pulse() * rings;
             let fog = (r * 2.2).clamp(0.0, 1.0);
             add(
@@ -827,6 +827,54 @@ fn shade(face: u32, u: &Uniforms, uv: [f32; 2], aspect: f32, picture: Option<&Pi
                 mix3(c(0), shade, density),
                 scale(c(4), density.powi(4) * 0.3),
             )
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_tunnel_has_no_seam() {
+        // the bands from quiet to loud round the tunnel: wherever the angle
+        // wraps, the colour must go on smoothly
+        let mut u = Uniforms::default();
+        for k in 0..32 {
+            u.v[10 + k / 4][k % 4] = k as f32 / 31.0;
+        }
+        for (i, c) in [
+            [0.05, 0.05, 0.08],
+            [0.2, 0.8, 0.4],
+            [0.9, 0.8, 0.1],
+            [0.9, 0.3, 0.2],
+            [1.0, 1.0, 1.0],
+        ]
+        .iter()
+        .enumerate()
+        {
+            u.v[5 + i] = [c[0], c[1], c[2], 1.0];
+        }
+        u.v[4][0] = Shader::Tunnel as u32 as f32;
+        for time in [0.0f32, 1.3, 7.7] {
+            u.v[2][0] = time;
+            let steps = 4000;
+            let mut last: Option<V3> = None;
+            let mut worst = 0.0f32;
+            for k in 0..=steps {
+                let a = k as f32 / steps as f32 * std::f32::consts::TAU;
+                // a circle at a third of the height round the middle
+                let uv = [0.5 + a.cos() * 0.3 / (16.0 / 9.0), 0.5 + a.sin() * 0.3];
+                let c = shade(5, &u, uv, 16.0 / 9.0, None);
+                if let Some(l) = last {
+                    worst = worst.max((0..3).map(|i| (c[i] - l[i]).abs()).fold(0.0, f32::max));
+                }
+                last = Some(c);
+            }
+            assert!(
+                worst < 0.08,
+                "a step of {worst} round the tunnel at {time} s"
+            );
         }
     }
 }
