@@ -176,6 +176,19 @@ impl Ring {
         ))
     }
 
+    /// Frames there to read from the reading's place (before a flush point;
+    /// a cut ahead not counted).
+    pub fn left(&self, r: &Reading) -> u64 {
+        let limit = r.flush.unwrap_or(r.head);
+        let mut left = limit.saturating_sub(r.tail);
+        if let Some((from, to)) = r.cut
+            && r.tail <= from
+        {
+            left = left.saturating_sub(to.min(limit) - from.min(limit));
+        }
+        left
+    }
+
     /// Skip to the pending flush's point; the flush count it honoured.
     pub fn skip(&self, r: &mut Reading) -> u64 {
         if let Some(at) = r.flush.take() {

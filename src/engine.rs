@@ -257,9 +257,25 @@ pub struct Shared {
     pub tap: Tap,
     /// The output reported that it is gone (the decoder thread opens it anew).
     lost: AtomicBool,
+    /// The sound in the ring ends there (a track's end, nothing after it):
+    /// running dry is no stall to fade over.
+    ending: AtomicBool,
     /// Frames read from the ring that are not heard yet: the output's
     /// latency (what the device says) and the buffer it was handed.
     latency: AtomicU64,
+}
+
+/// A soft limiter: below 0.9 nothing changes; above, the sample bends
+/// towards full scale instead of being cut off there (an equalizer's boost,
+/// a hot master: no harsh clipping).
+pub fn soft_limit(x: f32) -> f32 {
+    const KNEE: f32 = 0.9;
+    let a = x.abs();
+    if a <= KNEE {
+        return x;
+    }
+    let bent = KNEE + (1.0 - KNEE) * ((a - KNEE) / (1.0 - KNEE)).tanh();
+    bent.copysign(x)
 }
 
 /// The fades that keep pause, seek, stop and a new track from clicking.
@@ -301,6 +317,7 @@ impl Shared {
             device_rate: AtomicU32::new(48_000),
             tap: Tap::new(TAP_FRAMES),
             lost: AtomicBool::new(false),
+            ending: AtomicBool::new(false),
             latency: AtomicU64::new(0),
         }
     }
@@ -394,11 +411,17 @@ impl Shared {
         let step = (target - state.gain) / frames.max(1) as f32;
         let fade_step =
             1.0 / (self.device_rate.load(Ordering::Relaxed).max(1) as f32 * FADE_SECS).max(1.0);
+        let ending = self.ending.load(Ordering::Relaxed);
         let mut reading = self.ring.begin(state.flushes);
         for slot in out.chunks_exact_mut(channels) {
             state.gain += step;
-            // paused, or a flush waiting: what is left fades out first
-            let hold = !playing || reading.flush.is_some();
+            // paused, or a flush waiting: what is left fades out first; so
+            // when the ring is about to run dry (a stall, not a track's end):
+            // a fade, not a cut in the middle of a wave
+            let dry = playing
+                && !ending
+                && (self.ring.left(&reading) as f32) < state.fade / fade_step + 1.0;
+            let hold = !playing || reading.flush.is_some() || dry;
             state.fade = if hold {
                 (state.fade - fade_step).max(0.0)
             } else {
@@ -407,7 +430,9 @@ impl Shared {
             if state.fade <= 0.0 && reading.flush.is_some() {
                 state.flushes = self.ring.skip(&mut reading);
             }
-            let frame = if playing || state.fade > 0.0 {
+            // (faded out and held: nothing is taken - paused, or waiting for
+            // the sound to come)
+            let frame = if state.fade > 0.0 || (playing && !hold) {
                 self.ring.next(&mut reading)
             } else {
                 None
@@ -419,19 +444,21 @@ impl Shared {
                     (l * g, r * g)
                 }
                 None => {
-                    // (ran dry: what comes next fades in)
-                    state.fade = 0.0;
+                    // (nothing there: what comes next fades in)
+                    if !hold {
+                        state.fade = 0.0;
+                    }
                     (0.0, 0.0)
                 }
             };
             if channels == 1 {
-                slot[0] = ((l + r) * 0.5).clamp(-1.0, 1.0);
+                slot[0] = soft_limit((l + r) * 0.5);
                 continue;
             }
             for (c, sample) in slot.iter_mut().enumerate() {
                 *sample = match c {
-                    0 => l.clamp(-1.0, 1.0),
-                    1 => r.clamp(-1.0, 1.0),
+                    0 => soft_limit(l),
+                    1 => soft_limit(r),
                     _ => 0.0,
                 };
             }
@@ -1855,6 +1882,7 @@ impl Player {
     /// What is decoded and not heard goes (faded out); the position starts at `ms`.
     fn flush_at(&mut self, ms: u64) {
         self.shared.restart_at(ms);
+        self.shared.ending.store(false, Ordering::Relaxed);
         self.staged.clear();
         self.staged_boundary = None;
         self.carry.clear();
@@ -2134,6 +2162,7 @@ impl Player {
         let generation = d.generation;
         if d.eof {
             let drained = self.staged.is_empty() && self.carry.is_empty();
+            self.shared.ending.store(drained, Ordering::Relaxed);
             if drained
                 && buffered == 0
                 && self.shared.buffered_frames() == 0
@@ -2417,6 +2446,36 @@ mod tests {
     }
 
     #[test]
+    fn running_dry_fades_and_loud_sound_bends() {
+        // a stall: the ring holds 1000 frames of a steady 0.5 and no more
+        let shared = Shared::new();
+        shared.playing.store(true, Ordering::Relaxed);
+        shared.set_volume(1.0);
+        shared.push(&[0.5f32; 2000]);
+        let mut state = RenderState {
+            gain: 1.0,
+            fade: 1.0,
+            flushes: 0,
+        };
+        let mut out = vec![0.0f32; 1500 * 2];
+        shared.render(&mut out, 2, &mut state);
+        let worst = out
+            .chunks(2)
+            .map(|f| f[0])
+            .collect::<Vec<_>>()
+            .windows(2)
+            .map(|w| (w[1] - w[0]).abs())
+            .fold(0.0f32, f32::max);
+        assert!(worst < 0.02, "a cut of {worst} where the sound ran out");
+        // the soft limiter
+        assert_eq!(soft_limit(0.5), 0.5);
+        assert!(soft_limit(2.0) <= 1.0 && soft_limit(2.0) > 0.99);
+        assert!(soft_limit(1.0) < 1.0, "full scale itself bends a little");
+        assert!(soft_limit(-1.5) > -1.0);
+        assert!(soft_limit(0.95) > soft_limit(0.92));
+    }
+
+    #[test]
     fn the_position_and_the_pictures_wait_for_the_output() {
         let shared = Shared::new();
         shared.playing.store(true, Ordering::Relaxed);
@@ -2443,6 +2502,7 @@ mod tests {
         let shared = Shared::new();
         shared.playing.store(true, Ordering::Relaxed);
         shared.set_volume(1.0);
+        shared.ending.store(true, Ordering::Relaxed); // (no stall: the end)
         shared.push(&[0.5, 0.25, 0.5, 0.25]);
         let mut state = RenderState {
             gain: 1.0,
