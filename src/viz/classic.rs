@@ -28,7 +28,7 @@ const DOT_SIZE: (f32, f32) = (2.0, 12.0);
 const DOT_PITCH: f32 = 1.5;
 const SPARK_ONSET: f32 = 0.08;
 const SPARK_FLOOR: f32 = 0.25;
-const SPARK_SPAWN: usize = 6;
+const SPARK_SPAWN: usize = 4;
 const SPARK_MAX: usize = 160;
 const SPARK_RISE: f32 = 0.5;
 const SPARK_LIFE: f32 = 1.2;
@@ -83,8 +83,17 @@ pub struct State {
     scope_last_height: f32,
     /// How bright the trace is drawn (eased: a dense wave dimmer).
     scope_bright: f32,
-    /// The ribbon's height along it, eased.
+    /// The LED equalizer's lit segments a column, and the particles' lit
+    /// dots (held: see `lit`).
+    led_on: Vec<usize>,
+    particles_on: Vec<usize>,
+    /// Their columns' heights, falling no faster than `fallen` lets them.
+    led_level: Vec<f32>,
+    particles_level: Vec<f32>,
+    /// The ribbon's height along it, eased; its twist (the onsets' phase,
+    /// followed at Calm's pace, slower in the starkest schemes).
     ribbon_height: Vec<f32>,
+    ribbon_phase: f32,
     /// The kaleidoscope's six groups and its peak, eased; its turn, and
     /// the onsets' phase it last followed.
     kaleido: [f32; 7],
@@ -162,7 +171,7 @@ pub fn draw(f: &Frame<'_>, key: &str, state: &mut VizState) {
         "mirror" => mirror(f, g, cv),
         "radial" => radial(f, g, cv),
         "line" => line(f, g, cv),
-        "led" => led(f, g, cv),
+        "led" => led(f, g, cv, st),
         "particles" => particles(f, g, cv, st),
         "polar" => polar(f, g, cv),
         "waterfall" => waterfall(f, g, cv),
@@ -384,7 +393,48 @@ fn line(f: &Frame<'_>, g: Area, cv: &mut Canvas) {
     }
 }
 
-fn led(f: &Frame<'_>, g: Area, cv: &mut Canvas) {
+/// How many of `cells` a level lights, with a hysteresis of 0.35 of a
+/// cell: a bar hovering at a cell's edge lit and darkened it again and
+/// again (each a transition, counted strictly).
+/// The columns' heights as drawn: rising as the bars rise, falling at most
+/// so fast - in the starkest schemes slower (a column of lit cells going
+/// dark row after row as the music stops sweeps a quarter of a third of
+/// the screen in a tenth of a second: by the strict reading, a flash
+/// again and again).
+fn fallen(levels: &mut Vec<f32>, bars: &[f32], s: &Scheme, dt: f32) {
+    if levels.len() != bars.len() {
+        levels.clear();
+        levels.extend_from_slice(bars);
+    }
+    // (0.8 of the height a second; white on black a third of that)
+    let fall = 0.8 / super::scheme_calm(s).powi(2) * dt;
+    for (l, b) in levels.iter_mut().zip(bars) {
+        *l = b.max(*l - fall);
+    }
+}
+
+fn lit(level: f32, cells: usize, before: usize) -> usize {
+    let x = level * cells as f32;
+    let now = (x + 0.5) as usize;
+    let held = if now > before {
+        if x > before as f32 + 0.85 {
+            now
+        } else {
+            before
+        }
+    } else if now < before {
+        if x < before as f32 - 0.15 {
+            now
+        } else {
+            before
+        }
+    } else {
+        now
+    };
+    held.min(cells)
+}
+
+fn led(f: &Frame<'_>, g: Area, cv: &mut Canvas, st: &mut State) {
     let (a, s) = (f.a, f.s);
     let n = a.bars.len().max(1);
     let (w, h) = (g.w, g.h);
@@ -394,36 +444,47 @@ fn led(f: &Frame<'_>, g: Area, cv: &mut Canvas) {
     let step = w / n as f32;
     let column = (step * 0.76).round().max(1.0);
     let ground = s.background;
-    let lit_top = |on: usize| h - 1.0 - on as f32 * pitch;
+    if st.led_on.len() != n {
+        st.led_on = vec![0; n];
+    }
+    fallen(&mut st.led_level, &a.bars, s, f.dt);
+    for i in 0..n {
+        st.led_on[i] = lit(st.led_level[i], segments, st.led_on[i]);
+    }
+    let led_on = &st.led_on;
     cv.draw(f.painter, |pen| {
         // (behind the lit segments - between them and between lit columns
         // - their colours a shade dimmer: lit cells on a dark ground are a
         // regular grating both ways, a pattern hazard)
         for i in 0..n {
             let left = (i as f32 * step + step * 0.12).round();
-            let on = ((a.bars[i] * segments as f32 + 0.5) as usize).min(segments);
-            let next = a
-                .bars
-                .get(i + 1)
-                .map_or(0, |b| ((b * segments as f32 + 0.5) as usize).min(segments));
+            let on = led_on[i];
+            let next = led_on.get(i + 1).copied().unwrap_or(0);
             let next_left = ((i + 1) as f32 * step + step * 0.12).round();
             for (from, to, k) in [
                 (left, left + column, on),
                 (left + column, next_left, on.min(next)),
             ] {
-                if k > 0 && to > from {
-                    let top = lit_top(k).round();
-                    pen.vertical(
-                        g.r(from, top, to - from, h - 1.0 - top),
-                        between(s.at((k as f32 - 0.5) / segments as f32), ground),
-                        between(s.at(0.5 / segments as f32), ground),
-                    );
+                // (a band a segment, each of its segment's colour a shade
+                // dimmer: one gradient from the top's colour to the
+                // bottom's ran under a ramp through yellow darker than the
+                // segments by more than a tenth - in Intense, standing
+                // stripes over 46 % of the picture)
+                for j in 0..k.min(segments) {
+                    let top = (h - 1.0 - (j + 1) as f32 * pitch).round();
+                    let bottom = (h - 1.0 - j as f32 * pitch).round();
+                    if bottom > top && to > from {
+                        pen.rect(
+                            g.r(from, top, to - from, bottom - top),
+                            between(s.at((j as f32 + 0.5) / segments as f32), ground),
+                        );
+                    }
                 }
             }
         }
         for i in 0..n {
             let left = (i as f32 * step + step * 0.12).round();
-            let on = ((a.bars[i] * segments as f32 + 0.5) as usize).min(segments);
+            let on = led_on[i];
             let high = ((a.peaks[i] * segments as f32 + 0.5) as usize).min(segments);
             for k in 0..segments {
                 let top = (h - 1.0 - (k + 1) as f32 * pitch).round();
@@ -511,11 +572,18 @@ fn particles(f: &Frame<'_>, g: Area, cv: &mut Canvas, st: &mut State) {
     if st.sparks.capacity() < SPARK_MAX {
         st.sparks.reserve(SPARK_MAX - st.sparks.len());
     }
+    if st.particles_on.len() != n {
+        st.particles_on = vec![0; n];
+    }
+    fallen(&mut st.particles_level, &a.bars, s, f.dt);
+    let levels = &st.particles_level;
     let sparks = &st.sparks;
+    let st_on = &mut st.particles_on;
     cv.draw(f.painter, |pen| {
         for i in 0..n {
             let x = i as f32 * step + step / 2.0;
-            let on = ((a.bars[i] * rows as f32 + 0.5) as usize).min(rows);
+            st_on[i] = lit(levels[i], rows, st_on[i]);
+            let on = st_on[i];
             let high = ((a.peaks[i] * rows as f32 + 0.5) as usize).min(rows);
             // (behind a lit column, a soft band of its colours: the dots on
             // it, not a grid of bright dots on black - a regular pattern of
@@ -551,10 +619,13 @@ fn particles(f: &Frame<'_>, g: Area, cv: &mut Canvas, st: &mut State) {
         for [bar, height, age, _] in sparks {
             let x = (bar + 0.5) * step;
             let y = h - 2.0 - height * rows as f32 * pitch;
+            // (from loud to quiet, not from the peak's white: a sweep
+            // through the bands sent up a swarm of white sparks that
+            // brightened a third of the picture's top seven times a second)
             let colour = match age / SPARK_LIFE {
-                t if t < 1.0 / 3.0 => s.peak,
-                t if t < 2.0 / 3.0 => s.high,
-                _ => s.mid,
+                t if t < 1.0 / 3.0 => s.high,
+                t if t < 2.0 / 3.0 => s.mid,
+                _ => mix(s.background, s.mid, 0.6),
             };
             disc(pen, g.p(x, y), dot, colour);
         }
@@ -764,7 +835,10 @@ fn ridges(f: &Frame<'_>, g: Area, cv: &mut Canvas) {
 }
 
 fn terrain(f: &Frame<'_>, g: Area, cv: &mut Canvas) {
-    let (a, s) = (f.a, f.s);
+    // (never saturated red: its scrolling lines and dots, in a pure red
+    // scheme, flashed red seven times a second in Intense)
+    let unred = f.s.unred();
+    let (a, s) = (f.a, &unred);
     let n = a.bars.len().max(1);
     let (w, h) = (g.w, g.h);
     let rows = TERRAIN_ROWS;
@@ -795,18 +869,21 @@ fn terrain(f: &Frame<'_>, g: Area, cv: &mut Canvas) {
             }
             pen.line(1.0, depth_colour(s, k, rows));
         }
-        // dots on the front half where it is loud
-        for k in rows / 2..rows {
+        // dots on the front half where it is loud - on every other row,
+        // their colour as loud as it is, a shade into the ground (bright
+        // dots switched on and off at two levels, a row on at each step,
+        // kept a quarter of the middle of the picture changing at once)
+        // (every other row of the history, as it scrolls: the same rows)
+        let head = a.history_index() + crate::analyzer::HISTORY;
+        for k in (rows / 2..rows).filter(|k| (head - (rows - 1 - k)).is_multiple_of(2)) {
             let row = a.history_row(rows - 1 - k);
             for (i, v) in row.iter().enumerate().take(n) {
-                let colour = if *v >= 0.65 {
-                    s.high
-                } else if *v >= 0.35 {
-                    s.mid
-                } else {
+                if *v < 0.45 {
                     continue;
-                };
-                pen.rect(Rect::from_center_size(point(k, i), vec2(2.5, 2.5)), colour);
+                }
+                let loud = ((v - 0.45) / 0.4).clamp(0.0, 1.0);
+                let colour = mix(s.background, mix(s.mid, s.high, loud), 0.4 + 0.3 * loud);
+                pen.rect(Rect::from_center_size(point(k, i), vec2(2.2, 2.2)), colour);
             }
         }
         for (i, peak) in a.peaks.iter().enumerate() {
@@ -956,9 +1033,10 @@ fn bells(f: &Frame<'_>, g: Area, cv: &mut Canvas) {
                 ));
             }
             gradient_under(pen, s, g.y0 + base, g.y0 + h, g.y0);
-            // (the outline of the four loudest only: every bell's, side by
-            // side in a bright scheme, lay in moving stripes)
-            if rank + 4 >= groups {
+            // (the outline of the three loudest only: every bell's, side
+            // by side in a bright scheme, lay in moving stripes; four, in
+            // Intense, for a frame)
+            if rank + 3 >= groups {
                 pen.line(1.0, s.at(loudest[gi]));
             }
         }
@@ -981,7 +1059,20 @@ fn ribbon(f: &Frame<'_>, g: Area, cv: &mut Canvas, st: &mut State) {
     let (a, s) = (f.a, f.s);
     let n = a.bars.len().max(1);
     let (w, h) = (g.w, g.h);
-    let phase = a.phase;
+    // (followed at Calm's pace in Intense too, slower in the starkest
+    // schemes: twisted at once by each onset, its pure red lines swept a
+    // quarter of a field seven times a second; the phase wraps at 4 pi)
+    let mut d = a.phase - st.ribbon_phase;
+    let wrap = 4.0 * PI;
+    while d > wrap / 2.0 {
+        d -= wrap;
+    }
+    while d < -wrap / 2.0 {
+        d += wrap;
+    }
+    let rate = a.motion.phase_follow().min(3.0) / super::scheme_calm(s);
+    st.ribbon_phase = (st.ribbon_phase + d * (1.0 - (-f.dt * rate).exp())).rem_euclid(wrap);
+    let phase = st.ribbon_phase;
     // the bands, smoothed over five (edges repeated)
     let at = |i: isize| a.bars[i.clamp(0, n as isize - 1) as usize];
     let smooth = |i: usize| {
@@ -1070,7 +1161,7 @@ fn kaleidoscope(f: &Frame<'_>, g: Area, cv: &mut Canvas, st: &mut State) {
     // (eased over a fifth of a second, a third in Calm: its petals, dots
     // and diamonds, each following a group in its own time, made twelve
     // transitions a second together - all 24 copies at once)
-    let ease = 1.0 - (-f.dt / (0.3 * a.motion.turn() / 0.25)).exp();
+    let ease = 1.0 - (-f.dt / (0.5 * a.motion.turn() / 0.25)).exp();
     for (k, v) in groups.iter().chain([peak].iter()).enumerate() {
         st.kaleido[k] += (v - st.kaleido[k]) * ease;
     }
@@ -1110,15 +1201,17 @@ fn kaleidoscope(f: &Frame<'_>, g: Area, cv: &mut Canvas, st: &mut State) {
         centroid += petal(k);
     }
     centroid /= (2 * STEPS) as f32;
-    // (it turns with the onsets, but no faster than a petal's width in a
-    // third of a second: turned at once by an onset, petals and gaps
+    // (it turns with the onsets, but no faster than a petal's width in
+    // two-thirds of a second: turned at once by an onset, petals and gaps
     // changed places all round - a flash of half the picture)
     let mut step = (a.phase - st.kaleido_phase) * 0.5;
     if step < -PI {
         step += TAU; // (the phase wrapped, at 4 pi)
     }
     st.kaleido_phase = a.phase;
-    let most = alpha * 3.0 * f.dt * 0.25 / a.motion.turn();
+    // (as fast in Intense as in Calm: turned faster, petals and gaps
+    // changed places more than six times a second, strictly counted)
+    let most = alpha * 1.5 * f.dt * 0.25 / a.motion.turn().max(0.25);
     st.kaleido_turn = (st.kaleido_turn + step.clamp(-most, most)) % TAU;
     let turn = st.kaleido_turn;
     cv.draw(f.painter, |pen| {
@@ -1496,12 +1589,18 @@ fn starfield(f: &Frame<'_>, g: Area, cv: &mut Canvas, st: &mut State, trails: bo
     }
     // (how far a star's trail reaches back: further the faster they fly)
     let trail = 0.02 + speed * 0.1;
+    // (never saturated red: in a pure red scheme thousands of streaks
+    // sweeping out with the bass flashed red seven times a second)
+    let colour_of = |z: f32| {
+        let (c, size) = colour_of(z);
+        (super::unred(c), size)
+    };
     cv.draw(f.painter, |pen| {
         // a faint glow where they come from, swelling with the bass
         pen.radial(
             g.p(cx, cy),
             cx.min(cy) * (0.6 + 0.4 * a.bass),
-            glow(s.low, 0.06 + 0.12 * a.bass),
+            glow(super::unred(s.low), 0.06 + 0.12 * a.bass),
             Color32::TRANSPARENT,
         );
         for [x, y, z] in stars {

@@ -112,6 +112,14 @@ pub struct Meter {
     /// The last way each field's luminance and red transited.
     lum_last: Vec<i8>,
     red_last: Vec<i8>,
+    /// The strict reading, counted alongside: "at once" within 100 ms, and
+    /// every rise above the quarter a transition (not only one the other
+    /// way from the last) - an independent review's meter.
+    strict_at_once: usize,
+    strict_lum_events: Vec<Vec<usize>>,
+    strict_red_events: Vec<Vec<usize>>,
+    strict_lum_over: Vec<[bool; 2]>,
+    strict_red_over: Vec<[bool; 2]>,
 }
 
 impl Meter {
@@ -157,6 +165,11 @@ impl Meter {
             past: std::collections::VecDeque::new(),
             lum_last: vec![0; n],
             red_last: vec![0; n],
+            strict_at_once: ((0.1 * fps as f32).round() as usize).max(1),
+            strict_lum_events: vec![Vec::new(); n],
+            strict_red_events: vec![Vec::new(); n],
+            strict_lum_over: vec![[false; 2]; n],
+            strict_red_over: vec![[false; 2]; n],
         }
     }
 
@@ -193,6 +206,28 @@ impl Meter {
         // integral images of "transited at once" (luminance, red)
         let at_once = self.at_once;
         let recent = |at: usize| at != usize::MAX && f - at < at_once;
+        let strict_at_once = self.strict_at_once;
+        let strict_recent = |at: usize| at != usize::MAX && f - at < strict_at_once;
+        let strict_integral = |at: &[usize], dirs: &[i8], dir: i8| {
+            let mut s = vec![0u32; (w + 1) * (h + 1)];
+            for y in 0..h {
+                let mut row = 0u32;
+                for x in 0..w {
+                    let i = y * w + x;
+                    row += u32::from(strict_recent(at[i]) && dirs[i] == dir);
+                    s[(y + 1) * (w + 1) + x + 1] = s[y * (w + 1) + x + 1] + row;
+                }
+            }
+            s
+        };
+        let (slu, sld) = (
+            strict_integral(&self.lum_at, &self.lum_dir, 1),
+            strict_integral(&self.lum_at, &self.lum_dir, -1),
+        );
+        let (sru, srd) = (
+            strict_integral(&self.red_at, &self.red_dir, 1),
+            strict_integral(&self.red_at, &self.red_dir, -1),
+        );
         let integral = |at: &[usize], dirs: &[i8], dir: i8| {
             let mut s = vec![0u32; (w + 1) * (h + 1)];
             for y in 0..h {
@@ -239,6 +274,29 @@ impl Meter {
                 }
             }
             self.red_over[k] = over;
+            // (the strict reading: every rise, either way)
+            for (lu, ld, overs, events) in [
+                (
+                    &slu,
+                    &sld,
+                    &mut self.strict_lum_over[k],
+                    &mut self.strict_lum_events[k],
+                ),
+                (
+                    &sru,
+                    &srd,
+                    &mut self.strict_red_over[k],
+                    &mut self.strict_red_events[k],
+                ),
+            ] {
+                let over = [sum(lu, *field) >= quarter, sum(ld, *field) >= quarter];
+                for j in 0..2 {
+                    if over[j] && !overs[j] {
+                        events.push(f);
+                    }
+                }
+                *overs = over;
+            }
         }
         // stripes: a hazard over 40 %, or over 25 % where they move
         let (share, marked) = stripes_marked(&lum_now, w, h);
@@ -279,6 +337,45 @@ impl Meter {
         (self.lum_events[best].clone(), self.fields[best])
     }
 
+    /// The worst field by the strict reading: its transitions (frames).
+    pub fn worst_field_strict(&self) -> (Vec<usize>, (usize, usize, usize, usize)) {
+        // (the field with the most in any second)
+        let most = |e: &[usize]| {
+            (0..e.len())
+                .map(|k| e[k..].iter().take_while(|&&f| f < e[k] + self.fps).count())
+                .max()
+                .unwrap_or(0)
+        };
+        let best = (0..self.fields.len())
+            .max_by_key(|k| {
+                (
+                    most(&self.strict_lum_events[*k]),
+                    self.strict_lum_events[*k].len(),
+                )
+            })
+            .unwrap_or(0);
+        (self.strict_lum_events[best].clone(), self.fields[best])
+    }
+
+    /// As [`Meter::worst_field_strict`], for saturated red.
+    pub fn worst_red_field_strict(&self) -> (Vec<usize>, (usize, usize, usize, usize)) {
+        let most = |e: &[usize]| {
+            (0..e.len())
+                .map(|k| e[k..].iter().take_while(|&&f| f < e[k] + self.fps).count())
+                .max()
+                .unwrap_or(0)
+        };
+        let best = (0..self.fields.len())
+            .max_by_key(|k| {
+                (
+                    most(&self.strict_red_events[*k]),
+                    self.strict_red_events[*k].len(),
+                )
+            })
+            .unwrap_or(0);
+        (self.strict_red_events[best].clone(), self.fields[best])
+    }
+
     /// The most transitions in any second over any field (luminance, red).
     pub fn most(&self) -> (usize, usize) {
         let worst = |events: &[Vec<usize>]| {
@@ -294,6 +391,26 @@ impl Meter {
                 .unwrap_or(0)
         };
         (worst(&self.lum_events), worst(&self.red_events))
+    }
+
+    /// The same by the strict reading (100 ms at once, every rise).
+    pub fn most_strict(&self) -> (usize, usize) {
+        let worst = |events: &[Vec<usize>]| {
+            events
+                .iter()
+                .map(|e| {
+                    (0..e.len())
+                        .map(|k| e[k..].iter().take_while(|&&f| f < e[k] + self.fps).count())
+                        .max()
+                        .unwrap_or(0)
+                })
+                .max()
+                .unwrap_or(0)
+        };
+        (
+            worst(&self.strict_lum_events),
+            worst(&self.strict_red_events),
+        )
     }
 }
 
@@ -515,6 +632,33 @@ pub fn music(kind: &str, secs: f32) -> Vec<f32> {
                 let k = if k < 0.5 { k * 2.0 } else { 2.0 - k * 2.0 };
                 phase += 30.0 * 533.0f32.powf(k) * tau / RATE;
                 phase.sin() * 0.95
+            }
+            // noise gated 8 or 4 times a second (on 40 % of each)
+            "gate8" | "gate4" => {
+                let hz = if kind == "gate8" { 8.0 } else { 4.0 };
+                if (t * hz).fract() < 0.4 {
+                    noise() * 1.9
+                } else {
+                    0.0
+                }
+            }
+            // silence and a full-scale square, five times a second
+            "silfull" => {
+                if (t * 5.0).fract() < 0.5 {
+                    0.0
+                } else if (t * 80.0).fract() < 0.5 {
+                    1.0
+                } else {
+                    -1.0
+                }
+            }
+            // bass and treble in turn, eight times a second
+            "alt8" => {
+                if (t * 8.0).fract() < 0.5 {
+                    (t * 55.0 * tau).sin() * 0.8
+                } else {
+                    noise() * 0.9 + (t * 7000.0 * tau).sin() * 0.3
+                }
             }
             "click9" | "click13" => {
                 let hz = if kind == "click9" { 9.0 } else { 13.0 };

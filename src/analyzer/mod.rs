@@ -105,6 +105,18 @@ pub struct Analyzer {
     bass_count: usize,
     /// Loudness of the bars: the lowest third's mean, its rise (0..1).
     pub energy: f32,
+    /// The middle and the highest third's means (0..1).
+    pub middle: f32,
+    pub treble: f32,
+    /// How much calmer than the motion says the colours call for (1..1.6:
+    /// the guards' turns that much further apart) - see
+    /// `viz::scheme_calm`.
+    pub calm: f32,
+    /// Guards on the means too: each bar turns no faster than the motion
+    /// allows, but a mean of many, each turning in its own time, turned
+    /// as often as all of them together (the plasma, driven by them, made
+    /// 11 - 17 transitions a second by the strict reading).
+    mean_guards: [guard::Guard; 4],
     pub onset: f32,
     previous_energy: f32,
     /// Stereo: correlation (-1..1), width (side against all, 0..1),
@@ -118,6 +130,13 @@ pub struct Analyzer {
     /// Seconds of sound analysed (the generative faces' clock: it stands
     /// while nothing plays).
     pub time: f64,
+    /// The clock as the energy and the bass drive it (their sums over
+    /// time): a face moving faster as it gets louder moves on by these -
+    /// `time * (1 + energy)` jumped at each change of the energy, the
+    /// further the longer it had played (a flyover a minute in leapt 50
+    /// units at a beat).
+    pub energy_flow: f64,
+    pub bass_flow: f64,
     /// The device's rate the numbers are for.
     pub rate: u32,
     last_written: u64,
@@ -191,6 +210,8 @@ impl Analyzer {
             beat: beat::Beat::new(),
             fine: fine::Fine::new(),
             time: 0.0,
+            energy_flow: 0.0,
+            bass_flow: 0.0,
             rate: 48_000,
             last_written: 0,
             external: None,
@@ -200,6 +221,10 @@ impl Analyzer {
             vu_smooth: [0.0; 2],
             vu_guards: [guard::Guard::default(); 2],
             pulse_guard: guard::Guard::default(),
+            middle: 0.0,
+            treble: 0.0,
+            calm: 1.0,
+            mean_guards: [guard::Guard::default(); 4],
             raw_pulse: 0.0,
         };
         a.resize(32, 48_000);
@@ -289,7 +314,10 @@ impl Analyzer {
         self.last_written = written;
         let live = live && frames >= 256;
         if live {
-            self.time += (dt * self.motion.pace()) as f64;
+            let step = dt * self.motion.pace();
+            self.time += step as f64;
+            self.energy_flow += (step * self.energy.min(1.5)) as f64;
+            self.bass_flow += (step * self.bass.min(1.5)) as f64;
             self.spectrum(tap);
         } else {
             self.raw.fill(0.0);
@@ -308,16 +336,31 @@ impl Analyzer {
             };
             self.smooth[i] = smoothed;
             // (the flash guard: no faster to and fro than it allows)
-            self.bars[i] = self.guards[i].step(smoothed, dt, self.motion);
+            self.bars[i] = self.guards[i].step(smoothed, dt / self.calm, self.motion);
             self.peaks[i] = self.bars[i].max(self.peaks[i] - fall);
         }
-        self.bass =
+        let bass =
             self.bars[..self.bass_count.min(n)].iter().sum::<f32>() / self.bass_count.min(n) as f32;
         let third = (n / 3).max(1);
-        let energy = self.bars[..third].iter().sum::<f32>() / third as f32;
+        let mean = |from: usize, to: usize| {
+            let (from, to) = (from.min(n), to.min(n).max(from.min(n) + 1).min(n));
+            if to > from {
+                self.bars[from..to].iter().sum::<f32>() / (to - from) as f32
+            } else {
+                0.0
+            }
+        };
+        let energy = mean(0, third);
+        let (middle, treble) = (mean(n / 3, 2 * n / 3), mean(2 * n / 3, n));
         self.onset = ((energy - self.previous_energy).max(0.0) * 4.0 + self.onset * keep).min(1.0);
         self.previous_energy = energy;
-        self.energy = energy;
+        let motion = self.motion;
+        let [g0, g1, g2, g3] = &mut self.mean_guards;
+        let gdt = dt / self.calm;
+        self.bass = g0.step(bass, gdt, motion);
+        self.energy = g1.step(energy, gdt, motion);
+        self.middle = g2.step(middle, gdt, motion);
+        self.treble = g3.step(treble, gdt, motion);
 
         // the fixed steps: history, the onsets' turn
         self.ticks = 0;
@@ -347,9 +390,12 @@ impl Analyzer {
         }
         self.beat.frame(dt, live);
         self.raw_pulse = self.beat.pulse;
-        self.beat.pulse = self.pulse_guard.step(self.raw_pulse, dt, self.motion);
+        self.beat.pulse = self
+            .pulse_guard
+            .step(self.raw_pulse, dt / self.calm, self.motion);
         self.fine.external = self.external.map(|r| (r.keys, r.chroma));
         self.fine.motion = self.motion;
+        self.fine.calm = self.calm.max(1.0);
         if needs.fine && live {
             self.fine.update(tap, rate, dt);
         } else if needs.fine {
@@ -394,6 +440,12 @@ impl Analyzer {
     pub fn waterfall_row(&self, age: usize) -> &[f32] {
         let at = (self.head + HISTORY - age % HISTORY) % HISTORY * MAX_BARS;
         &self.waterfall[at..at + self.bars.len()]
+    }
+
+    /// The history row `age` steps back is the `history_index() - age`th
+    /// (an even count of rows wraps round: its evenness holds).
+    pub fn history_index(&self) -> usize {
+        self.head
     }
 
     /// The history row `age` steps back (0: the newest), `bars` long.
@@ -503,7 +555,7 @@ impl Analyzer {
                 self.vu_smooth[c] * keep + rms[c] * (1.0 - keep)
             };
             // (the meter's bars light half the picture: guarded)
-            self.vu[c] = self.vu_guards[c].step(self.vu_smooth[c], dt, self.motion);
+            self.vu[c] = self.vu_guards[c].step(self.vu_smooth[c], dt / self.calm, self.motion);
             self.vu_peak[c] = peaks[c].max(self.vu_peak[c] - 0.3 * dt);
         }
         let follow = 1.0 - (-dt * 6.0).exp();

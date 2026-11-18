@@ -136,18 +136,29 @@ impl Uniforms {
     pub fn extra(&self, k: usize) -> [f32; 4] {
         self.v[18 + k]
     }
+    /// The clock as the energy drives it, and the bass (see
+    /// `Analyzer::energy_flow`).
+    pub fn energy_flow(&self) -> f32 {
+        self.v[25][0]
+    }
+    pub fn bass_flow(&self) -> f32 {
+        self.v[25][1]
+    }
 
     /// The face, the clock, the analysis, the scheme; opaque.
     pub fn new(shader: Shader, a: &crate::analyzer::Analyzer, s: &Scheme, scroll: f32) -> Uniforms {
         let mut u = Uniforms::default();
         let n = a.bars.len().max(1);
-        let third = |k: usize| {
-            let (from, to) = (k * n / 3, ((k + 1) * n / 3).max(k * n / 3 + 1).min(n));
-            a.bars[from..to].iter().sum::<f32>() / (to - from) as f32
-        };
         u.v[2] = [(a.time % 3600.0) as f32, a.beat.pulse, a.energy, a.bass];
-        u.v[3] = [a.phase, third(1), third(2), 0.0];
+        u.v[3] = [a.phase, a.middle, a.treble, 0.0];
         u.v[4] = [shader as u32 as f32, 0.0, scroll, 1.0];
+        // (u.extra[7]: the clocks the energy and the bass drive)
+        u.v[25] = [
+            (a.energy_flow % 3600.0) as f32,
+            (a.bass_flow % 3600.0) as f32,
+            0.0,
+            0.0,
+        ];
         for (i, c) in [s.background, s.low, s.mid, s.high, s.peak]
             .iter()
             .enumerate()
@@ -1229,8 +1240,10 @@ pub fn shade(
             let v = pc.at(uv[0], uv[1]);
             let dx = pc.at(uv[0] + 1.0 / pc.width.max(1) as f32, uv[1]) - v;
             let dy = pc.at(uv[0], uv[1] + 1.0 / pc.height.max(1) as f32) - v;
-            let light = (0.6 + 3.0 * (dx - dy)).clamp(0.0, 1.4);
-            scale(palette(u, smoothstep(0.05, 0.6, v) * 0.95), light)
+            // (lit softly, never burnt white: the scheme's colours, the
+            // light on the ridges a shade above them)
+            let light = (0.75 + 2.0 * (dx - dy)).clamp(0.45, 1.1);
+            scale(palette(u, smoothstep(0.05, 0.6, v) * 0.78), light)
         }
         9 => moire(u, p, pixel),
         10 => {
@@ -1251,14 +1264,13 @@ pub fn shade(
                 ]),
             ];
             let d = fbm([q[0] + 2.5 * warp2[0], q[1] + 2.5 * warp2[1] + tt * 3.0]);
-            let density =
-                ((d - 0.25 + 0.35 * u.energy()) * (1.3 + u.pulse() * 0.5)).clamp(0.0, 1.0);
+            let density = ((d - 0.2 + 0.2 * u.energy()) * (1.3 + u.pulse() * 0.15)).clamp(0.0, 1.0);
             let length = len2(warp2[0], warp2[1]).clamp(0.0, 1.0);
             let shade = mix3(c(1), c(3), length);
-            add(
+            no_red(add(
                 mix3(c(0), shade, density),
                 scale(c(4), density.powi(4) * 0.3),
-            )
+            ))
         }
         11 => flyover(u, uv, aspect, 48),
         12 => crystals(u, p),
@@ -1276,7 +1288,9 @@ pub fn shade(
 }
 
 fn liquid(u: &Uniforms, p: [f32; 2]) -> V3 {
-    let t = u.time() * (0.12 + 0.25 * u.energy());
+    // (the bass warps it less, the energy speeds it less: a warp that
+    // followed the bass reshuffled the whole picture at each turn)
+    let t = u.time() * 0.12 + u.energy_flow() * 0.1;
     let s = [p[0] * 1.1, p[1] * 1.1];
     let q = [fbm([s[0], s[1] + t]), fbm([s[0] + 5.2, s[1] + 1.3 - t])];
     let r = [
@@ -1289,25 +1303,23 @@ fn liquid(u: &Uniforms, p: [f32; 2]) -> V3 {
             s[1] + 3.5 * q[1] + 2.8 - 0.4 * t,
         ]),
     ];
-    let k = 3.0 + 1.5 * u.bass();
+    let k = 3.0 + 0.5 * u.bass();
     let v = fbm([s[0] + k * r[0], s[1] + k * r[1]]);
-    let base = palette(u, 0.15 + 0.85 * smoothstep(0.2, 0.85, v));
+    let base = palette(u, 0.4 + 0.45 * smoothstep(0.3, 0.72, v));
+    let deep = mix3(u.colour(0), base, 0.35 + 0.65 * smoothstep(0.15, 0.7, v));
     let fold = (len2(r[0] - q[0], r[1] - q[1]) * 1.2)
         .clamp(0.0, 1.0)
         .powi(3);
-    add(
-        scale(base, 0.55 + 0.6 * v),
-        scale(u.colour(4), fold * (0.25 + 0.4 * u.pulse())),
-    )
+    add(deep, scale(u.colour(4), fold * (0.22 + 0.1 * u.pulse())))
 }
 
 fn fire(u: &Uniforms, uv: [f32; 2], aspect: f32) -> V3 {
     let t = u.time();
     let y = 1.0 - uv[1];
     let x = uv[0] * aspect;
-    let turb = fbm([x * 3.0, y * 2.0 - t * (1.0 + 0.6 * u.energy())]);
+    let turb = fbm([x * 3.0, y * 2.0 - t - 0.6 * u.energy_flow()]);
     let lick = fbm([x * 5.0 + 3.0, y * 3.0 - t * 1.6]);
-    let height = 0.5 + 0.4 * u.band(uv[0] * 0.7) + 0.15 * u.pulse();
+    let height = 0.52 + 0.3 * u.band(uv[0] * 0.7) + 0.08 * u.pulse();
     let shape = 1.0 - y / height.max(0.05);
     let heat = (shape * 0.85 + (turb - 0.5) * 1.2 + (lick - 0.5) * 0.6 * (1.0 - y)).clamp(0.0, 1.0);
     let h = heat.powf(1.4);
@@ -1320,10 +1332,11 @@ fn fire(u: &Uniforms, uv: [f32; 2], aspect: f32) -> V3 {
     col = mix3(col, [1.0, 0.8, 0.25], smoothstep(0.55, 0.85, h));
     col = mix3(col, [1.0, 0.97, 0.85], smoothstep(0.85, 1.0, h));
     let tinted = mul(col, add([0.6; 3], scale(u.colour(3), 0.8)));
-    add(
+    // (never saturated red: its licks, in a red scheme, were red flashes)
+    no_red(add(
         mix3(col, tinted, 0.1),
         scale(u.colour(0), (1.0 - smoothstep(0.0, 0.2, h)) * 0.6),
-    )
+    ))
 }
 
 /// The waterfall's colours (axross's): the background, the quiet colour
@@ -1343,15 +1356,15 @@ fn tunnel(u: &Uniforms, p: [f32; 2]) -> V3 {
     let t = u.time();
     let r = len2(p[0], p[1]).max(1e-3);
     let a = p[1].atan2(p[0]);
-    let depth = 0.45 / r + t * (0.35 + 0.6 * u.bass());
-    let turn = a / TAU + 0.1 * (depth * 0.35 + u.phase()).sin();
+    let depth = 0.45 / r + t * 0.3 + 0.35 * u.bass_flow();
+    let turn = a / TAU + 0.06 * (depth * 0.35 + 0.5 * u.phase()).sin();
     let fold = (2.0 * fract(turn) - 1.0).abs();
     let level = u.band(fold);
     let rr = fract(depth * 1.5);
     let ring_d = rr.min(1.0 - rr) / 1.5 * r * r / 0.45;
     let ss = fract(turn * 10.0);
     let rib_d = ss.min(1.0 - ss) / 10.0 * TAU * r;
-    let ring = (-ring_d / 0.010).exp();
+    let ring = (-ring_d / 0.010).exp() * (1.0 - 0.8 * smoothstep(0.3, 0.85, r));
     let rib = (-rib_d / 0.008).exp();
     let checker = fract(((depth * 1.5).floor() + (turn * 10.0).floor()) * 0.5) * 2.0;
     let wall = scale(
@@ -1363,26 +1376,26 @@ fn tunnel(u: &Uniforms, p: [f32; 2]) -> V3 {
         0.75 + 0.25 * checker,
     );
     let line_colour = cycle(u, (depth * 1.5).floor() * 0.04 + fold * 0.4 + 0.15);
-    let glow = ring * (0.35 + 1.1 * level + 0.5 * u.pulse()) + rib * (0.2 + 0.8 * level);
+    let glow = ring * (0.45 + 0.85 * level + 0.12 * u.pulse()) + rib * (0.25 + 0.6 * level);
     let c = add(wall, scale(line_colour, glow));
     let fog = smoothstep(0.03, 0.6, r);
     add(
         mix3(scale(u.colour(0), 0.6), c, fog),
         scale(
             u.colour(3),
-            (-r * 9.0).exp() * (0.25 + 0.6 * u.pulse() + 0.4 * u.energy()),
+            (-r * 9.0).exp() * (0.3 + 0.2 * u.pulse() + 0.3 * u.energy()),
         ),
     )
 }
 
 fn julia(u: &Uniforms, p: [f32; 2]) -> V3 {
-    let t = u.time() * 0.07 + u.phase() * 0.05;
-    let k = 0.985 + 0.012 * u.bass();
+    let t = u.time() * 0.07 + u.phase() * 0.03;
+    let k = 0.985 + 0.006 * u.bass();
     let cc = [
         (t.cos() * 0.5 - (2.0 * t).cos() * 0.25) * k,
         (t.sin() * 0.5 - (2.0 * t).sin() * 0.25) * k,
     ];
-    let zoom = 1.25 - 0.1 * u.pulse();
+    let zoom = 1.25 - 0.03 * u.pulse();
     let mut z = [p[0] * zoom, p[1] * zoom];
     let mut trap = 1e9f32;
     let trap_at = 0.25 * (u.time() * 0.3).sin();
@@ -1402,7 +1415,7 @@ fn julia(u: &Uniforms, p: [f32; 2]) -> V3 {
     }
     let m = z[0] * z[0] + z[1] * z[1];
     let smooth = (i as f32 + 1.0 - (m.log2() * 0.5).log2()).max(0.0);
-    let v = ((smooth / most as f32).sqrt() * (0.95 + 0.25 * u.energy())).clamp(0.0, 1.0);
+    let v = ((smooth / most as f32).sqrt() * (0.98 + 0.12 * u.energy())).clamp(0.0, 1.0);
     add(
         palette(u, v),
         scale(cycle(u, trap * 0.5 + u.time() * 0.02), trapped * 0.6),
@@ -1459,7 +1472,8 @@ fn no_red(c: V3) -> V3 {
     for _ in 0..8 {
         let l = [out[0].powf(2.2), out[1].powf(2.2), out[2].powf(2.2)];
         let sum = l[0] + l[1] + l[2];
-        if sum <= 0.0 || l[0] / sum < 0.75 {
+        // (a red too dark to flash - under 5 of WCAG's 20 - left as it is)
+        if sum <= 0.0 || l[0] / sum < 0.75 || (l[0] - l[1] - l[2]) * 320.0 < 5.0 {
             break;
         }
         out = mix3(out, [1.0, 0.93, 0.84], 0.12);
@@ -1481,7 +1495,7 @@ fn terrain_height(u: &Uniforms, x: f32, z: f32) -> f32 {
 
 fn flyover(u: &Uniforms, uv: [f32; 2], aspect: f32, steps: usize) -> V3 {
     let p = [(uv[0] - 0.5) * aspect, 0.5 - uv[1]];
-    let t = u.time() * (1.5 + 1.5 * u.energy());
+    let t = u.time() * 1.5 + 1.5 * u.energy_flow();
     let origin = [0.0, 2.6, t];
     let dl = len2(len2(p[0], p[1] - 0.18), 1.0);
     let dir = [p[0] / dl, (p[1] - 0.18) / dl, 1.0 / dl];
@@ -1672,6 +1686,25 @@ fn wave_layer(u: &Uniforms, kind: i32, p: [f32; 2], aspect: f32, t: f32) -> V3 {
             }
             c
         }
+        4 => {
+            let level = u.band(a.abs() / PI);
+            let petals = 0.5 + 0.5 * (5.0 * a + t * 0.7).cos();
+            let edge = (0.12 + 0.16 * level) * (0.55 + 0.45 * petals) + 0.04 * u.bass();
+            let line = (-(r - edge).abs() * 140.0).exp() * (0.4 + 0.8 * level);
+            scale(cycle(u, a / TAU * 2.0 + r + t * hue), line)
+        }
+        5 => {
+            let k = ((a / TAU + 0.5) * 16.0).floor();
+            let centre = (k + 0.5) / 16.0 * TAU - PI;
+            let level = u.band(centre.abs() / PI);
+            let side = (a - centre).sin().abs() * r;
+            let reach = 0.08 + 0.32 * level;
+            let lit = (-side * 220.0).exp()
+                * smoothstep(0.04, 0.07, r)
+                * (1.0 - smoothstep(reach - 0.03, reach, r))
+                * (0.35 + 0.8 * level);
+            scale(cycle(u, k / 16.0 + t * hue), lit)
+        }
         _ => {
             let level = u.band(a.abs() / PI);
             let ring = 0.18 + 0.22 * level + 0.06 * u.bass();
@@ -1700,7 +1733,8 @@ pub fn feedback_pixel(
         q[1] + motion[2] * (q[0] * look[3] - t * 0.8).cos(),
     ];
     let mirror = u.extra(2)[1];
-    q[0] += (q[0].abs() - q[0]) * mirror;
+    q[0] += (q[0].abs() - q[0]) * mirror.clamp(0.0, 1.0);
+    q[1] += (q[1].abs() - q[1]) * (mirror - 1.0).clamp(0.0, 1.0);
     let src = [q[0] / aspect + 0.5, q[1] + 0.5];
     let mut prev = if (0.0..=1.0).contains(&src[0]) && (0.0..=1.0).contains(&src[1]) {
         sample(last, w, h, src)

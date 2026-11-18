@@ -185,6 +185,20 @@ pub struct Scheme {
     pub peak: Color32,
 }
 
+impl Scheme {
+    /// The scheme with no saturated red (see [`unred`]): for the faces
+    /// whose lines, many of them moving at once, flashed red in a red one.
+    pub fn unred(&self) -> Scheme {
+        Scheme {
+            background: unred(self.background),
+            low: unred(self.low),
+            mid: unred(self.mid),
+            high: unred(self.high),
+            peak: unred(self.peak),
+        }
+    }
+}
+
 fn hex(text: &str) -> Color32 {
     let v = u32::from_str_radix(text.trim_start_matches('#'), 16).unwrap_or(0);
     Color32::from_rgb((v >> 16) as u8, (v >> 8) as u8, v as u8)
@@ -457,6 +471,36 @@ pub fn from_oklch(l: f32, c: f32, hue: f32) -> Color32 {
     }
     let [r, g, b] = rgb.map(|v| (linear_to_srgb(v.clamp(0.0, 1.0)) * 255.0).round() as u8);
     Color32::from_rgb(r, g, b)
+}
+
+/// How much calmer the pictures move in a scheme of strong contrast or of
+/// saturated red (1 to 1.6: what drives them turns that much less often).
+/// White on black, or a red that is red, turns a picture's every change
+/// into a flash by the strict reading - bars of four turns a second, eight
+/// rises and falls; in such a scheme they turn at most two and a half times.
+pub fn scheme_calm(s: &Scheme) -> f32 {
+    let lin = |v: u8| LINEAR[v as usize];
+    let ground = luminance(s.background);
+    // (the colours of the faces' bodies - the peak's thin marks aside)
+    let colours = [s.low, s.mid, s.high];
+    // (the mean of their contrast with the ground, and the share of them
+    // saturated red: a ramp ending in red - Classic's - is mostly not)
+    let contrast = colours
+        .iter()
+        .map(|c| (luminance(*c) - ground).max(0.0))
+        .sum::<f32>()
+        / colours.len() as f32;
+    let red = colours
+        .iter()
+        .filter(|c| {
+            let (r, g, b) = (lin(c.r()), lin(c.g()), lin(c.b()));
+            r + g + b > 0.0 && r / (r + g + b) >= 0.8 && (r - g - b) * 320.0 >= 20.0
+        })
+        .count() as f32
+        / colours.len() as f32;
+    let by_contrast = 1.0 + 0.6 * ((contrast - 0.45) / 0.45).clamp(0.0, 1.0);
+    let by_red = 1.0 + 0.6 * ((red - 0.34) / 0.66).clamp(0.0, 1.0);
+    by_contrast.max(by_red)
 }
 
 pub fn scheme(key: &str, custom: &std::collections::BTreeMap<String, String>) -> Scheme {
@@ -1255,6 +1299,14 @@ pub fn feedback_preset(state: &VizState) -> usize {
     generative::preset(&state.generative)
 }
 
+/// The feedback face's looks: how many (tests).
+pub const FEEDBACK_LOOKS: usize = generative::LOOKS;
+
+/// Shows the feedback face's look `k` (tests).
+pub fn set_feedback_preset(state: &mut VizState, k: usize) {
+    generative::set_preset(&mut state.generative, k);
+}
+
 /// The faces fading: which is (tests).
 pub fn fading(state: &VizState) -> Option<&'static str> {
     state.fading.map(|(k, _)| k)
@@ -1465,5 +1517,41 @@ mod tests {
         // a grey cover has none
         let grey: Vec<u8> = (0..4096).flat_map(|_| [120, 120, 120, 255]).collect();
         assert!(cover_scheme(&grey).is_none());
+    }
+}
+
+#[cfg(test)]
+mod scheme_calm_tests {
+    use super::*;
+
+    #[test]
+    fn strong_and_red_schemes_move_calmer() {
+        let custom = |pairs: &[(&str, &str)]| {
+            pairs
+                .iter()
+                .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
+                .collect::<std::collections::BTreeMap<_, _>>()
+        };
+        for key in ["classic", "neon", "mono", "fire", "ice", "theme"] {
+            println!(
+                "{key}: {:.2}",
+                scheme_calm(&scheme(key, &Default::default()))
+            );
+        }
+        let bw = custom(&[
+            ("background", "#000000"),
+            ("low", "#ffffff"),
+            ("high", "#ffffff"),
+            ("peak", "#ffffff"),
+        ]);
+        let red = custom(&[
+            ("background", "#000000"),
+            ("low", "#ff0000"),
+            ("high", "#ff0000"),
+            ("peak", "#ff3030"),
+        ]);
+        assert!(scheme_calm(&scheme("custom", &bw)) > 1.55);
+        assert!(scheme_calm(&scheme("custom", &red)) > 1.55);
+        assert!(scheme_calm(&scheme("classic", &Default::default())) < 1.3);
     }
 }

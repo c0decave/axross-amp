@@ -2,10 +2,12 @@
 //! beat's pulse, the bass, the energy) may not swing back and forth faster
 //! than a photosensitive viewer can bear. WCAG 2.3.1 allows at most three
 //! flashes - pairs of opposing changes - in any second; here a value may
-//! turn (from rising to falling or back) only once in TURN_CALM (0.25 s:
-//! at most two flashes a second) or TURN_INTENSE (0.17 s: under three),
-//! and it moves smoothly (no jump within a frame). A face's brightness
-//! that follows these values follows that limit.
+//! turn (from rising to falling or back) only once in a quarter of a
+//! second (four turns a second - by the strict reading, which counts
+//! every turn, within the six allowed with room for bars that turn out of
+//! step), in Reduced 0.4 s, and it moves smoothly (no jump within a
+//! frame). A face's brightness that follows these values follows that
+//! limit; Intense is livelier by its quicker easing and pace.
 
 /// How the pictures move: calm (the default: slower - what drives them
 /// turns at most every quarter of a second), intense (livelier) or reduced
@@ -23,8 +25,10 @@ impl Motion {
     /// The least time between two turns of a value (s).
     pub fn turn(self) -> f32 {
         match self {
-            Motion::Calm => 0.25,
-            Motion::Intense => 0.17,
+            // (Intense too: at 0.2 the bass bars of a kick at 240 BPM,
+            // turning out of step, came to seven changes a second over a
+            // field by the strict reading)
+            Motion::Calm | Motion::Intense => 0.25,
             Motion::Reduced => 0.4,
         }
     }
@@ -33,7 +37,10 @@ impl Motion {
     fn ease(self) -> (f32, f32) {
         match self {
             Motion::Calm => (0.06, 0.14),
-            Motion::Intense => (0.03, 0.09),
+            // (falling as slowly as in Calm: the flames of the fire face
+            // collapsing at once as the music stopped were, by the strict
+            // reading, a change in a field again and again)
+            Motion::Intense => (0.03, 0.14),
             Motion::Reduced => (0.12, 0.25),
         }
     }

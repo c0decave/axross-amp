@@ -63,6 +63,8 @@ pub struct Fine {
     /// How the pictures move (the analyzer's): the spectrograms' bands turn
     /// no faster than it allows.
     pub motion: Motion,
+    /// As the analyzer's `calm`.
+    pub calm: f32,
     /// Each mel band's and fine band's guard.
     mel_guards: Vec<Guard>,
     /// Each mel band's slow mean (two seconds): the spectrogram shows the
@@ -158,6 +160,7 @@ impl Fine {
             key_history: vec![[0.0; KEYS]; STEPS],
             hd_history: vec![[0.0; HD]; STEPS],
             motion: Motion::default(),
+            calm: 1.0,
             mel_guards: vec![Guard::default(); MELS],
             mel_mean: [0.0; MELS],
             hd_mean: vec![0.0; HD],
@@ -422,7 +425,7 @@ impl Fine {
                 .zip(&mut self.mel_guards)
                 .zip(&mut self.mel_mean)
             {
-                let guarded = g.step(*v, 1.0 / STEP_HZ, self.motion);
+                let guarded = g.step(*v, 1.0 / STEP_HZ / self.calm, self.motion);
                 *m += (guarded - *m) * slow;
                 let shown = *m + (guarded - *m) * 0.5;
                 *v = b + (shown - b) * MEL_EASE;
@@ -438,7 +441,7 @@ impl Fine {
                 .zip(&mut self.chroma_guards)
                 .zip(&mut self.chroma_mean)
             {
-                let guarded = g.step(*v, 1.0 / STEP_HZ, self.motion);
+                let guarded = g.step(*v, 1.0 / STEP_HZ / self.calm, self.motion);
                 *m += (guarded - *m) * slow;
                 let shown = *m + (guarded - *m) * 0.5;
                 *v = b + (shown - b) * MEL_EASE;
@@ -454,7 +457,7 @@ impl Fine {
                 .zip(&mut self.key_guards)
                 .zip(&mut self.key_mean)
             {
-                let guarded = g.step(*v, 1.0 / STEP_HZ, self.motion);
+                let guarded = g.step(*v, 1.0 / STEP_HZ / self.calm, self.motion);
                 *m += (guarded - *m) * slow;
                 let shown = *m + (guarded - *m) * 0.5;
                 *v = b + (shown - b) * MEL_EASE;
@@ -472,7 +475,7 @@ impl Fine {
                 .zip(&mut self.hd_guards)
                 .zip(&mut self.hd_mean)
             {
-                let guarded = g.step(*v, 1.0 / STEP_HZ, self.motion);
+                let guarded = g.step(*v, 1.0 / STEP_HZ / self.calm, self.motion);
                 *m += (guarded - *m) * slow;
                 let shown = *m + (guarded - *m) * 0.5;
                 *v = b + (shown - b) * MEL_EASE;

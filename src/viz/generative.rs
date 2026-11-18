@@ -59,6 +59,8 @@ pub struct State {
     flow: Vec<Particle>,
     stars: Vec<[f32; 4]>,
     galaxy_turn: f32,
+    /// The helix's turn.
+    helix_spin: f32,
     synth_scroll: f32,
     buildings: Vec<Building>,
     buildings_for: f32,
@@ -96,6 +98,7 @@ impl Default for State {
             flow: Vec::new(),
             stars: Vec::new(),
             galaxy_turn: 0.0,
+            helix_spin: 0.0,
             synth_scroll: 0.0,
             buildings: Vec::new(),
             buildings_for: 0.0,
@@ -157,7 +160,7 @@ pub fn draw(f: &Frame<'_>, key: &str, state: &mut VizState) {
         "galaxy" => cv.draw(p, |pen| galaxy(f, pen, st, dt)),
         "skyline" => cv.draw(p, |pen| skyline(f, pen, st)),
         "isometric" => cv.draw(p, |pen| isometric(f, pen)),
-        "helix" => cv.draw(p, |pen| helix(f, pen)),
+        "helix" => cv.draw(p, |pen| helix(f, pen, st, dt)),
         "spirograph" => cv.draw(p, |pen| spirograph(f, pen, st, dt)),
         "morph" => cv.draw(p, |pen| morph(f, pen, st, dt)),
         "beatrings" => {
@@ -198,10 +201,14 @@ fn band(a: &Analyzer, x: f32) -> f32 {
     a.bars[i] + (a.bars[j] - a.bars[i]) * (f - i as f32)
 }
 
+/// A third of the bars' mean - the low, middle or high - as the analyzer
+/// guards it (turning no faster than the motion allows).
 fn third(a: &Analyzer, k: usize) -> f32 {
-    let n = a.bars.len().max(1);
-    let (from, to) = (k * n / 3, ((k + 1) * n / 3).max(k * n / 3 + 1).min(n));
-    a.bars[from..to].iter().sum::<f32>() / (to - from) as f32
+    match k {
+        0 => a.energy,
+        1 => a.middle,
+        _ => a.treble,
+    }
 }
 
 // -- the shader faces ----------------------------------------------------------------
@@ -223,7 +230,8 @@ fn shaded(f: &Frame<'_>, shader: Shader, state: &mut VizState, dt: f32) {
             let phrase = a.beat.count >= st.preset_beat + 16;
             if (phrase || st.preset_age > 20.0) && st.preset_blend >= 1.0 {
                 st.preset_before = st.preset;
-                st.preset = (st.preset + 1 + (st.random() * 2.0) as usize) % PRESETS.len();
+                st.preset = (st.preset + 1 + (st.random() * (PRESETS.len() - 1) as f32) as usize)
+                    % PRESETS.len();
                 st.preset_blend = 0.0;
                 st.preset_beat = a.beat.count;
                 st.preset_age = 0.0;
@@ -243,7 +251,10 @@ fn shaded(f: &Frame<'_>, shader: Shader, state: &mut VizState, dt: f32) {
                 * k;
             let zoom = 1.0 - (lerp(p0.zoom, p1.zoom) + lerp(p0.pull, p1.pull) * a.bass) * k;
             let swirl = (lerp(p0.swirl, p1.swirl) + 0.004 * third(a, 1)) * k;
-            let decay = (lerp(p0.decay, p1.decay) + 0.03 * a.energy.min(1.0)).powf(k);
+            // (never 1: what it drew fades, however loud)
+            let decay = (lerp(p0.decay, p1.decay) + 0.02 * a.energy.min(1.0))
+                .min(0.982)
+                .powf(k);
             u = u
                 .with_motion([turn, zoom, swirl, decay])
                 .with_extra(1, [p0.wave, p1.wave, b, lerp(p0.warp, p1.warp)]);
@@ -266,7 +277,19 @@ pub fn preset(st: &State) -> usize {
     st.preset
 }
 
-/// A look of the feedback face (five looks of its own - not MilkDrop's presets): its
+/// The feedback face's looks: how many.
+pub const LOOKS: usize = PRESETS.len();
+
+/// Shows the feedback face's look `k` at once, the next not before a
+/// phrase (tests).
+pub fn set_preset(st: &mut State, k: usize) {
+    st.preset = k % PRESETS.len();
+    st.preset_before = st.preset;
+    st.preset_blend = 1.0;
+    st.preset_age = 0.0;
+}
+
+/// A look of the feedback face (eight looks of its own - not MilkDrop's presets): its
 /// motion (a 60th of a second's), the wave it draws, how its swirl folds,
 /// how fast its colours turn, and whether it is mirrored.
 struct Preset {
@@ -276,14 +299,16 @@ struct Preset {
     pull: f32,
     swirl: f32,
     decay: f32,
-    /// 0 a ring of the bands, 1 a scope's line, 2 a spiral, 3 orbits
+    /// 0 a ring of the bands, 1 a scope's line, 2 a spiral, 3 orbits, 4 a
+    /// rose, 5 spokes
     wave: f32,
     warp: f32,
     hue: f32,
+    /// 0 none, 1 left on right, 2 in four
     mirror: f32,
 }
 
-const PRESETS: [Preset; 5] = [
+const PRESETS: [Preset; 8] = [
     // a halo drawn inwards
     Preset {
         turn: 0.004,
@@ -291,7 +316,7 @@ const PRESETS: [Preset; 5] = [
         zoom: 0.012,
         pull: 0.02,
         swirl: 0.0015,
-        decay: 0.955,
+        decay: 0.962,
         wave: 0.0,
         warp: 6.0,
         hue: 0.07,
@@ -304,7 +329,7 @@ const PRESETS: [Preset; 5] = [
         zoom: -0.008,
         pull: -0.01,
         swirl: 0.003,
-        decay: 0.95,
+        decay: 0.958,
         wave: 1.0,
         warp: 3.0,
         hue: 0.12,
@@ -317,7 +342,7 @@ const PRESETS: [Preset; 5] = [
         zoom: 0.018,
         pull: 0.015,
         swirl: 0.001,
-        decay: 0.96,
+        decay: 0.966,
         wave: 2.0,
         warp: 9.0,
         hue: 0.05,
@@ -330,7 +355,7 @@ const PRESETS: [Preset; 5] = [
         zoom: 0.006,
         pull: 0.02,
         swirl: 0.006,
-        decay: 0.955,
+        decay: 0.962,
         wave: 3.0,
         warp: 4.0,
         hue: 0.1,
@@ -343,11 +368,50 @@ const PRESETS: [Preset; 5] = [
         zoom: 0.025,
         pull: 0.03,
         swirl: 0.007,
-        decay: 0.95,
+        decay: 0.958,
         wave: 0.0,
         warp: 12.0,
         hue: 0.15,
         mirror: 1.0,
+    },
+    // a rose in four mirrors, its petals left as lace
+    Preset {
+        turn: 0.008,
+        swing: 0.006,
+        zoom: 0.01,
+        pull: 0.015,
+        swirl: 0.004,
+        decay: 0.968,
+        wave: 4.0,
+        warp: 7.0,
+        hue: 0.08,
+        mirror: 2.0,
+    },
+    // spokes of the bands, turning out into a fan
+    Preset {
+        turn: 0.014,
+        swing: 0.008,
+        zoom: -0.006,
+        pull: -0.008,
+        swirl: 0.002,
+        decay: 0.965,
+        wave: 5.0,
+        warp: 5.0,
+        hue: 0.06,
+        mirror: 0.0,
+    },
+    // a halo folded in four, dense and fine
+    Preset {
+        turn: -0.006,
+        swing: 0.01,
+        zoom: 0.015,
+        pull: 0.02,
+        swirl: 0.005,
+        decay: 0.968,
+        wave: 0.0,
+        warp: 10.0,
+        hue: 0.11,
+        mirror: 2.0,
     },
 ];
 
@@ -668,9 +732,13 @@ fn flowfield(f: &Frame<'_>, pen: &mut Pen<'_>, st: &mut State, dt: f32) {
         st.flow[k] = q;
     }
     let place = |p: Pos2| r.min + p.to_vec2() * r.height();
+    // (in the starkest schemes - white on black - the lines a shade under
+    // full: thousands of white hairs on black lie in rows the eye reads as
+    // a moving grating)
+    let reach = 1.0 / super::scheme_calm(s);
     for (k, q) in st.flow.iter().enumerate() {
         // fading in as it is born and out as it ends
-        let life = (q.age / 0.5).min(1.0) * ((q.life - q.age) / 0.8).clamp(0.0, 1.0);
+        let life = (q.age / 0.5).min(1.0) * ((q.life - q.age) / 0.8).clamp(0.0, 1.0) * reach;
         let hue =
             s.at(
                 0.25 + 0.75 * ((k as f32 * 0.618).fract() * 0.6 + band(a, q.trail[q.head].y) * 0.4)
@@ -854,8 +922,11 @@ fn galaxy(f: &Frame<'_>, pen: &mut Pen<'_>, st: &mut State, dt: f32) {
     st.galaxy_turn += dt * (0.06 + 0.5 * a.energy + 0.3 * a.beat.pulse);
     let c = r.center();
     let size = r.width().min(r.height() * 1.6) * 0.48;
-    // the core
-    let core = size * (0.12 + 0.1 * a.bass + 0.05 * a.beat.pulse);
+    // the core, swelling a little with the bass (less in the starkest
+    // schemes: its white heart grown and shrunk by a kick at 240 BPM, and
+    // the inner stars with it, were seven changes a second in Intense)
+    let calm = super::scheme_calm(s);
+    let core = size * (0.13 + (0.06 * a.bass + 0.02 * a.beat.pulse) / calm);
     pen.radial(c, core * 4.0, glow(s.mid, 0.55), Color32::TRANSPARENT);
     pen.radial(c, core * 1.2, glow(s.peak, 0.8), Color32::TRANSPARENT);
     for [radius, angle, bright, tint] in &st.stars {
@@ -863,7 +934,7 @@ fn galaxy(f: &Frame<'_>, pen: &mut Pen<'_>, st: &mut State, dt: f32) {
         let turn = angle + st.galaxy_turn * (1.0 / (radius + 0.3));
         let level = band(a, *radius);
         let p = c + vec2(turn.cos(), turn.sin() * 0.55) * (radius * size);
-        let k = bright * (0.35 + 0.9 * level);
+        let k = bright * (0.4 + 0.8 * level / calm);
         let colour = s.at(0.2 + 0.8 * (1.0 - radius) * 0.6 + tint * 0.3);
         let d = 1.0 + 1.6 * level * bright;
         pen.rect(Rect::from_center_size(p, vec2(d, d)), glow(colour, k));
@@ -1140,13 +1211,20 @@ fn isometric(f: &Frame<'_>, pen: &mut Pen<'_>) {
 
 // -- the DNA helix -------------------------------------------------------------------
 
-fn helix(f: &Frame<'_>, pen: &mut Pen<'_>) {
-    let (a, s, r) = (f.a, f.s, f.rect);
+fn helix(f: &Frame<'_>, pen: &mut Pen<'_>, st: &mut State, dt: f32) {
+    // (never saturated red: its lines, in a pure red scheme, flashed red
+    // eight or nine times a second in Intense)
+    let unred = f.s.unred();
+    let (a, s, r) = (f.a, &unred, f.rect);
     let t = a.time as f32;
     const POINTS: usize = 140;
     let amp = r.height() * 0.36 * (0.85 + 0.2 * a.bass + 0.1 * a.beat.pulse);
     let cy = r.center().y;
-    let spin = t * (0.5 + 1.4 * a.energy);
+    // (turning faster as it gets louder, by a turn kept from frame to frame:
+    // `time * (0.5 + 1.4 * energy)` leapt at each change of the energy,
+    // the further the longer it had played)
+    st.helix_spin = (st.helix_spin + dt * (0.5 + 1.4 * a.energy)) % (TAU * 1000.0);
+    let spin = st.helix_spin;
     // dust drifting behind, lit by the treble
     let treble = third(a, 2);
     for k in 0..90u32 {
@@ -1268,9 +1346,12 @@ fn spirograph(f: &Frame<'_>, pen: &mut Pen<'_>, st: &mut State, dt: f32) {
     }
     st.spiro_fade = (st.spiro_fade + dt / 2.0).min(1.0);
     st.spiro.0 = st.spiro.1;
-    let follow = 1.0 - (-dt * 1.5).exp();
+    // (its pen and its turn slow: the dense curve, turning or changing
+    // shape, lit and darkened its pixels together, nine or ten times a
+    // second by the strict reading)
+    let follow = 1.0 - (-dt * 0.4).exp();
     st.spiro.2 += ((0.45 + 0.5 * a.energy) - st.spiro.2) * follow;
-    st.spiro_turn += dt * (0.1 + 0.4 * a.energy);
+    st.spiro_turn += dt * (0.04 + 0.1 * a.energy);
     let c = r.center();
     // as large as the picture: the curves and, behind, two larger copies
     // that run off its sides
@@ -1312,16 +1393,20 @@ fn spirograph(f: &Frame<'_>, pen: &mut Pen<'_>, st: &mut State, dt: f32) {
                         .push(c + vec2(x * cos - y * sin, x * sin + y * cos) * scale);
                 }
                 let level = band(a, chunk as f32 / chunks as f32);
+                // (the band's level picks the colour; how bright follows the
+                // guarded energy alone - each band's and the beat's own,
+                // twenty-eight chunks each in its own time, were more than
+                // six rises a second, strictly counted)
                 let colour = mix(
                     s.background,
                     s.at(0.2 + 0.8 * level),
-                    (0.45 + 0.2 * (4 - layer) as f32 / 4.0 + 0.35 * a.beat.pulse) * faint,
+                    (0.5 + 0.2 * (4 - layer) as f32 / 4.0 + 0.15 * a.energy) * faint,
                 );
                 glowing_line(
                     pen,
                     1.0 + 0.5 * inner as f32,
                     colour,
-                    faint * (0.6 + 0.8 * level),
+                    faint * (0.8 + 0.2 * a.energy),
                 );
             }
         }
@@ -1343,7 +1428,10 @@ fn polygon_radius(sides: usize, theta: f32) -> f32 {
 }
 
 fn morph(f: &Frame<'_>, pen: &mut Pen<'_>, st: &mut State, dt: f32) {
-    let (a, s, r) = (f.a, f.s, f.rect);
+    // (never saturated red: its lines, in a pure red scheme, flashed red
+    // eight or nine times a second in Intense)
+    let unred = f.s.unred();
+    let (a, s, r) = (f.a, &unred, f.rect);
     const SHAPES: [usize; 7] = [3, 4, 5, 6, 0, 8, 3];
     if a.beat.count != st.last_beat {
         st.last_beat = a.beat.count;
@@ -1409,7 +1497,11 @@ fn beatrings(f: &Frame<'_>, pen: &mut Pen<'_>, st: &mut State, dt: f32) {
     st.since_ring += dt;
     let beat = a.beat.count != st.last_beat;
     st.last_beat = a.beat.count;
-    if beat || (st.since_ring > 1.5 && a.energy > 0.15) {
+    // (a new ring no sooner than twice the motion's turn after the last:
+    // every beat of a fast song, a ring passing each pixel lit and darkened
+    // it more than six times a second)
+    let gap = 2.0 * a.motion.turn();
+    if (beat && st.since_ring >= gap) || (st.since_ring > 1.5 && a.energy > 0.15) {
         st.since_ring = 0.0;
         let strength = if beat {
             0.5 + 0.5 * a.beat.strength
@@ -1512,7 +1604,7 @@ fn beatrings(f: &Frame<'_>, pen: &mut Pen<'_>, st: &mut State, dt: f32) {
             mix(s.background, s.peak, life),
         );
     }
-    let core = base * (0.55 + 0.4 * a.bass + 0.35 * a.beat.pulse);
+    let core = base * (0.6 + 0.45 * a.bass);
     pen.radial(
         c,
         core * 2.4,
@@ -1548,7 +1640,10 @@ fn typography(f: &Frame<'_>, pen: &mut Pen<'_>, st: &mut State, dt: f32) {
     st.word_age += dt;
     let beat = a.beat.count != st.last_beat;
     st.last_beat = a.beat.count;
-    if (beat && st.word_age > 0.3) || st.word_age > 1.6 {
+    // (a word a beat at most every 0.75 s: a big word coming and the last
+    // one going is a rise and a fall over much of the picture - at every
+    // beat of a fast song, more than three of them a second)
+    if (beat && st.word_age > 0.75) || st.word_age > 2.0 {
         st.previous_word = st.word;
         st.word = (st.word + 1) % st.words.len();
         st.word_age = 0.0;
@@ -1594,7 +1689,7 @@ fn typography(f: &Frame<'_>, pen: &mut Pen<'_>, st: &mut State, dt: f32) {
     };
     // the word before goes up and out as the new one comes up from below,
     // a letter after another
-    let travel = (st.word_age / 0.28).min(1.0);
+    let travel = (st.word_age / 0.4).min(1.0);
     let ease = travel * travel * (3.0 - 2.0 * travel);
     let word = &st.words[st.word];
     let galley = f
@@ -1622,7 +1717,7 @@ fn typography(f: &Frame<'_>, pen: &mut Pen<'_>, st: &mut State, dt: f32) {
     let age = st.word_age;
     let pulse = a.beat.pulse;
     let arrive = move |glyph: u32| {
-        let k = ((age - (glyph as f32 - 1.0) * 0.035) / 0.25).clamp(0.0, 1.0);
+        let k = ((age - (glyph as f32 - 1.0) * 0.05) / 0.35).clamp(0.0, 1.0);
         let k = k * k * (3.0 - 2.0 * k);
         let bounce = pulse * (glyph as f32 * 1.3 + t * 6.0).sin() * 0.06;
         (vec2(0.0, ((1.0 - k) * 0.3 - bounce) * height), k)
@@ -1641,7 +1736,7 @@ fn typography(f: &Frame<'_>, pen: &mut Pen<'_>, st: &mut State, dt: f32) {
     put_glyphs(pen, &galley, uv, c, scale, tilt, |glyph| {
         let (lift, k) = arrive(glyph);
         let along = (glyph as f32 - 1.0) / (letters - 1.0).max(1.0);
-        let colour = mix(mix(s.high, s.peak, 0.35 * along), s.peak, pulse * 0.8);
+        let colour = mix(mix(s.high, s.peak, 0.35 * along), s.peak, pulse * 0.3);
         (lift, mix(s.background, colour, k))
     });
     // a bar under it, as wide as it is loud - below its letters' feet

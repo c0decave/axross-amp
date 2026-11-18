@@ -27,24 +27,28 @@ const COLS: usize = 128;
 /// Shader faces are evaluated on this coarser grid (cells take the
 /// nearest).
 const SHADE_COLS: usize = 48;
-/// How long a transition stays "at once" with others: 34 ms - two frames at
-/// 60 a second, one at 30 or fewer (counted in frames, not compared in
-/// seconds: 0.034 against a frame of 0.0333 s was a coin toss).
-const AT_ONCE: f32 = 0.034;
+/// How long a transition stays "at once" with others: 100 ms - six frames
+/// at 60 a second, three at 30 (counted in frames, not compared in seconds:
+/// a float compare against a frame's length was a coin toss). The stricter
+/// of the two readings the tests apply (the other: 34 ms).
+const AT_ONCE: f32 = 0.1;
 /// The screen the fields are a third of, each way, when the monitor's size
 /// is not known (points).
 const SCREEN: egui::Vec2 = egui::vec2(1920.0, 1080.0);
 /// A shape's coverage taken a little larger than its geometry (a line a
 /// pixel wide is drawn feathered, over more).
-const SPREAD: f32 = 1.25;
+const SPREAD: f32 = 1.0;
 /// A transition in a cell's relative luminance (WCAG's 0.1).
 const STEP: f32 = 0.1;
-/// Transitions in a field's last second from which the veil comes (five:
-/// a beat's pulse at 120 BPM - four - is within the rule and left
-/// alone; the sixth and seventh, which would break it, are veiled).
-const RAW_BUDGET: usize = 5;
+/// Transitions in a field's last second (every rise, 100 ms "at once")
+/// from which the veil comes: seven - over the rule. The faces keep within
+/// it by themselves; the veil is for what they do not foresee, and comes
+/// no sooner, for its own coming and going are transitions too (at five or
+/// six, counted strictly, it came for faces within the rule, and its
+/// coming and going broke the rule where they had not).
+const RAW_BUDGET: usize = 7;
 /// And from which, seen through the veil, it closes further.
-const SHOWN_BUDGET: usize = 5;
+const SHOWN_BUDGET: usize = 7;
 
 #[derive(Clone, Copy, Default)]
 struct Track {
@@ -230,16 +234,29 @@ impl Watch {
             let red = [sum(field.at, 2), sum(field.at, 3)];
             // (each way on its own: brightening, then darkening, is two;
             // the quarter of a field's area in sixteenths of a cell)
+            // (on at a quarter, off only under a fifth: the estimate's
+            // coverage, coarse, wavered about the quarter within one rise -
+            // each waver another "transition")
             let quarter = field.quarter as usize;
+            let was = self.over[k];
+            let over = |j: usize, area: usize| {
+                if was[j] {
+                    area * 5 >= quarter * 4
+                } else {
+                    area >= quarter
+                }
+            };
             let is = [
-                lum[1] >= quarter,
-                lum[0] >= quarter,
-                red[1] >= quarter,
-                red[0] >= quarter,
+                over(0, lum[1]),
+                over(1, lum[0]),
+                over(2, red[1]),
+                over(3, red[0]),
             ];
             for (j, now_over) in is.iter().enumerate() {
                 let (kind, way) = (j / 2, if j % 2 == 0 { 1 } else { -1 });
-                if *now_over && !self.over[k][j] && self.last[k][kind] != way {
+                // (every rise counts - the stricter reading; not only one
+                // the other way from the last)
+                if *now_over && !self.over[k][j] {
                     self.events[k][kind].push(now);
                     self.last[k][kind] = way;
                 }
@@ -331,10 +348,18 @@ pub struct FlashGuard {
     shade: Vec<[f32; 4]>,
     /// The most the veil covers now (0..1; tests and the report).
     pub strength: f32,
+    /// The pattern stage: the cells in regular stripes now, how strongly
+    /// each is softened (0..1), the local mean it is softened towards, the
+    /// last tenth of a second's luminance (is it moving?), and the most it
+    /// softens now (tests).
+    pattern: Pattern,
+    pub pattern_strength: f32,
     target: Vec<f32>,
     /// The estimate as laid on (sRGB values), kept for the next frame.
     acc: Vec<[f32; 3]>,
     acc_big: Vec<[f32; 3]>,
+    /// The pieces covering part of a cell, this frame (kept: its memory).
+    parts: Vec<Part>,
 }
 
 impl Default for FlashGuard {
@@ -363,9 +388,12 @@ impl Default for FlashGuard {
             feedback: Vec::new(),
             shade: Vec::new(),
             strength: 0.0,
+            pattern: Pattern::default(),
+            pattern_strength: 0.0,
             target: Vec::new(),
             acc: Vec::new(),
             acc_big: Vec::new(),
+            parts: Vec::new(),
         }
     }
 }
@@ -558,6 +586,9 @@ impl FlashGuard {
         let mut big = std::mem::take(&mut self.acc_big);
         big.clear();
         big.resize(cols * rows, [0.0f32; 3]);
+        let mut parts = std::mem::take(&mut self.parts);
+        parts.clear();
+        parts.resize(cols * rows, Part::default());
         std::mem::swap(&mut self.small, &mut self.small_before);
         self.small.clear();
         self.small.resize(cols * rows, 0.0);
@@ -598,6 +629,7 @@ impl FlashGuard {
                             all: &mut acc,
                             big: &mut big,
                             small: &mut self.small,
+                            parts: &mut parts,
                         };
                         let thumb = texture
                             .filter(|(id, _)| *id == mesh.texture_id)
@@ -629,6 +661,7 @@ impl FlashGuard {
         }
         self.acc = acc;
         self.acc_big = big;
+        self.parts = parts;
     }
 
     /// A shader face's colours on the cells it covers (evaluated on a
@@ -776,12 +809,13 @@ impl FlashGuard {
             let raw = self.raw_watch.recent(k);
             let shown = self.shown_watch.recent(k);
             let (level, until) = &mut self.hold[k];
-            let want = if shown >= SHOWN_BUDGET {
+            // (0.95 at once: a veil of 85 % left 0.15 of a black and white
+            // swing - still a transition)
+            // (held a second and a half after the last time it was called
+            // for - not while the face merely stays near the limit: counted
+            // strictly, ordinary music stays there, and was veiled)
+            let want = if shown >= SHOWN_BUDGET || raw >= RAW_BUDGET {
                 0.95
-            } else if raw >= RAW_BUDGET {
-                0.85
-            } else if *level > 0.0 && raw >= RAW_BUDGET - 1 {
-                *level
             } else {
                 0.0
             };
@@ -792,28 +826,20 @@ impl FlashGuard {
                 *level = want;
             }
         }
-        // each cell: the strongest of its fields, eased (on fast, off slow)
+        // the whole face, as strongly as its strongest field calls for:
+        // veiled field by field, as each came to the limit, the veil's own
+        // edges moved over a black and white picture - flashes of their own
+        let level = self.hold.iter().map(|h| h.0).fold(0.0f32, f32::max);
         let mut target = std::mem::take(&mut self.target);
         target.clear();
-        target.resize(self.veil.len(), 0.0);
-        for (k, field) in self.fields.iter().enumerate() {
-            let level = self.hold[k].0;
-            if level > 0.0 {
-                let (x, y, w, h) = field.at;
-                for cy in y..y + h {
-                    for t in &mut target[cy * self.cols + x..cy * self.cols + x + w] {
-                        *t = t.max(level);
-                    }
-                }
-            }
-        }
-        // (feathered: the veil falls off over a few cells outside its
-        // fields, so that it has no edge to see)
-        feather(&mut target, self.cols, self.rows, (self.cols / 24).max(2));
+        target.resize(self.veil.len(), level);
         // (on within a few frames - before the next transition - off over
         // a second)
-        let on = 1.0 - (-dt / 0.05).exp();
+        let on = 1.0 - (-dt / 0.08).exp();
         let off = 1.0 - (-dt / 0.9).exp();
+        // (the slow picture follows over half a second where there is no
+        // veil, and stands nearly still under it: following, in black and
+        // white, it flashed itself through the veil)
         let follow = 1.0 - (-dt / 0.5).exp();
         let mut strongest = 0.0f32;
         for i in 0..self.veil.len() {
@@ -822,12 +848,144 @@ impl FlashGuard {
             self.veil[i] += (t - self.veil[i]) * k;
             strongest = strongest.max(self.veil[i]);
             // the slow picture the veil blends towards
+            let follow = follow * (1.0 - self.veil[i]).powi(2);
             for c in 0..3 {
                 self.slow[i][c] += (self.raw[i][c] - self.slow[i][c]) * follow;
             }
         }
         self.strength = strongest;
         self.target = target;
+        self.patterns(dt);
+    }
+
+    /// The pattern stage (ITU-R BT.1702): regular stripes in the estimate
+    /// (five light-dark pairs or more in a row or column of cells, full
+    /// periods alike, each step 0.1 of luminance) over a quarter of the
+    /// picture while they move (a third of them changed by 0.1 within a
+    /// tenth of a second) or 35 % standing: softened in place, towards the
+    /// mean of the cells round them (21 cells each way: wider than the
+    /// stripes), by 95 - 98 % (about 0.03 of their contrast left), until
+    /// they no longer are. (For what no face foresaw: a cover, a scheme.
+    /// Stripes finer than two cells - about 1 % of the picture's width -
+    /// are not seen.)
+    fn patterns(&mut self, dt: f32) {
+        let (cols, rows) = (self.cols, self.rows);
+        let n = cols * rows;
+        let p = &mut self.pattern;
+        if p.soft.len() != n {
+            *p = Pattern {
+                soft: vec![0.0; n],
+                mean: vec![[0.0; 3]; n],
+                marked: vec![false; n],
+                past: Default::default(),
+            };
+        }
+        let y: Vec<f32> = self
+            .raw
+            .iter()
+            .map(|c| 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2])
+            .collect();
+        p.marked.iter_mut().for_each(|m| *m = false);
+        let share = stripes(&y, cols, rows, &mut p.marked);
+        let moving = share > 0.0
+            && p.past.iter().any(|before: &Vec<f32>| {
+                let (mut k, mut changed) = (0usize, 0usize);
+                for (i, m) in p.marked.iter().enumerate() {
+                    if *m {
+                        k += 1;
+                        changed += usize::from((y[i] - before[i]).abs() >= 0.1);
+                    }
+                }
+                changed * 3 >= k
+            });
+        p.past.push_back(y);
+        let keep = ((0.1 / dt.max(1e-3)).round() as usize).max(1);
+        while p.past.len() > keep {
+            p.past.pop_front();
+        }
+        let hazard = share >= 0.35 || (share >= 0.25 && moving);
+        // (the marks spread over a few cells: the stripes' runs end at
+        // their turns, and what lies between two runs is the pattern too)
+        if hazard {
+            let reach = 6usize;
+            let mut wide = p.marked.clone();
+            for _ in 0..2 {
+                let src = wide.clone();
+                for cy in 0..rows {
+                    for cx in 0..cols {
+                        if src[cy * cols + cx] {
+                            for xx in cx.saturating_sub(reach)..(cx + reach + 1).min(cols) {
+                                wide[cy * cols + xx] = true;
+                            }
+                            for yy in cy.saturating_sub(reach)..(cy + reach + 1).min(rows) {
+                                wide[yy * cols + cx] = true;
+                            }
+                        }
+                    }
+                }
+            }
+            p.marked = wide;
+        }
+        // the mean of each cell's neighbourhood (21 x 21 cells: wider than
+        // the stripes' period, so that it is even), and how far its light
+        // and dark lie apart (5 x 5)
+        const R: usize = 10;
+        let stride = cols + 1;
+        let mut sums = vec![[0.0f32; 3]; stride * (rows + 1)];
+        for cy in 0..rows {
+            let mut row = [0.0f32; 3];
+            for cx in 0..cols {
+                let c = self.raw[cy * cols + cx];
+                for j in 0..3 {
+                    row[j] += c[j];
+                    sums[(cy + 1) * stride + cx + 1][j] = sums[cy * stride + cx + 1][j] + row[j];
+                }
+            }
+        }
+        let y_now = p.past.back().cloned().unwrap_or_default();
+        let mut contrast = vec![0.0f32; n];
+        for cy in 0..rows {
+            for cx in 0..cols {
+                let (x0, y0) = (cx.saturating_sub(R), cy.saturating_sub(R));
+                let (x1, y1) = ((cx + R + 1).min(cols), (cy + R + 1).min(rows));
+                let k = ((x1 - x0) * (y1 - y0)) as f32;
+                let mut m = [0.0f32; 3];
+                for (j, v) in m.iter_mut().enumerate() {
+                    *v = (sums[y1 * stride + x1][j]
+                        - sums[y0 * stride + x1][j]
+                        - sums[y1 * stride + x0][j]
+                        + sums[y0 * stride + x0][j])
+                        / k;
+                }
+                p.mean[cy * cols + cx] = m;
+                let (mut lo, mut hi) = (f32::MAX, 0.0f32);
+                for yy in cy.saturating_sub(2)..(cy + 3).min(rows) {
+                    for xx in cx.saturating_sub(2)..(cx + 3).min(cols) {
+                        let l = y_now.get(yy * cols + xx).copied().unwrap_or(0.0);
+                        lo = lo.min(l);
+                        hi = hi.max(l);
+                    }
+                }
+                contrast[cy * cols + cx] = (hi - lo).max(0.0);
+            }
+        }
+        let on = 1.0 - (-dt / 0.05).exp();
+        let off = 1.0 - (-dt / 0.6).exp();
+        let mut most = 0.0f32;
+        for i in 0..n {
+            // (at least 95 %: the veil blends as egui does, in sRGB, where
+            // a tenth of a black and white grating left is still more than
+            // 0.1 of luminance; and the cells average finer stripes)
+            let want = if hazard && p.marked[i] {
+                (1.0 - 0.03 / contrast[i].max(0.03)).clamp(0.95, 0.98)
+            } else {
+                0.0
+            };
+            let k = if want > p.soft[i] { on } else { off };
+            p.soft[i] += (want - p.soft[i]) * k;
+            most = most.max(p.soft[i]);
+        }
+        self.pattern_strength = most;
     }
 
     /// The most transitions in a field's last second, raw and shown
@@ -840,6 +998,13 @@ impl FlashGuard {
                 .unwrap_or(0)
         };
         (most(&self.raw_watch), most(&self.shown_watch))
+    }
+
+    /// How much of the picture the pattern stage softens (the mean of its
+    /// strength over the cells; tests).
+    pub fn pattern_cover(&self) -> f32 {
+        let soft = &self.pattern.soft;
+        soft.iter().sum::<f32>() / soft.len().max(1) as f32
     }
 
     /// The estimate's luminance a cell, and the grid's size (tests).
@@ -856,6 +1021,11 @@ impl FlashGuard {
     /// corner, coloured as the cells around it, so that it shades smoothly
     /// (no blocks, no edges).
     fn draw(&self, painter: &egui::Painter) {
+        if self.pattern_strength >= 0.01 {
+            painter.add(egui::Shape::mesh(
+                self.cells_mesh(&self.pattern.soft, &self.pattern.mean),
+            ));
+        }
         if self.strength < 0.01 {
             return;
         }
@@ -863,13 +1033,24 @@ impl FlashGuard {
     }
 
     fn veil_mesh(&self) -> Mesh {
+        // (the slow picture blurred over a few cells: drawn as it is, the
+        // cells of a grid of lights - the LED equalizer's - stood in it as
+        // stripes)
+        let (cols, rows) = (self.cols, self.rows);
+        let blurred = box_mean(&self.slow, cols, rows, 3);
+        self.cells_mesh(&self.veil, &blurred)
+    }
+
+    /// A mesh over the picture of `colour` (linear) each cell, as much as
+    /// `alpha` says, shaded smoothly between the cells.
+    fn cells_mesh(&self, alpha: &[f32], colour: &[[f32; 3]]) -> Mesh {
         let (cols, rows, rect) = (self.cols, self.rows, self.rect);
         let cw = rect.width() / cols as f32;
         let ch = rect.height() / rows as f32;
         let cell = |cx: usize, cy: usize| {
             let i = cy * cols + cx;
-            let a = self.veil[i];
-            let s = self.slow[i];
+            let a = alpha[i];
+            let s = colour[i];
             [to_srgb(s[0]) * a, to_srgb(s[1]) * a, to_srgb(s[2]) * a, a]
         };
         let mut mesh = Mesh::default();
@@ -925,28 +1106,93 @@ impl FlashGuard {
     }
 }
 
-/// Spreads each cell's veil to its neighbours, falling off linearly over
-/// `reach` cells (a cone: rows, then columns).
-fn feather(target: &mut [f32], cols: usize, rows: usize, reach: usize) {
-    let fall = 1.0 / (reach as f32 + 1.0);
-    let mut pass = |at: &dyn Fn(usize, usize) -> usize, lines: usize, len: usize| {
-        for l in 0..lines {
-            let mut run = 0.0f32;
-            for k in 0..len {
-                let i = at(l, k);
-                run = (run - fall).max(target[i]);
-                target[i] = run;
+/// The pattern stage's state.
+#[derive(Default)]
+struct Pattern {
+    soft: Vec<f32>,
+    mean: Vec<[f32; 3]>,
+    marked: Vec<bool>,
+    past: std::collections::VecDeque<Vec<f32>>,
+}
+
+/// The share of the cells lying in regular stripes (rows and columns),
+/// marking them: at least ten turning points of 0.1 of luminance (the
+/// darker under 0.8) whose full periods - a light band and a dark together -
+/// are alike (within 1.6 times, give or take a cell). As the tests' meter
+/// reckons it on pixels.
+fn stripes(y: &[f32], cols: usize, rows: usize, marked: &mut [bool]) -> f32 {
+    let mut turns: Vec<usize> = Vec::new();
+    let mut line = |at: &dyn Fn(usize) -> usize, len: usize, marked: &mut [bool]| {
+        turns.clear();
+        let mut t = Track::default();
+        for k in 0..len {
+            if t.step(y[at(k)], STEP, Some(0.8)) != 0 {
+                turns.push(k);
             }
-            run = 0.0;
-            for k in (0..len).rev() {
-                let i = at(l, k);
-                run = (run - fall).max(target[i]);
-                target[i] = run;
+        }
+        let mut start = 0;
+        while start + 10 <= turns.len() {
+            let first = turns[start + 2] - turns[start];
+            let mut end = start + 2;
+            while end + 1 < turns.len() {
+                let period = turns[end + 1] - turns[end - 1];
+                if (period as f32) > first as f32 * 1.6 + 1.0
+                    || (period as f32) < first as f32 / 1.6 - 1.0
+                {
+                    break;
+                }
+                end += 1;
+            }
+            if end - start + 1 >= 10 {
+                for k in turns[start]..=turns[end] {
+                    marked[at(k)] = true;
+                }
+                start = end;
+            } else {
+                start += 1;
             }
         }
     };
-    pass(&|l, k| l * cols + k, rows, cols);
-    pass(&|l, k| k * cols + l, cols, rows);
+    for r in 0..rows {
+        line(&|k| r * cols + k, cols, marked);
+    }
+    for c in 0..cols {
+        line(&|k| k * cols + c, rows, marked);
+    }
+    marked.iter().filter(|m| **m).count() as f32 / (cols * rows).max(1) as f32
+}
+
+/// Each cell the mean of the cells within `r` of it (a box, by an integral
+/// image).
+fn box_mean(cells: &[[f32; 3]], cols: usize, rows: usize, r: usize) -> Vec<[f32; 3]> {
+    let stride = cols + 1;
+    let mut sums = vec![[0.0f32; 3]; stride * (rows + 1)];
+    for cy in 0..rows {
+        let mut row = [0.0f32; 3];
+        for cx in 0..cols {
+            let c = cells[cy * cols + cx];
+            for j in 0..3 {
+                row[j] += c[j];
+                sums[(cy + 1) * stride + cx + 1][j] = sums[cy * stride + cx + 1][j] + row[j];
+            }
+        }
+    }
+    let mut out = vec![[0.0f32; 3]; cols * rows];
+    for cy in 0..rows {
+        for cx in 0..cols {
+            let (x0, y0) = (cx.saturating_sub(r), cy.saturating_sub(r));
+            let (x1, y1) = ((cx + r + 1).min(cols), (cy + r + 1).min(rows));
+            let k = ((x1 - x0) * (y1 - y0)) as f32;
+            for j in 0..3 {
+                out[cy * cols + cx][j] = (sums[y1 * stride + x1][j]
+                    - sums[y0 * stride + x1][j]
+                    - sums[y1 * stride + x0][j]
+                    + sums[y0 * stride + x0][j])
+                    / k;
+            }
+        }
+    }
+    out
 }
 
 /// What a mesh is laid onto: the whole picture, its large content alone
@@ -956,6 +1202,26 @@ struct Onto<'a> {
     all: &'a mut [[f32; 3]],
     big: &'a mut [[f32; 3]],
     small: &'a mut [f32],
+    parts: &'a mut [Part],
+}
+
+/// The pieces laid on a cell that each cover part of it: side by side, as
+/// most do - the halves of a rectangle, the bands of a column, the pieces
+/// of a line - they add up, until they cover it all. (Laid each over the
+/// last, two halves of a cell lay as three quarters of it, and an even
+/// band of rows touching read as bright rows and dim ones: a grating.)
+#[derive(Clone, Copy, Default)]
+struct Part {
+    /// What lay under the first of them.
+    under: [f32; 3],
+    /// Their colours, each by how much it covers (premultiplied).
+    sum: [f32; 3],
+    /// How much of the cell they cover (up to all of it).
+    cover: f32,
+    /// The cell as they left it: anything else laid since, over all of
+    /// it, starts them afresh.
+    last: [f32; 3],
+    open: bool,
 }
 
 /// A tessellated mesh laid onto the cells (sRGB values, premultiplied).
@@ -979,9 +1245,9 @@ fn lay_mesh(
     // (the clip takes in the whole picture: no cell need be asked)
     let clip_all = clip.contains_rect(rect);
     // (a mesh of tens of thousands of small pieces - the spirograph's
-    // thousands of segments - laid one piece in so many, each counted so
-    // many times: dense lines are evenly covered either way, and the frame
-    // costs what one of 20,000 pieces does)
+    // thousands of segments - spread over the cells around it one piece in
+    // so many, the others each to its own cell: the frame costs about what
+    // 20,000 pieces spread do)
     let stride = (mesh.indices.len() / 3 / 20_000).max(1);
     for (index, tri) in mesh.indices.as_chunks::<3>().0.iter().enumerate() {
         let sampled = stride > 1 && index % stride != 0;
@@ -1049,13 +1315,39 @@ fn lay_mesh(
                     cell[i] = mean[i] * k + cell[i] * (1.0 - a);
                 }
             };
-            lay(&mut acc.all[at]);
             // (how much it covers: without the half again - an additive
             // glow too, which has no alpha)
             if k >= 0.99 {
+                lay(&mut acc.all[at]);
                 lay(&mut acc.big[at]);
-            } else if a > 0.004 || mean[0] + mean[1] + mean[2] > 0.004 {
-                acc.small[at] += k / SPREAD;
+                acc.parts[at].open = false;
+            } else {
+                let part = &mut acc.parts[at];
+                if !part.open || part.last != acc.all[at] {
+                    *part = Part {
+                        under: acc.all[at],
+                        open: true,
+                        ..Part::default()
+                    };
+                }
+                // (beyond all of the cell: over those before it)
+                let beyond = part.cover + a - 1.0;
+                if beyond > 0.0 && part.cover > 0.0 {
+                    let keep = ((part.cover - beyond) / part.cover).max(0.0);
+                    part.sum.iter_mut().for_each(|v| *v *= keep);
+                    part.cover *= keep;
+                }
+                for i in 0..3 {
+                    part.sum[i] += mean[i] * k;
+                }
+                part.cover = (part.cover + a).min(1.0);
+                for i in 0..3 {
+                    acc.all[at][i] = part.sum[i] + part.under[i] * (1.0 - part.cover);
+                }
+                part.last = acc.all[at];
+                if a > 0.004 || mean[0] + mean[1] + mean[2] > 0.004 {
+                    acc.small[at] += k / SPREAD;
+                }
             }
         };
         // (a small piece's share spread over the four cells nearest its
@@ -1110,15 +1402,38 @@ fn lay_mesh(
         // (a known picture is sampled cell by cell, however its triangles
         // lie)
         if thumb.is_none() && x1 - x0 <= 3 && y1 - y0 <= 3 {
-            if sampled {
-                continue;
-            }
             let centroid = Pos2::new((p0.x + p1.x + p2.x) / 3.0, (p0.y + p1.y + p2.y) / 3.0);
-            splat(
-                acc,
-                centroid,
-                SPREAD * area.abs() * stride as f32 / (cw * ch),
-            );
+            let k = SPREAD * area.abs() / (cw * ch);
+            // (in a mesh of very many, the others to their own cell, each
+            // as much as it covers: laid one in so many, each so many times
+            // over, the particles' bands behind their dots lay as bright
+            // rows with dark ones between - a grating the guard then
+            // blurred over the whole face)
+            let (bw, bh) = ((max.x - min.x).max(1e-3), (max.y - min.y).max(1e-3));
+            if (x1 - x0 >= 2 || y1 - y0 >= 2) && area.abs() >= bw * bh * 0.3 {
+                // (over three cells or four, filling its box - a rectangle's
+                // half, a dot's wedge - over its box, as it overlaps
+                // each cell - at its centre, a band of two such triangles
+                // lay as two bright spots with a gap between, or both in
+                // one row of cells and none in the next)
+                for cy in y0..=y1 {
+                    let top = rect.top() + cy as f32 * ch;
+                    let oy = (max.y.min(top + ch) - min.y.max(top)).max(0.0);
+                    for cx in x0..=x1 {
+                        let left = rect.left() + cx as f32 * cw;
+                        let ox = (max.x.min(left + cw) - min.x.max(left)).max(0.0);
+                        let w = ox * oy / (bw * bh);
+                        if w > 0.01 {
+                            blend(acc, cx, cy, (k * w).min(1.0));
+                        }
+                    }
+                }
+            } else if sampled {
+                let (cx, cy) = cell_of(centroid);
+                blend(acc, cx, cy, k);
+            } else {
+                splat(acc, centroid, k);
+            }
             continue;
         }
         // (thin - a line's long piece: its area along its length, half a
@@ -1203,6 +1518,66 @@ fn lay_mesh(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A column of bands touching (a pitch of 4.65 points, cells of 2.5),
+    /// in a mesh of `extra` more pieces besides, laid on the cells: the
+    /// rows' least and most luminance where the bands lie.
+    fn bands_laid(extra: usize) -> (f32, f32) {
+        let rect = Rect::from_min_size(Pos2::ZERO, egui::vec2(320.0, 180.0));
+        let (cols, rows) = (128usize, 72usize);
+        let (cw, ch) = (rect.width() / cols as f32, rect.height() / rows as f32);
+        let mut mesh = Mesh::default();
+        let mut y = 20.0;
+        while y < 160.0 {
+            mesh.add_colored_rect(
+                Rect::from_min_size(Pos2::new(100.0, y), egui::vec2(10.0, 4.65 + 0.3)),
+                Color32::from_gray(236),
+            );
+            y += 4.65;
+        }
+        // (far off, out of the way: only so many)
+        for k in 0..extra {
+            let x = 250.0 + (k % 50) as f32;
+            mesh.add_colored_rect(
+                Rect::from_min_size(Pos2::new(x, 170.0), egui::vec2(0.1, 0.1)),
+                Color32::from_gray(10),
+            );
+        }
+        let mut all = vec![[0.0f32; 3]; cols * rows];
+        let mut big = all.clone();
+        let mut small = vec![0.0f32; cols * rows];
+        let mut parts = vec![Part::default(); cols * rows];
+        let mut onto = Onto {
+            all: &mut all,
+            big: &mut big,
+            small: &mut small,
+            parts: &mut parts,
+        };
+        lay_mesh(&mut onto, &mesh, None, rect, cols, rows, cw, ch, rect);
+        let (mut lo, mut hi) = (f32::MAX, 0.0f32);
+        for cy in (30.0 / ch) as usize..(150.0 / ch) as usize {
+            let cx = (105.0 / cw) as usize;
+            let v = to_linear(all[cy * cols + cx][0]);
+            lo = lo.min(v);
+            hi = hi.max(v);
+        }
+        (lo, hi)
+    }
+
+    #[test]
+    fn bands_touching_lie_even_on_the_cells() {
+        // (laid each over the last, the cells where two bands met came out
+        // a quarter darker: bright rows and dim ones, a grating the pattern
+        // stage then blurred the particles' whole face over)
+        for extra in [0, 30_000] {
+            let (lo, hi) = bands_laid(extra);
+            assert!(
+                hi - lo < 0.05,
+                "rows from {lo} to {hi} ({extra} more pieces)"
+            );
+            assert!(lo > 0.75, "{lo}");
+        }
+    }
 
     #[test]
     fn a_strobe_in_the_estimate_brings_the_veil() {
@@ -1307,7 +1682,7 @@ mod tests {
     }
 
     #[test]
-    fn transitions_count_alike_at_30_frames_and_as_pairs() {
+    fn transitions_count_alike_at_30_frames_and_every_rise() {
         // a 5 Hz strobe at 30 frames a second: ten transitions in a second
         // (34 ms "at once" against a frame of 33.3 ms was a coin toss)
         let mut g = FlashGuard::default();
@@ -1329,18 +1704,19 @@ mod tests {
             g.raw_watch.recent(0)
         );
         // brightening in two steps, the left half then the right, then all
-        // dark: one pair of opposing changes - two transitions, not three
+        // dark: three transitions by the strict reading (every rise), as
+        // the stricter of the tests' two meters counts them
         let mut g = FlashGuard::default();
         g.layout(rect, egui::vec2(384.0, 216.0));
         let cols = g.cols;
-        for step in 0..3 {
+        for step in 0..4 {
             for _ in 0..10 {
                 g.raw = (0..n)
                     .map(|k| {
                         let left = k % cols < cols / 2;
                         let v = match step {
-                            0 if left => 0.6,
-                            1 => 0.6,
+                            1 if left => 0.6,
+                            2 => 0.6,
                             _ => 0.02,
                         };
                         [v, v, v]
@@ -1352,7 +1728,7 @@ mod tests {
                 g.follow(1.0 / 60.0);
             }
         }
-        assert!(g.pressure().0 <= 2, "{:?}", g.pressure());
+        assert_eq!(g.pressure().0, 3, "{:?}", g.pressure());
     }
 
     #[test]
@@ -1381,6 +1757,71 @@ mod tests {
         );
         assert!(g.pressure().0 >= 6, "forgotten: {:?}", g.pressure());
         assert!(g.veil.iter().any(|v| *v > 0.8));
+    }
+
+    /// Stripes `period` cells apart over the share `cover` of the picture
+    /// (its top), moving a cell every `every` frames (0: standing), for a
+    /// second: the pattern stage's strength.
+    fn grating(period: usize, cover: f32, every: usize) -> f32 {
+        let mut g = FlashGuard::default();
+        let rect = Rect::from_min_size(Pos2::ZERO, egui::vec2(384.0, 216.0));
+        g.layout(rect, egui::vec2(384.0, 216.0));
+        let (cols, rows) = (g.cols, g.rows);
+        for i in 0..60 {
+            let shift = (i as usize).checked_div(every).unwrap_or(0);
+            g.raw = (0..cols * rows)
+                .map(|k| {
+                    let (x, y) = (k % cols, k / cols);
+                    let striped = (y as f32) < rows as f32 * cover;
+                    let v = if striped && ((x + shift) / (period / 2)).is_multiple_of(2) {
+                        0.6
+                    } else {
+                        0.02
+                    };
+                    [v, v, v]
+                })
+                .collect();
+            g.raw_big = g.raw.clone();
+            g.time += 1.0 / 60.0;
+            g.frame += 1;
+            g.follow(1.0 / 60.0);
+        }
+        g.pattern_strength
+    }
+
+    #[test]
+    fn regular_stripes_are_softened_in_place() {
+        // standing stripes over 60 % of the picture: softened
+        assert!(grating(6, 0.6, 0) > 0.7);
+        // over 30 %: standing, left; moving, softened
+        assert!(grating(6, 0.3, 0) < 0.01);
+        assert!(grating(6, 0.3, 3) > 0.7);
+        // no stripes, no softening
+        assert!(grating(6, 0.0, 0) < 0.01);
+        // the mesh lowers their contrast: the softened cells are drawn over
+        // with their neighbourhood's mean
+        let mut g = FlashGuard::default();
+        let rect = Rect::from_min_size(Pos2::ZERO, egui::vec2(384.0, 216.0));
+        g.layout(rect, egui::vec2(384.0, 216.0));
+        let (cols, rows) = (g.cols, g.rows);
+        for _ in 0..60 {
+            g.raw = (0..cols * rows)
+                .map(|k| {
+                    if (k % cols / 3) % 2 == 0 {
+                        [0.6; 3]
+                    } else {
+                        [0.02; 3]
+                    }
+                })
+                .collect();
+            g.raw_big = g.raw.clone();
+            g.time += 1.0 / 60.0;
+            g.frame += 1;
+            g.follow(1.0 / 60.0);
+        }
+        let mesh = g.cells_mesh(&g.pattern.soft, &g.pattern.mean);
+        assert!(!mesh.indices.is_empty());
+        assert!(mesh.vertices.iter().any(|v| v.color.a() > 180));
     }
 
     #[test]

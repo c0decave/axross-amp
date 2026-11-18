@@ -41,6 +41,8 @@ pub struct FaceApp {
     pub state: VizState,
     pub key: &'static str,
     pub scheme: String,
+    /// The custom scheme's colours (when `scheme` is "custom").
+    pub custom: std::collections::BTreeMap<String, String>,
     pub options: VisualOptions,
     pub sound: Vec<f32>,
     /// Frames shown so far (the sound is at frame / FPS seconds).
@@ -107,6 +109,7 @@ impl FaceApp {
             state: VizState::default(),
             key,
             scheme: "classic".into(),
+            custom: Default::default(),
             options: VisualOptions::default(),
             sound: signal(seconds),
             frame: 0,
@@ -123,6 +126,7 @@ impl FaceApp {
     /// The analysis of the next frame (a 30th of a second further on).
     pub fn step(&mut self) {
         self.frame += 1;
+        self.analyzer.calm = viz::scheme_calm(&viz::scheme(&self.scheme, &self.custom));
         let frames = self.sound.len() / 2;
         let end = (((self.frame as f32 / self.fps) + 0.2) * RATE as f32) as usize;
         let end = end.min(frames);
@@ -155,7 +159,7 @@ impl FaceApp {
             );
         }
         let cover = self.cover.as_ref().map(|t| (t.id(), t.size_vec2()));
-        let scheme = viz::scheme(&self.scheme, &Default::default());
+        let scheme = viz::scheme(&self.scheme, &self.custom);
         let frame = Frame {
             painter: ui.painter(),
             rect,

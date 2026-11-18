@@ -128,16 +128,25 @@ fn rot(p: vec2<f32>, a: f32) -> vec2<f32> {
 
 // Liquid: domain-warped noise, flowing, with a sheen where it folds.
 fn liquid(p: vec2<f32>) -> vec3<f32> {
-    let t = u.t.x * (0.12 + 0.25 * u.t.z);
+    // (the bass warps it less, the energy speeds it less: a warp that
+    // followed the bass reshuffled the whole picture at each turn)
+    // (faster as it gets louder by the clock the energy drives - time
+    // times the energy jumped at each change of it, the more the longer
+    // it had played)
+    let t = u.t.x * 0.12 + u.extra[7].x * 0.1;
     let q = vec2<f32>(fbm(p * 1.1 + vec2<f32>(0.0, t)), fbm(p * 1.1 + vec2<f32>(5.2, 1.3 - t)));
     let r = vec2<f32>(
         fbm(p * 1.1 + 3.5 * q + vec2<f32>(1.7, 9.2) + 0.6 * t),
         fbm(p * 1.1 + 3.5 * q + vec2<f32>(8.3, 2.8) - 0.4 * t)
     );
-    let v = fbm(p * 1.1 + (3.0 + 1.5 * u.t.w) * r);
-    let base = palette(0.15 + 0.85 * smoothstep(0.2, 0.85, v));
+    let v = fbm(p * 1.1 + (3.0 + 0.5 * u.t.w) * r);
+    // (clear colours: the scheme's middle to its loud, spread wide over the
+    // noise's narrow middle, deepened towards the ground - not its quiet
+    // colour mixed in the half-dark, a brown, nor burnt to its peak)
+    let base = palette(0.4 + 0.45 * smoothstep(0.3, 0.72, v));
+    let deep = mix(colour(0), base, 0.35 + 0.65 * smoothstep(0.15, 0.7, v));
     let fold = pow(clamp(length(r - q) * 1.2, 0.0, 1.0), 3.0);
-    return base * (0.55 + 0.6 * v) + colour(4) * fold * (0.25 + 0.4 * u.t.y);
+    return deep + colour(4) * fold * (0.22 + 0.1 * u.t.y);
 }
 
 // Fire: flames rising from the bottom, as high as the bands below them.
@@ -147,9 +156,11 @@ fn fire(uv: vec2<f32>, aspect: f32) -> vec3<f32> {
     let x = uv.x * aspect;
     // (flames lick slowly: a fast flicker of red is what a photosensitive
     // eye cannot bear)
-    let turb = fbm(vec2<f32>(x * 3.0, y * 2.0 - t * (1.0 + 0.6 * u.t.z)));
+    let turb = fbm(vec2<f32>(x * 3.0, y * 2.0 - t - 0.6 * u.extra[7].x));
     let lick = fbm(vec2<f32>(x * 5.0 + 3.0, y * 3.0 - t * 1.6));
-    let height = 0.5 + 0.4 * band(uv.x * 0.7) + 0.15 * u.t.y;
+    // (the bands raise it less: the treble's bursts lifting the flames on
+    // the right and letting them fall were seven changes a second there)
+    let height = 0.52 + 0.3 * band(uv.x * 0.7) + 0.08 * u.t.y;
     let shape = 1.0 - y / max(height, 0.05);
     let heat = clamp(shape * 0.85 + (turb - 0.5) * 1.2 + (lick - 0.5) * 0.6 * (1.0 - y), 0.0, 1.0);
     // a fire's own colours: black, ember, flame, yellow, white
@@ -160,7 +171,8 @@ fn fire(uv: vec2<f32>, aspect: f32) -> vec3<f32> {
     c = mix(c, vec3<f32>(1.0, 0.8, 0.25), smoothstep(0.55, 0.85, h));
     c = mix(c, vec3<f32>(1.0, 0.97, 0.85), smoothstep(0.85, 1.0, h));
     // the scheme's loud colour in the embers, a little
-    return mix(c, c * (0.6 + 0.8 * colour(3)), 0.1) + colour(0) * (1.0 - smoothstep(0.0, 0.2, h)) * 0.6;
+    // (never saturated red: its licks, in a red scheme, were red flashes)
+    return no_red(mix(c, c * (0.6 + 0.8 * colour(3)), 0.1) + colour(0) * (1.0 - smoothstep(0.0, 0.2, h)) * 0.6);
 }
 
 fn metaballs(p: vec2<f32>) -> vec3<f32> {
@@ -218,8 +230,11 @@ fn tunnel(p: vec2<f32>) -> vec3<f32> {
     let t = u.t.x;
     let r = max(length(p), 1e-3);
     let a = atan2(p.y, p.x);
-    let depth = 0.45 / r + t * (0.35 + 0.6 * u.t.w);
-    let turn = a / TAU + 0.1 * sin(depth * 0.35 + u.m.x);
+    let depth = 0.45 / r + t * 0.3 + 0.35 * u.extra[7].y;
+    // (the onsets twist it a little and slowly: its ribs swung by them
+    // swept a quarter of the middle in a tenth of a second; half the
+    // phase - it wraps at 4 pi - is whole turns still)
+    let turn = a / TAU + 0.06 * sin(depth * 0.35 + 0.5 * u.m.x);
     // (folded round the circle: no seam where the angle wraps)
     let fold = abs(2.0 * fract(turn) - 1.0);
     let level = band(fold);
@@ -228,28 +243,34 @@ fn tunnel(p: vec2<f32>) -> vec3<f32> {
     let ring_d = min(rr, 1.0 - rr) / 1.5 * r * r / 0.45;
     let ss = fract(turn * 10.0);
     let rib_d = min(ss, 1.0 - ss) / 10.0 * TAU * r;
-    let ring = exp(-ring_d / 0.010);
+    // (the near rings - the picture's edge - go by fastest: a ring that
+    // swept a third of the screen in a tenth of a second is a flash there;
+    // near, they are faint)
+    let ring = exp(-ring_d / 0.010) * (1.0 - 0.8 * smoothstep(0.3, 0.85, r));
     let rib = exp(-rib_d / 0.008);
     // the walls between: dark, a checker of the scheme's tint
     let checker = fract((floor(depth * 1.5) + floor(turn * 10.0)) * 0.5) * 2.0;
     let wall = mix(colour(0), cycle(floor(depth * 1.5) * 0.04 + fold * 0.4), 0.10 + 0.22 * level)
         * (0.75 + 0.25 * checker);
     let line_colour = cycle(floor(depth * 1.5) * 0.04 + fold * 0.4 + 0.15);
-    let glow = ring * (0.35 + 1.1 * level + 0.5 * u.t.y) + rib * (0.2 + 0.8 * level);
+    // (the beat a touch on the lines, not a flash of them all together)
+    let glow = ring * (0.45 + 0.85 * level + 0.12 * u.t.y) + rib * (0.25 + 0.6 * level);
     let c = wall + line_colour * glow;
     // into the dark far off, a light at the end
     let fog = smoothstep(0.03, 0.6, r);
-    return mix(colour(0) * 0.6, c, fog) + colour(3) * exp(-r * 9.0) * (0.25 + 0.6 * u.t.y + 0.4 * u.t.z);
+    return mix(colour(0) * 0.6, c, fog) + colour(3) * exp(-r * 9.0) * (0.3 + 0.2 * u.t.y + 0.3 * u.t.z);
 }
 
 // Julia set: smooth escape colours and glowing orbit traps.
 fn julia(p: vec2<f32>) -> vec3<f32> {
     // c along the edge of the Mandelbrot set's cardioid, a little inside
-    let t = u.t.x * 0.07 + u.m.x * 0.05;
+    // (the set changes much for a small change of c: the onsets turn it
+    // a little, the beat zooms it a little - not whole regions at once)
+    let t = u.t.x * 0.07 + u.m.x * 0.03;
     let e = vec2<f32>(cos(t), sin(t));
     let e2 = vec2<f32>(cos(2.0 * t), sin(2.0 * t));
-    let c = (e * 0.5 - e2 * 0.25) * (0.985 + 0.012 * u.t.w);
-    var z = p * (1.25 - 0.1 * u.t.y);
+    let c = (e * 0.5 - e2 * 0.25) * (0.985 + 0.006 * u.t.w);
+    var z = p * (1.25 - 0.03 * u.t.y);
     var trap = 1e9;
     var i = 0;
     for (; i < 128; i = i + 1) {
@@ -264,7 +285,7 @@ fn julia(p: vec2<f32>) -> vec3<f32> {
         return mix(colour(0), colour(1), 0.2 + 0.5 * trapped);
     }
     let smooth_i = max(f32(i) + 1.0 - log2(log2(dot(z, z)) * 0.5), 0.0);
-    let v = clamp(sqrt(smooth_i / 128.0) * (0.95 + 0.25 * u.t.z), 0.0, 1.0);
+    let v = clamp(sqrt(smooth_i / 128.0) * (0.98 + 0.12 * u.t.z), 0.0, 1.0);
     return palette(v) + cycle(trap * 0.5 + u.t.x * 0.02) * trapped * 0.6;
 }
 
@@ -273,8 +294,9 @@ fn reaction(uv: vec2<f32>) -> vec3<f32> {
     let v = textureSampleLevel(data, data_sampler, uv, 0.0).r;
     let dx = textureSampleLevel(data, data_sampler, uv + vec2<f32>(1.0 / size.x, 0.0), 0.0).r - v;
     let dy = textureSampleLevel(data, data_sampler, uv + vec2<f32>(0.0, 1.0 / size.y), 0.0).r - v;
-    let light = clamp(0.6 + 3.0 * (dx - dy), 0.0, 1.4);
-    return palette(smoothstep(0.05, 0.6, v) * 0.95) * light;
+    // (lit softly, never burnt white)
+    let light = clamp(0.75 + 2.0 * (dx - dy), 0.45, 1.1);
+    return palette(smoothstep(0.05, 0.6, v) * 0.78) * light;
 }
 
 // The feedback face shown: its own picture (drawn by fs_feedback).
@@ -316,7 +338,7 @@ fn no_red(c: vec3<f32>) -> vec3<f32> {
     for (var i = 0; i < 8; i++) {
         let l = pow(max(out, vec3<f32>(0.0)), vec3<f32>(2.2));
         let sum = l.x + l.y + l.z;
-        if sum <= 0.0 || l.x / sum < 0.75 {
+        if sum <= 0.0 || l.x / sum < 0.75 || (l.x - l.y - l.z) * 320.0 < 5.0 {
             break;
         }
         out = mix(out, vec3<f32>(1.0, 0.93, 0.84), 0.12);
@@ -335,9 +357,11 @@ fn smoke(uv: vec2<f32>, aspect: f32) -> vec3<f32> {
     let warp = vec2<f32>(fbm(q + vec2<f32>(0.0, t * 2.0)), fbm(q + vec2<f32>(5.2, 1.3 + t * 2.0)));
     let warp2 = vec2<f32>(fbm(q + 3.0 * warp + vec2<f32>(1.7, 9.2) + t), fbm(q + 3.0 * warp + vec2<f32>(8.3, 2.8) - t));
     let d = fbm(q + 2.5 * warp2 + vec2<f32>(0.0, t * 3.0));
-    let density = clamp((d - 0.25 + 0.35 * u.t.z) * (1.3 + u.t.y * 0.5), 0.0, 1.0);
+    // (thickened a little by the sound, not all of it at once by each beat:
+    // in Intense, seven changes a second over a field; never saturated red)
+    let density = clamp((d - 0.2 + 0.2 * u.t.z) * (1.3 + u.t.y * 0.15), 0.0, 1.0);
     let shade = mix(colour(1), colour(3), clamp(length(warp2), 0.0, 1.0));
-    return mix(colour(0), shade, density) + colour(4) * pow(density, 4.0) * 0.3;
+    return no_red(mix(colour(0), shade, density) + colour(4) * pow(density, 4.0) * 0.3);
 }
 
 fn mel(uv: vec2<f32>) -> vec3<f32> {
@@ -376,7 +400,7 @@ fn terrain_height(x: f32, z: f32) -> f32 {
 
 fn flyover(uv: vec2<f32>, aspect: f32, steps: i32) -> vec3<f32> {
     let p = vec2<f32>((uv.x - 0.5) * aspect, 0.5 - uv.y);
-    let t = u.t.x * (1.5 + 1.5 * u.t.z);
+    let t = u.t.x * 1.5 + 1.5 * u.extra[7].x;
     let origin = vec3<f32>(0.0, 2.6, t);
     let dir = normalize(vec3<f32>(p.x, p.y - 0.18, 1.0));
     // the night: dark above, a glow of the loud colour at the horizon
@@ -593,7 +617,8 @@ fn fs_main(in: Out) -> @location(0) vec4<f32> {
 // and a new layer over it: a ring of the bands and sparks on the beat.
 
 // One of the presets' waves: 0 a ring of the bands, 1 a scope's line,
-// 2 spiral arms, 3 orbiting lights.
+// 2 spiral arms, 3 orbiting lights, 4 a rose of petals, 5 spokes of the
+// bands.
 fn wave_layer(kind: i32, p: vec2<f32>, aspect: f32, t: f32) -> vec3<f32> {
     let r = length(p);
     let a = atan2(p.y, p.x);
@@ -620,6 +645,21 @@ fn wave_layer(kind: i32, p: vec2<f32>, aspect: f32, t: f32) -> vec3<f32> {
             c = c + cycle(fk / 5.0 + t * hue) * exp(-d * (70.0 - 30.0 * u.t.y)) * (0.5 + level);
         }
         return c;
+    } else if kind == 4 {
+        let level = band(abs(a) / 3.14159);
+        let petals = 0.5 + 0.5 * cos(5.0 * a + t * 0.7);
+        let edge = (0.12 + 0.16 * level) * (0.55 + 0.45 * petals) + 0.04 * u.t.w;
+        let line = exp(-abs(r - edge) * 140.0) * (0.4 + 0.8 * level);
+        return cycle(a / TAU * 2.0 + r + t * hue) * line;
+    } else if kind == 5 {
+        let k = floor((a / TAU + 0.5) * 16.0);
+        let centre = (k + 0.5) / 16.0 * TAU - 3.14159;
+        let level = band(abs(centre) / 3.14159);
+        let side = abs(sin(a - centre)) * r;
+        let reach = 0.08 + 0.32 * level;
+        let lit = exp(-side * 220.0) * smoothstep(0.04, 0.07, r)
+            * (1.0 - smoothstep(reach - 0.03, reach, r)) * (0.35 + 0.8 * level);
+        return cycle(k / 16.0 + t * hue) * lit;
     }
     let level = band(abs(a) / 3.14159);
     let ring = 0.18 + 0.22 * level + 0.06 * u.t.w;
@@ -637,7 +677,10 @@ fn feedback(uv: vec2<f32>, aspect: f32) -> vec3<f32> {
     let look = u.extra[1];
     var q = rot(p, motion.x) * motion.y;
     q = q + motion.z * vec2<f32>(sin(q.y * look.w + t), cos(q.x * look.w - t * 0.8));
-    q = mix(q, vec2<f32>(abs(q.x), q.y), u.extra[2].y);
+    // (mirrored: 1 left on right, 2 in four)
+    let mirror = u.extra[2].y;
+    q = mix(q, vec2<f32>(abs(q.x), q.y), clamp(mirror, 0.0, 1.0));
+    q = mix(q, vec2<f32>(q.x, abs(q.y)), clamp(mirror - 1.0, 0.0, 1.0));
     let src = q / vec2<f32>(aspect, 1.0) + 0.5;
     var prev = textureSampleLevel(data, data_sampler, src, 0.0).rgb;
     // (outside the last picture: nothing)
