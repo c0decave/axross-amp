@@ -153,4 +153,85 @@ fn a_frame_allocates_nothing_of_its_own() {
     }
     println!("{}", report.join("\n"));
     assert!(most <= 120, "{most} allocations in a frame");
+
+    // the window's designs: their panels, the picture's frame, the
+    // readout, the reels, the needles - a handful a frame (egui's shape
+    // lists, a mesh's vertices), the same for a small window and a large
+    // one (not one a line of the metal's grain, a tick, a spoke)
+    use axross_amp::design::{self, DESIGNS};
+    let t = &axross_amp::theme::THEMES[0];
+    let mut most = 0;
+    for d in &DESIGNS {
+        let mut counts = Vec::new();
+        for size in [egui::vec2(420.0, 420.0), egui::vec2(1400.0, 900.0)] {
+            let mut worst = 0;
+            for k in 0..30 {
+                let input = egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
+                    ..Default::default()
+                };
+                let mut output = ctx.run_ui(input, |ui| {
+                    let p = ui.painter();
+                    let all = ui.max_rect();
+                    let card = egui::Rect::from_min_size(all.min, egui::vec2(all.width(), 160.0));
+                    let list = egui::Rect::from_min_max(
+                        egui::pos2(all.left(), all.bottom() - 200.0),
+                        all.max,
+                    );
+                    let picture = egui::Rect::from_min_max(
+                        egui::pos2(all.left(), card.bottom()),
+                        egui::pos2(all.right(), list.top()),
+                    );
+                    let ((), n) = counted(|| {
+                        design::panel(p, card, d, t, t.surface, 1);
+                        design::panel(p, list, d, t, design::list_fill(d, t), 2);
+                        design::bezel(p, picture, d, t);
+                        if d.extras.lcd {
+                            design::lcd(p, card.min + egui::vec2(160.0, 80.0), "01  1:23", 18.0, t);
+                        }
+                        if d.extras.reels {
+                            design::reels(
+                                p,
+                                egui::Rect::from_min_size(
+                                    card.min + egui::vec2(300.0, 80.0),
+                                    egui::vec2(140.0, 44.0),
+                                ),
+                                k as f32 * 0.01,
+                                t,
+                            );
+                        }
+                        if d.extras.needles {
+                            design::needles(
+                                p,
+                                egui::Rect::from_min_size(
+                                    card.min + egui::vec2(300.0, 80.0),
+                                    egui::vec2(150.0, 44.0),
+                                ),
+                                [0.3 + 0.01 * k as f32, 0.5],
+                                t,
+                            );
+                        }
+                    });
+                    if k >= 10 {
+                        worst = worst.max(n);
+                    }
+                });
+                output.textures_delta.clear();
+            }
+            counts.push(worst);
+        }
+        println!(
+            "design {:<10} {:>3} allocations a frame (420 x 420), {:>3} (1400 x 900)",
+            d.key, counts[0], counts[1]
+        );
+        assert!(
+            counts[1] <= counts[0] + 4,
+            "{}: {} in a small window, {} in a large one",
+            d.key,
+            counts[0],
+            counts[1]
+        );
+        most = most.max(counts[1]);
+    }
+    assert!(most <= 40, "a design: {most} allocations in a frame");
 }

@@ -104,3 +104,65 @@ fn the_analysis_of_a_frame_is_cheap() {
         assert!(mean < 8.0, "{name}: {mean:.2} ms");
     }
 }
+
+/// What a window's design adds to a frame at 1920 x 1080: its panels (the
+/// card, the playlist's), the picture's frame, the readout, the reels, the
+/// needles - drawn and tessellated - under a millisecond each.
+#[test]
+fn a_design_draws_in_under_a_millisecond_at_full_hd() {
+    use axross_amp::design::{self, DESIGNS};
+    let ctx = egui::Context::default();
+    let t = &axross_amp::theme::THEMES[0];
+    let size = egui::vec2(1920.0, 1080.0);
+    let mut report = Vec::new();
+    let mut slow = Vec::new();
+    for d in &DESIGNS {
+        let mut total = 0.0;
+        for k in 0..40 {
+            let started = Instant::now();
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
+                ..Default::default()
+            };
+            let mut output = ctx.run_ui(input, |ui| {
+                let p = ui.painter();
+                let all = ui.max_rect().shrink(10.0);
+                let card = egui::Rect::from_min_size(all.min, egui::vec2(all.width(), 220.0));
+                let list =
+                    egui::Rect::from_min_max(egui::pos2(all.left(), all.bottom() - 360.0), all.max);
+                let picture = egui::Rect::from_min_max(
+                    egui::pos2(all.left(), card.bottom() + 8.0),
+                    egui::pos2(all.right(), list.top() - 90.0),
+                );
+                design::panel(p, card, d, t, t.surface, 1);
+                design::panel(p, list, d, t, design::list_fill(d, t), 2);
+                design::bezel(p, picture, d, t);
+                let at = card.min + egui::vec2(260.0, 120.0);
+                if d.extras.lcd {
+                    design::lcd(p, at, "01  1:23", 18.0, t);
+                }
+                let gauge =
+                    egui::Rect::from_min_size(at + egui::vec2(140.0, 0.0), egui::vec2(150.0, 44.0));
+                if d.extras.reels {
+                    design::reels(p, gauge, k as f32 * 0.01, t);
+                }
+                if d.extras.needles {
+                    design::needles(p, gauge, [0.4, 0.6], t);
+                }
+            });
+            output.textures_delta.clear();
+            let _ = ctx.tessellate(output.shapes, output.pixels_per_point);
+            let took = started.elapsed().as_secs_f64() * 1000.0;
+            if k >= 10 {
+                total += took;
+            }
+        }
+        let mean = total / 30.0;
+        report.push(format!("{:<10} {mean:>6.3} ms", d.key));
+        if mean > 1.0 {
+            slow.push(format!("{}: {mean:.3} ms", d.key));
+        }
+    }
+    println!("{}", report.join("\n"));
+    assert!(slow.is_empty(), "{slow:#?}");
+}

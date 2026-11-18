@@ -117,8 +117,10 @@ picture is made by `AMP_DEMO_TRACK=… cargo test --test ui -- --ignored`.</sub>
   last picture stays. The picture is analysed once a
   frame for all faces, and neither that nor most faces allocate in a frame; the
   pictures move alike at any frame rate. In axross's colour schemes (Classic, Fire,
-  Ice, Neon, Mono, Follow the theme, Custom - edited here), with its options (bars,
-  smoothing, peak fall, frame rate). A click shows the next face (Shift+V the one
+  Ice, Neon, Mono, Follow the theme, Custom - edited here; a saturated red ground is
+  shown darker, as on it whatever moves flashes red), with its options (bars,
+  smoothing - no less than 75 % -, peak fall - no faster than 100 % a second: at
+  their extremes the faces flashed -, frame rate). A click shows the next face (Shift+V the one
   before), a double-click makes it large (its title kept above it, with "Show the
   playlist" - the list under the picture - and "Normal size"; Escape too), F11 full
   screen, a
@@ -126,6 +128,31 @@ picture is made by `AMP_DEMO_TRACK=… cargo test --test ui -- --ignored`.</sub>
   Escape closes only the innermost thing, one at a time: a track's details,
   the URL field, the warning or a field being typed in before the large view
   or full screen.
+- **Show on display** (⚙ → Show on display, or D): the pictures on a monitor
+  of their own - a TV over HDMI, a projector - full screen and borderless,
+  while the window stays as it is on its screen (the playlist and the
+  controls go on working; where the picture was, it says where it is
+  shown: the face is drawn once, there). The monitors are listed with their
+  connector (HDMI-1, DP-2, VGA-1), their own name where the system knows it
+  and their mode. *With the sound*: the sound moves to that display's HDMI
+  or DisplayPort output (its sink, matched by the monitor's name or the
+  output's number - HDMI-1 `hdmi-stereo`, HDMI-2 `hdmi-stereo-extra1` - or
+  the card switched to that profile) and back to where it was when the view
+  closes; VGA and DVI carry no sound, and it says so. In the view: Escape
+  closes it, V / Shift+V change the face, Space plays and pauses, and the
+  track's title shows for a few seconds when it changes, fading in and out.
+  A display unplugged closes its view (the sound back, said); one plugged
+  in is offered. The view opens again on the next start, on the same
+  display (by its connector, else its name). Its flash guard is sized for
+  that screen - a TV's fields are a third of the TV - and Calm or Intense
+  hold there as here. Limits: the monitors are asked of `xrandr` (X11) or
+  the kernel's DRM connectors (`/sys/class/drm`, Wayland): on Wayland a
+  program cannot place its window on an output - the compositor decides
+  where the full-screen view goes; macOS and Windows list no monitors here.
+  The second window itself has been checked only on X11 by hand-made
+  monitor lists in the tests (`tests/display.rs`: the menu, the sound to an
+  HDMI sink of axross's fake pactl and back, unplugging, opening again, the
+  guard's size), not on a real second screen.
 - **Themes** for the window (⚙ → Theme), twelve, each a set of design tokens
   (grounds, cards, text, secondary text, the accent with its hover and pressed
   shades, borders, the focus ring, good / warning / error, a slider's rail,
@@ -135,7 +162,9 @@ picture is made by `AMP_DEMO_TRACK=… cargo test --test ui -- --ignored`.</sub>
   plum), *Studio* (greyscale, one orange signal), *Daylight* (light) and *High
   contrast* (black and white, yellow for what is chosen, a 3 px focus ring, 7 : 1
   text). The pointer on one in the menu shows it at once; a click keeps it (in
-  axross-amp's own file). Optionally the desktop's light or dark decides, between
+  axross-amp's own file). Optionally the desktop's light or dark decides (on Linux
+  asked of the XDG desktop portal, else GNOME's `color-scheme`, else GTK's setting;
+  winit says nothing there), between
   a light and a dark theme of one's choice. The accent comes from the cover (made
   to read in the theme: lightened or darkened until it does) or is the theme's
   own. A test checks every theme's text, secondary, disabled and selected text,
@@ -144,8 +173,54 @@ picture is made by `AMP_DEMO_TRACK=… cargo test --test ui -- --ignored`.</sub>
   A theme changes the window, never the pictures: the faces keep their own
   colour schemes (a theme only suggests one) and so every limit on flashes.
   Switching costs one frame; nothing a frame.
+- **Designs** for the window (⚙ → Design), ten, apart from the themes (any
+  design in any theme): how panels, buttons, type and room are drawn, made of
+  tokens (corners, stroke, shadow, padding, spacing, type sizes, monospace or
+  not) and a few painters. *Modern* (the default: soft cards), *Minimal / Zen*
+  (no panels, a column 720 points wide, the row of buttons quiet - no fills or
+  frames, their symbols at full contrast - until the pointer or the keys come to
+  it), *Hi-fi rack* (brushed metal with screws, a segment readout of the track
+  and time, two VU needles, the volume as a knob: drag, wheel or arrow keys),
+  *90s desktop* (bevelled panels, a sunken picture, monospace), *Cassette deck*
+  (the readout, two reels turning a quarter turn a second while it plays and
+  standing still where the desktop asks for less motion, the transport as
+  square piano keys, the play key pressed in), *Terminal* (monospace, boxes
+  with corner marks, the position as `[####------]`), *Brutalist* (3 px black
+  strokes, hard offset shadows, a 34 pt title), *Glass* (frosted panels over a
+  haze of the cover's colours), *Soft* (neumorphic: panels pressed out of the
+  ground, the picture pressed in) and *Collage* (paper sheets turned a little,
+  tape, the title in capitals, the artist in typewriter italics). The pointer
+  on one in the menu shows its panels and colours at once (its type and room
+  once chosen, so the menu's rows stay under the pointer); a click keeps it, in
+  axross-amp's own file; the menu works by the keys alone. Every design keeps
+  every control and the playlist: a test (`tests/designs.rs`) finds each control
+  of the window - files, folder, URL, ⚙, the position, previous, 15 s back and
+  on, play, stop, next, shuffle, repeat, volume, mute, ⋯, the equalizer, save,
+  clear, the filter, sort, the playlist's first row - in every design at
+  420 x 420, 620 x 860 and 1400 x 900, inside the window, none over another, each
+  at least 24 x 24 points (WCAG 2.2's target size; a slider 18 high along its
+  length), and clicks each where it is drawn (play, pause, the 15 s buttons,
+  next, previous, shuffle, repeat, the volume by its arrow keys, mute, stop, a
+  double-click on the playlist's row, the two menus). A low window shrinks the
+  picture to a strip before the playlist loses its rows. Text keeps 4.5 : 1
+  (7 : 1 in high contrast) on every design's card and playlist panel in every
+  theme over 24 cover hues, and on the glass haze (each of its colours taken
+  toward the ground until every word and the accent reads as on the ground).
+  What moves (the reels, the needles - which follow the sound with the
+  picture off too, 15 frames a second - the readout) was put through the
+  flash meter with the picture off and the loudest test music, once with the
+  window as the screen and once with the card alone as the whole screen (the
+  strictest): 0 by every reading - transitions, the strict reading, the
+  either-way area, red - and no stripes, in Zen, the rack, the 90s desktop and
+  the cassette deck. Zen's quiet buttons change only when the pointer comes
+  (no fading animation). A design's own drawing - its panels, the picture's
+  frame, the readout, the reels, the needles, tessellated - takes 0.003 to
+  0.06 ms a frame at 1920 x 1080 (`tests/frame_cost.rs`; the limit 1 ms) and
+  allocates nothing for its size: 0 to 32 small allocations a frame (egui's
+  meshes and text), the same in a 420 x 420 and a 1400 x 900 window
+  (`tests/frame_alloc.rs`). The glass haze is made once a cover and theme.
 - **The window**: wider than 1240 points the player is a centred column
-  1180 wide. Text on the cover's colour (the chosen row, the buttons) is light
+  1180 wide (Zen: 720). Text on the cover's colour (the chosen row, the buttons) is light
   or dark, whichever reads at 4.5 : 1 or more (WCAG 1.4.3) - tested over 144
   cover hues; the cover's colour is lifted until it does against the ground
   and the cards.
@@ -155,7 +230,9 @@ picture is made by `AMP_DEMO_TRACK=… cargo test --test ui -- --ignored`.</sub>
   (Ctrl- / Shift-click) to remove or drag, reordering by keys, **play next** (from a
   row's menu; queued rows are marked), **undo** of a removal, clearing, sorting or
   reordering (Ctrl+Z), drag and drop of files and folders from the desktop (walked in
-  the background; a file already in the list is not added twice), saving as M3U8. Titles,
+  the background; a file already in the list is not added twice; a file name in
+  bytes that are no UTF-8 - Latin-1 on an old disk, from the command line too -
+  is kept as it is), saving as M3U8. Titles,
   lengths, artists and albums are read in the background; a track that cannot be
   played is marked red with why; the details of a track (tags, format, ReplayGain) in
   a window of their own. Two or more tracks of one album in a row (one folder) come
@@ -209,6 +286,13 @@ picture is made by `AMP_DEMO_TRACK=… cargo test --test ui -- --ignored`.</sub>
 <sub>Every theme, playing (`cargo test --test themes -- --ignored`, which also
 renders each in the window's other states into a contact sheet).</sub>
 
+![The designs](docs/designs.png)
+
+<sub>Every design, playing, each in the theme it suggests (`cargo test --test
+designs -- --ignored`; each also in `target/screenshots/designs/`). Top:
+Modern, Zen, Hi-fi rack, 90s desktop, Cassette deck; below: Terminal,
+Brutalist, Glass, Soft, Collage.</sub>
+
 ## Photosensitivity
 
 **Warning.** The pictures move with the music, and moving, flashing pictures
@@ -219,14 +303,22 @@ in the faces' menu) or choose the cover.
 
 What axross-amp does about it:
 
-- **Two readings; the stricter is enforced.** Every rendered frame is read
-  as WCAG 2.3.1 / 2.3.2 have it - a field changing over a quarter of its
-  area the same way within 34 ms is a transition, a flash a pair of
-  opposing ones - and by a stricter reading an independent review applies:
-  within 100 ms, and every change counted, each rise and each fall, paired
-  or not. A face passes only where both readings count at most six
-  transitions in every second (saturated red too) and no pattern hazard;
-  `tests/flash.rs` fails otherwise.
+- **Three readings; all are enforced.** Every rendered frame is read as
+  WCAG 2.3.1 / 2.3.2 have it - a field changing over a quarter of its area
+  the same way within 34 ms is a transition, a flash a pair of opposing
+  ones -; by a stricter reading an independent review applies - within
+  100 ms, and every change counted, each rise and each fall, paired or
+  not -; and either way at once - the area newly transiting in a frame,
+  brightening and darkening alike, where most of a pixel's neighbourhood
+  transits with it - which sees flicker in antiphase (a checker whose
+  tiles each change the other way from their neighbours never has a
+  quarter of a field changing the same way: the first two readings saw 2
+  of it at 15 Hz, this one 30). A face passes only where all three count at
+  most six transitions in every second (saturated red too) and no pattern
+  hazard; `tests/flash.rs` fails otherwise. (Thin lines moving are
+  motion, not flicker: at no moment is a quarter of a field changing - the
+  third reading counts only what transits together, and a test holds it
+  to that.)
 - **Calm faces.** Each face is meant to stay within both readings by
   itself, without the guard below. What drives the pictures' brightness
   (the bars, the beat's pulse, the bass, the energy, the middle, the
@@ -262,17 +354,20 @@ What axross-amp does about it:
   *field* - a third of the **screen** each way (the monitor's size; WCAG's
   10° view), slid over the face - in which a quarter of that field's area
   changes the same way within 100 ms, every change counted, as the strict
-  reading does. Where a field has changed seven times in a second it lays
+  reading does - and either way at once, as the third: half a field of
+  large shapes transiting in one frame (a checker in antiphase), whatever
+  their phase. Where a field has changed seven times in a second it lays
   a veil over the whole face - a slow, blurred average of the picture, 95
   % - staying on while the face goes on near the limit and a second and a
   half after. Seven, not six: the veil's own coming is a change too, and
   at six it would make the seventh. So the guard does not by itself hold a
   face to six; it caps what the faces do not foresee. On ordinary music - pop,
-  house, drum and bass - it does not come (a test). It costs about 1.5 - 5.5
+  house, drum and bass - it does not come (a test). It costs about 1.5 - 3.5
   ms of the CPU a frame (`--release`, `tests/frame_cost.rs`, the faces with
-  and without it); more for the faces of thousands of pieces: the
-  spirograph 7 - 10 ms, the particles 11 - 12.5 ms at 1920 x 1080 and 3840
-  x 2160, the skyline 9 ms at 3840 x 2160. The frame rate's cap on a
+  and without it: the spectrum 1.6, the cover 1.9, the plasma 1.5); more for
+  the faces of thousands of pieces: the spirograph 4 - 6 ms, the particles
+  7 - 9 ms at 1920 x 1080 and 3840 x 2160, the skyline 5.5 ms at 3840 x
+  2160 - over the 2 ms an independent review asked for, not yet met. The frame rate's cap on a
   software renderer counts it in.
 - **A pattern stage in the guard** (ITU-R BT.1702), for stripes no face
   foresaw - a cover of checks, a striped custom scheme: regular stripes
@@ -303,18 +398,32 @@ What axross-amp does about it:
   the default faces through pop, house and drum and bass (the veil must
   stay off); the feedback face's every look, Intense, white on black and
   pure red; the moiré at its most (Intense, white on black); every case an
-  earlier sweep found. With `--ignored`, the whole sweep: every face and
-  option, Calm and Intense, in Classic, Neon, Mono, Fire and two extreme
-  custom schemes - white on black, and pure red (#ff0000, peak #ff3030) on
-  black - at 320 x 180: 624 cases, **all pass both readings** (each face last
-  measured after its last change). The most by the normal reading: 4
-  transitions a second, red 4; by the strict reading: 6, red 6 (12 cases at
-  the limit, 11 of them in *Intense*: synthwave, the line spectrum, the bell
-  curves, the crystals, the aurora; and the ribbon in pure red, Calm); moving
-  stripes in no frame; standing stripes at most 39 % (40 % allowed). The
-  faces that run faster as the music gets louder move as fast after 25
-  minutes of it as at its start (a test: their clock times the energy had
-  leapt further the longer they played).
+  earlier sweep found; the Options at their extremes (no smoothing, 128
+  bars, peaks falling at 300 % a second); faces moved by the energy after
+  25 minutes of play. With `--ignored`, the whole sweep: every face and
+  option, Calm and Intense, in Classic, Neon, Mono, Fire and five extreme
+  custom schemes - white on black, pure red (#ff0000, peak #ff3030) on
+  black, black on white, black on a pure red ground, and the colour
+  editor's own defaults - at 320 x 180: 936 cases, **all pass all three
+  readings** (each face last measured after its last change). The most by
+  the normal reading: 4 transitions a second, red 4; by the strict
+  reading: 6, red 6 (14 cases at the limit, 13 of them in *Intense*); by
+  the either-way reading: 4, red 4; moving stripes in no frame; standing
+  stripes at most 35 % (40 % allowed). `AMP_FLASH_OPTIONS=extreme` runs it
+  with the Options at their extremes (Smoothing 0 asked, its
+  floor given - 85 % at 128 bars; 128 bars; peaks falling at 300 % a second asked, 100 %
+  given): in Classic, Neon, white on black, black on white and the colour
+  editor's defaults, every face and option, Calm and Intense (552 cases,
+  the three faces changed for it - terrain, beat rings, the starfield's
+  trails - in all nine schemes), **all pass all three readings**: the most
+  by the normal reading 6 (synthwave, Intense, Neon), by the strict reading
+  6 (6 cases), by the either-way reading 6, red 4, moving stripes in no
+  frame, standing stripes at most 30 %. It first found the terrain at 8 to
+  11 by the strict reading (its mesh as fine as the bars: now at most 48
+  columns), the beat rings at 7 (their 256 spokes, now at most 48 a side,
+  eased and dimmer) and the starfield's trails at 7 (a long trail now
+  fainter, as a photograph's blur spreads a star's light; its speed eased);
+  `the_options_at_their_extremes_keep_the_faces_calm` keeps those cases.
 
 Before and after, by the strict reading (the independent review's
 numbers for 0.12.0; 0.13.0 from the sweep above, 320 x 180, worst music;
@@ -361,6 +470,7 @@ Keys (on the Player tab, not while typing in a field):
 | Space | play / pause |
 | ← / → | seek 5 s (Shift: 30 s); Ctrl: previous / next track |
 | J / L | back / forward 15 s (as the −15 s and +15 s buttons beside play) |
+| D | the pictures on the display last chosen, or back here |
 | ↑ / ↓, + / − | volume |
 | Home | the track's start |
 | M, N, P | mute, next, previous |

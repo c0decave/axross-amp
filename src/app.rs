@@ -63,6 +63,11 @@ pub struct App {
     playlist: Playlist,
     info: TrackInfo,
     cover: Option<TextureHandle>,
+    /// The cover as read (the glass design's haze is made from it).
+    cover_art: Option<Arc<crate::engine::Art>>,
+    /// The glass design's ground: the cover's haze, for the theme and
+    /// accent it was made for (made again when either changes).
+    haze: Option<(&'static str, Color32, TextureHandle)>,
     /// The cover at the sizes it is shown (made on the CPU, filtered).
     sizer: crate::cover::Sizer,
     /// The pictures' colours from the cover (when it has colour).
@@ -76,6 +81,18 @@ pub struct App {
     /// changes: no cost a frame), and the one shown while the pointer is on
     /// it in the picker.
     theme_shown: (&'static str, Color32, &'static str),
+    /// The design shown (and the chosen one, whose type and room the
+    /// window keeps while another is shown in the picker), and the one the
+    /// pointer is on there.
+    design_shown: (&'static str, &'static str),
+    design_preview: Option<&'static str>,
+    /// Where each design panel lay last frame (the card, the playlist):
+    /// painted there under what lies on it; and the reels' turn.
+    panel_rects: [egui::Rect; 2],
+    /// Where the position and the buttons lay last frame (zen quiets them
+    /// while the pointer is elsewhere).
+    controls_rect: egui::Rect,
+    reels_turn: f32,
     theme_preview: Option<&'static str>,
     /// "Show on display": the monitors connected (asked on a thread every
     /// two seconds where the window belongs to a desktop; set by tests),
@@ -570,6 +587,13 @@ impl App {
             accent: th().accent,
             cover_hue: None,
             theme_shown: ("", Color32::TRANSPARENT, ""),
+            design_shown: ("", ""),
+            design_preview: None,
+            cover_art: None,
+            haze: None,
+            panel_rects: [egui::Rect::NOTHING; 2],
+            controls_rect: egui::Rect::NOTHING,
+            reels_turn: 0.0,
             theme_preview: None,
             monitors: if setup.desktop {
                 let ctx = cc.egui_ctx.clone();
@@ -1056,6 +1080,8 @@ impl App {
         self.select(Some(index));
         self.info = TrackInfo::default();
         self.cover = None;
+        self.cover_art = None;
+        self.haze = None;
         self.viz_state.cover_thumb = None;
         self.sizer.set(None);
         self.cover_scheme = None;
@@ -1138,6 +1164,8 @@ impl App {
             self.playlist.version += 1;
         }
         self.cover = info.art.as_deref().map(|art| cover_texture(ctx, art));
+        self.cover_art = info.art.clone();
+        self.haze = None;
         self.viz_state.cover_thumb = info.art.as_deref().map(|art| {
             std::sync::Arc::new(viz::Thumb::from_rgba(
                 art.width as usize,
@@ -2417,6 +2445,18 @@ impl App {
         ui.ctx().request_repaint_after(Duration::from_millis(50));
     }
 
+    /// Chooses the window's design (as the picker does; tests, the
+    /// gallery).
+    pub fn set_design(&mut self, key: &str) {
+        self.amp.design = crate::design::find(key).key.to_owned();
+        self.amp_dirty = true;
+    }
+
+    /// The design the window shows.
+    pub fn design_shown(&self) -> &'static str {
+        self.design_shown.0
+    }
+
     /// Chooses the window's theme (as the picker does; tests, the gallery).
     pub fn set_theme(&mut self, key: &str) {
         self.amp.theme = crate::theme::find(key).key.to_owned();
@@ -2475,12 +2515,26 @@ impl App {
             Some(c) if self.amp.cover_accent && !t.high_contrast => accent_for(c, t),
             _ => t.accent,
         };
-        if self.theme_shown != (t.key, accent, kept.key) {
+        // the design: as the theme, the one the pointer is on in the
+        // picker shown at once - its panels, corners and strokes; its type
+        // and room only once chosen (the picker's rows stay under the
+        // pointer)
+        let kept_design = crate::design::find(&self.amp.design);
+        let d = self
+            .design_preview
+            .take()
+            .map(crate::design::find)
+            .unwrap_or(kept_design);
+        crate::design::set(d.key);
+        if self.theme_shown != (t.key, accent, kept.key)
+            || self.design_shown != (d.key, kept_design.key)
+        {
             self.theme_shown = (t.key, accent, kept.key);
+            self.design_shown = (d.key, kept_design.key);
             self.accent = accent;
             // (the chosen theme's density, also while another is shown in
             // the picker: its rows stay under the pointer)
-            apply_theme(ctx, t, accent, kept.padding);
+            apply_theme(ctx, t, accent, kept.padding, d, kept_design);
             ctx.request_repaint();
         }
     }
@@ -2536,13 +2590,20 @@ impl App {
                     .response
                     .on_hover_text("Visualization");
                 let mut mode = self.mode;
-                egui::ComboBox::from_id_salt("mode")
-                    .selected_text(viz::name(mode))
-                    .width(150.0)
-                    .height(560.0)
-                    .show_ui(ui, |ui| faces_list(ui, &mut mode))
-                    .response
-                    .accessible_name("Visualization");
+                // (narrower where the row is short; where even that does not
+                // fit beside URL, left out - never over it: the faces are in
+                // ⚙'s menu as well)
+                let room = ui.available_width() - ui.spacing().item_spacing.x - 28.0;
+                if room >= 96.0 {
+                    egui::ComboBox::from_id_salt("mode")
+                        .selected_text(viz::name(mode))
+                        .width(room.min(150.0))
+                        .height(560.0)
+                        .truncate()
+                        .show_ui(ui, |ui| faces_list(ui, &mut mode))
+                        .response
+                        .accessible_name("Visualization");
+                }
                 if mode != self.mode {
                     self.mode = mode;
                     self.dirty = true;
@@ -2608,6 +2669,7 @@ impl App {
         ui.separator();
         ui.horizontal(|ui| {
             ui.menu_button("Show on display", |ui| self.display_menu(ui));
+            ui.menu_button("Design", |ui| self.design_menu(ui));
             ui.menu_button("Theme", |ui| self.theme_menu(ui));
             ui.menu_button("Colours", |ui| self.colours_menu(ui));
             ui.menu_button("Options", |ui| self.options_menu(ui));
@@ -2617,6 +2679,37 @@ impl App {
     /// The window's theme: each with its colours at a glance; the pointer
     /// on one shows it at once, a click keeps it. Following the desktop's
     /// light and dark: a click sets the light or the dark one.
+    /// The window's design: the pointer on one shows it at once (its
+    /// panels, corners, strokes; its type once chosen), a click keeps it.
+    fn design_menu(&mut self, ui: &mut Ui) {
+        ui.set_min_width(300.0);
+        for d in &crate::design::DESIGNS {
+            let chosen = self.amp.design == d.key;
+            let r = ui.radio(chosen, d.name).on_hover_text(d.character);
+            if r.hovered() || r.has_focus() {
+                self.design_preview = Some(d.key);
+            }
+            if r.clicked() {
+                self.amp.design = d.key.into();
+                self.amp_dirty = true;
+            }
+        }
+        ui.separator();
+        // (a theme it goes with: offered, never forced)
+        let d = crate::design::current();
+        let suggested = crate::theme::find(d.suggests);
+        if ui
+            .add_enabled(
+                self.amp.theme != suggested.key,
+                egui::Button::new(format!("{} as the design suggests", suggested.name)),
+            )
+            .clicked()
+        {
+            self.amp.theme = suggested.key.into();
+            self.amp_dirty = true;
+        }
+    }
+
     fn theme_menu(&mut self, ui: &mut Ui) {
         ui.set_min_width(300.0);
         let follow = self.amp.follow_system;
@@ -2863,12 +2956,20 @@ impl App {
     }
 
     fn now_playing(&mut self, ui: &mut Ui) {
-        // a card tinted with the cover's colour
+        // a card tinted with the cover's colour, drawn as the design draws
+        // its panels (where it lay last frame, under what lies on it)
         let tint = card_tint(self.accent);
-        egui::Frame::new()
-            .fill(tint)
-            .corner_radius(CornerRadius::same(12))
-            .inner_margin(10.0)
+        let d = crate::design::current();
+        let fill = crate::design::card_fill(d, th(), tint);
+        if self.panel_rects[0].is_positive() {
+            crate::design::panel(ui.painter(), self.panel_rects[0], d, th(), fill, 1);
+        }
+        let shown = egui::Frame::new()
+            .inner_margin(if d.panel == crate::design::Panel::Frame {
+                14.0
+            } else {
+                10.0
+            })
             .show(ui, |ui| {
                 ui.set_min_width(ui.available_width());
                 // (wide: the cover larger, a hero, and what comes next in a
@@ -2931,26 +3032,53 @@ impl App {
                         let (title, by) = self.now_playing_text();
                         // the type scale: the title bold and large, who in
                         // the accent, the album quieter, the format small
+                        // (the design's type: its size, its family; the zine's
+                        // title in capitals)
+                        let d = crate::design::current();
+                        let title_font = if d.mono {
+                            egui::FontId::monospace(d.title)
+                        } else {
+                            bold(d.title)
+                        };
+                        let collage = d.panel == crate::design::Panel::Paper;
+                        let title = if collage {
+                            title.to_uppercase()
+                        } else if d.mono {
+                            format!("> {title}")
+                        } else {
+                            title
+                        };
                         ui.add(
                             egui::Label::new(
-                                RichText::new(title).font(bold(21.0)).color(th().strong),
+                                RichText::new(title).font(title_font).color(th().strong),
                             )
                             .truncate(),
                         );
                         if !by.is_empty() {
                             ui.add(
-                                egui::Label::new(
-                                    RichText::new(by.clone()).size(14.0).color(self.accent),
-                                )
+                                egui::Label::new({
+                                    // (the collage: cut from another page -
+                                    // typewriter, slanted)
+                                    let by =
+                                        RichText::new(by.clone()).size(14.0).color(self.accent);
+                                    if collage {
+                                        by.monospace().italics()
+                                    } else {
+                                        by
+                                    }
+                                })
                                 .truncate(),
                             );
                         }
                         // (the album, unless the line above names it)
                         if !self.info.album.is_empty() && !by.contains(&self.info.album) {
                             ui.add(
-                                egui::Label::new(
-                                    RichText::new(&self.info.album).size(13.5).color(th().muted),
-                                )
+                                egui::Label::new({
+                                    let album = RichText::new(&self.info.album)
+                                        .size(13.5)
+                                        .color(th().muted);
+                                    if collage { album.italics() } else { album }
+                                })
                                 .truncate(),
                             );
                         }
@@ -2961,6 +3089,7 @@ impl App {
                                     .color(th().muted),
                             );
                         }
+                        self.card_extras(ui);
                     });
                     if let Some((title, by)) = next {
                         ui.with_layout(Layout::right_to_left(Align::Min), |ui| {
@@ -2986,6 +3115,54 @@ impl App {
                     }
                 });
             });
+        self.panel_rects[0] = shown.response.rect;
+    }
+
+    /// What a design adds to the card: a segment display of the time, a
+    /// cassette's reels, VU needles, the position in characters.
+    fn card_extras(&mut self, ui: &mut Ui) {
+        let d = crate::design::current();
+        let x = d.extras;
+        if !(x.lcd || x.reels || x.needles || x.ascii) {
+            return;
+        }
+        let pos = self.engine.shared.position();
+        let total = self.duration.unwrap_or(0.0);
+        let dt = ui.input(|i| i.stable_dt).min(0.1);
+        // (the reels turn while it plays, slowly - a quarter turn a
+        // second - and stand where the desktop asks for less motion)
+        if self.playing() && !self.desktop_reduces_motion() {
+            self.reels_turn = (self.reels_turn + dt * 0.25).fract();
+        }
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            if x.lcd {
+                let track = self.playlist.current.map_or(0, |i| i + 1);
+                let text = format!("{track:02}  {}", clock(pos));
+                let at = ui.cursor().min;
+                let rect = crate::design::lcd(ui.painter(), at, &text, 18.0, th());
+                let said = format!("Track {track}, {}", clock(pos));
+                ui.allocate_rect(rect, Sense::hover()).widget_info(|| {
+                    egui::WidgetInfo::labeled(egui::accesskit::Role::Label, true, said.clone())
+                });
+            }
+            if x.reels {
+                let (rect, _) = ui.allocate_exact_size(vec2(150.0, 46.0), Sense::hover());
+                crate::design::reels(ui.painter(), rect, self.reels_turn, th());
+            }
+            if x.needles {
+                let (rect, _) = ui.allocate_exact_size(vec2(160.0, 46.0), Sense::hover());
+                crate::design::needles(ui.painter(), rect, self.analyzer.vu, th());
+            }
+        });
+        if x.ascii && total > 0.0 {
+            let bar = crate::design::ascii_bar((pos / total) as f32, 24);
+            ui.label(
+                RichText::new(format!("{bar} {} / {}", clock(pos), clock(total)))
+                    .monospace()
+                    .color(th().text),
+            );
+        }
     }
 
     /// Nothing to play: a place to drop music, the ways to add it, the keys.
@@ -3469,7 +3646,9 @@ impl App {
             crate::analyzer::guard::Motion::Calm
         };
         self.analyzer.calm = viz::scheme_calm(&scheme);
-        if self.mode != "off" && !frozen {
+        // (the rack's needles follow the sound with the picture off too)
+        let needles = crate::design::current().extras.needles;
+        if (self.mode != "off" || needles) && !frozen {
             self.analyzer.set_readings(self.meters.read());
             self.analyzer.update(
                 &self.tap,
@@ -3556,6 +3735,7 @@ impl App {
         }
         let scheme = self.scheme();
         self.draw_face(ui, rect, response.hover_pos());
+        crate::design::bezel(ui.painter(), rect, crate::design::current(), th());
         // the face's name, for a moment after it changed (axross's 1.5 s)
         let now = ui.input(|i| i.time);
         if self.label_for != self.mode {
@@ -3681,10 +3861,18 @@ impl App {
                 ui.spacing_mut().item_spacing.x = 4.0;
                 ui.spacing_mut().button_padding.x = 5.0;
             }
-            let big = if narrow {
-                vec2(36.0, 32.0)
-            } else {
-                vec2(46.0, 34.0)
+            // (a cassette deck: square keys, taller, side by side)
+            let keys = crate::design::current().extras.keys;
+            if keys {
+                ui.spacing_mut().item_spacing.x = 2.0;
+                ui.visuals_mut().widgets.inactive.corner_radius = CornerRadius::same(2);
+                ui.visuals_mut().widgets.hovered.corner_radius = CornerRadius::same(2);
+                ui.visuals_mut().widgets.active.corner_radius = CornerRadius::same(2);
+            }
+            let big = match (narrow, keys) {
+                (true, _) => vec2(36.0, 32.0),
+                (false, true) => vec2(48.0, 42.0),
+                (false, false) => vec2(46.0, 34.0),
             };
             if ui
                 .add(egui::Button::new(RichText::new("⏮").size(18.0)).min_size(big))
@@ -3715,7 +3903,17 @@ impl App {
                 self.wind(-15.0);
             }
             let play = if self.playing() { "⏸" } else { "▶" };
-            let button =
+            let button = if keys {
+                // (the play key pressed in while it plays, the accent a
+                // band along its top edge as a deck's coloured key)
+                egui::Button::new(RichText::new(play).size(20.0))
+                    .selected(self.playing())
+                    .min_size(if narrow {
+                        vec2(48.0, 36.0)
+                    } else {
+                        vec2(58.0, 42.0)
+                    })
+            } else {
                 egui::Button::new(RichText::new(play).size(22.0).color(ink_on(self.accent)))
                     .fill(self.accent)
                     .min_size(if narrow {
@@ -3723,9 +3921,18 @@ impl App {
                     } else {
                         vec2(58.0, 38.0)
                     })
-                    .corner_radius(CornerRadius::same(19));
-            if ui
-                .add(button)
+                    .corner_radius(CornerRadius::same(19))
+            };
+            let response = ui.add(button);
+            if keys {
+                let r = response.rect;
+                ui.painter().rect_filled(
+                    egui::Rect::from_min_size(r.min + vec2(3.0, 3.0), vec2(r.width() - 6.0, 3.0)),
+                    CornerRadius::same(1),
+                    self.accent,
+                );
+            }
+            if response
                 .accessible_name(if self.playing() { "Pause" } else { "Play" })
                 .on_hover_text("Play / pause (Space)")
                 .clicked()
@@ -3814,14 +4021,17 @@ impl App {
                 let mut volume = self.volume;
                 // (narrow: the slider gives way, never over the buttons)
                 ui.spacing_mut().slider_width = (ui.available_width() - 84.0).clamp(36.0, 110.0);
-                let response = ui
-                    .add(
+                let response = if crate::design::current().extras.knob {
+                    crate::design::knob(ui, &mut volume, "Volume")
+                } else {
+                    ui.add(
                         egui::Slider::new(&mut volume, 0..=100)
                             .show_value(false)
                             .trailing_fill(true),
                     )
-                    .accessible_name("Volume")
-                    .on_hover_text(format!("Volume {volume} % (↑/↓, +/-, the wheel)"));
+                }
+                .accessible_name("Volume")
+                .on_hover_text(format!("Volume {volume} % (↑/↓, +/-, the wheel)"));
                 if response.changed() {
                     self.set_volume(volume);
                 }
@@ -3835,17 +4045,25 @@ impl App {
                     "🔊"
                 };
                 if ui
-                    .add(egui::Button::new(RichText::new(icon).size(16.0)).frame(false))
+                    .add(
+                        egui::Button::new(RichText::new(icon).size(16.0))
+                            .frame(false)
+                            .min_size(vec2(24.0, 24.0)),
+                    )
                     .accessible_name("Mute")
                     .on_hover_text("Mute (M)")
                     .clicked()
                 {
                     self.set_muted(!self.muted);
                 }
-                ui.menu_button(RichText::new("⋯").size(16.0), |ui| self.more_menu(ui))
-                    .response
-                    .accessible_name("More")
-                    .on_hover_text("Sleep timer, ReplayGain, track details, mixer");
+                // (at least 24 x 24 to hit, as every button)
+                egui::containers::menu::MenuButton::from_button(
+                    egui::Button::new(RichText::new("⋯").size(16.0)).min_size(vec2(24.0, 24.0)),
+                )
+                .ui(ui, |ui| self.more_menu(ui))
+                .0
+                .accessible_name("More")
+                .on_hover_text("Sleep timer, ReplayGain, track details, mixer");
                 if let Some(label) = self.sleep_label() {
                     ui.label(RichText::new(label).small().color(self.accent));
                 }
@@ -4040,7 +4258,7 @@ impl App {
 
     /// Save, Undo, Clear: beside the playlist's switch.
     fn playlist_actions(&mut self, ui: &mut Ui) {
-        if ui.small_button("Clear").clicked() && !self.playlist.tracks.is_empty() {
+        if ui.button("Clear").clicked() && !self.playlist.tracks.is_empty() {
             self.remember_for_undo();
             let n = self.playlist.tracks.len();
             self.playlist.clear();
@@ -4050,14 +4268,14 @@ impl App {
         }
         if !self.undo.is_empty()
             && ui
-                .small_button("↶ Undo")
+                .button("↶ Undo")
                 .on_hover_text("Bring back what was removed (Ctrl+Z)")
                 .clicked()
         {
             self.undo();
         }
         if ui
-            .small_button("Save…")
+            .button("Save…")
             .on_hover_text("Save as an M3U playlist")
             .clicked()
         {
@@ -4457,11 +4675,10 @@ impl App {
             };
             self.visual(ui, (all - 92.0 - list).max(120.0));
             ui.add_space(6.0);
-            self.position(ui);
-            self.transport(ui);
+            self.controls(ui);
             if self.big_list {
                 ui.add_space(4.0);
-                self.playlist_view(ui);
+                self.playlist_panel(ui);
             }
             return;
         }
@@ -4491,26 +4708,105 @@ impl App {
             };
             // the picture gives way first: the list keeps at least
             // three rows whatever the window
+            // (a low window: the picture down to a strip before the list
+            // loses its rows - in a roomier design too)
+            let least = (room - LEAST_LIST).clamp(24.0, 80.0);
             (room - list)
                 .max(room * 0.45)
                 .min(room - LEAST_LIST)
-                .clamp(80.0, 900.0)
+                .clamp(least, 900.0)
         } else {
             (room - 36.0).max(80.0)
         };
         self.visual(ui, picture);
         let top = ui.cursor().top();
         ui.add_space(6.0);
-        self.position(ui);
-        self.transport(ui);
+        self.controls(ui);
         ui.add_space(6.0);
         self.lower_switch(ui);
         self.controls_height = ui.cursor().top() - top;
         if self.eq_page {
             self.equalizer_page(ui);
         } else if self.playlist_open {
-            self.playlist_view(ui);
+            self.playlist_panel(ui);
         }
+    }
+
+    /// The position and the row of buttons. Zen keeps them quiet - no
+    /// fills, no frames, the words and symbols at their full contrast -
+    /// until the pointer comes to them or the keys move the focus.
+    fn controls(&mut self, ui: &mut Ui) {
+        let quiet = crate::design::current().fade_controls
+            && !ui.rect_contains_pointer(self.controls_rect.expand(12.0))
+            && ui.ctx().memory(|m| m.focused()).is_none();
+        let shown = ui.scope(|ui| {
+            if quiet {
+                let w = &mut ui.visuals_mut().widgets;
+                for s in [&mut w.inactive, &mut w.noninteractive] {
+                    s.bg_fill = Color32::TRANSPARENT;
+                    s.weak_bg_fill = Color32::TRANSPARENT;
+                    s.bg_stroke = Stroke::NONE;
+                }
+            }
+            self.position(ui);
+            self.transport(ui);
+        });
+        self.controls_rect = shown.response.rect;
+    }
+
+    /// The glass design: the cover's colours as a haze over the whole
+    /// page, under the frosted panels (made once a cover, theme and accent).
+    fn paint_haze(&mut self, ui: &mut Ui) {
+        if crate::design::current().panel != crate::design::Panel::Glass {
+            return;
+        }
+        let Some(art) = self.cover_art.as_ref() else {
+            return;
+        };
+        let t = th();
+        let fresh =
+            matches!(&self.haze, Some((key, accent, _)) if *key == t.key && *accent == self.accent);
+        if !fresh {
+            let image = crate::design::haze(
+                &art.rgba,
+                art.width as usize,
+                art.height as usize,
+                t,
+                self.accent,
+            );
+            let texture = ui
+                .ctx()
+                .load_texture("haze", image, egui::TextureOptions::LINEAR);
+            self.haze = Some((t.key, self.accent, texture));
+        }
+        if let Some((_, _, texture)) = &self.haze {
+            // (the texels' centres at the edges: no hard border of the
+            // outer cells' colour)
+            let uv =
+                egui::Rect::from_min_max(egui::pos2(0.0625, 0.0625), egui::pos2(0.9375, 0.9375));
+            ui.painter()
+                .image(texture.id(), ui.max_rect().expand(10.0), uv, Color32::WHITE);
+        }
+    }
+
+    /// The playlist on the design's panel (where it lay last frame, under
+    /// the rows laid over it; the modern card and zen leave it bare).
+    fn playlist_panel(&mut self, ui: &mut Ui) {
+        let d = crate::design::current();
+        if self.panel_rects[1].is_positive() {
+            let fill = crate::design::list_fill(d, th());
+            crate::design::panel(ui.painter(), self.panel_rects[1], d, th(), fill, 2);
+        }
+        let margin = crate::design::list_margin(d);
+        let shown = egui::Frame::new().inner_margin(margin).show(ui, |ui| {
+            ui.set_min_width(ui.available_width());
+            self.playlist_view(ui);
+        });
+        self.panel_rects[1] = if margin > 0.0 {
+            shown.response.rect
+        } else {
+            egui::Rect::NOTHING
+        };
     }
 
     /// Whether the desktop asks for less motion (GNOME's animations off).
@@ -4789,12 +5085,17 @@ impl eframe::App for App {
                     }
                     Tab::Player => {}
                 }
+                self.paint_haze(ui);
                 // (a wide window: a column of the width it reads best at,
                 // in the middle - not a card stretched across 1,900 px)
                 let room = ui.available_rect_before_wrap();
-                if room.width() > 1240.0 && !self.big_visual {
+                // (zen: a narrow column whatever the window - one thing at
+                // a time, much air either side)
+                let narrow = crate::design::current().column;
+                let width = if narrow > 0.0 { narrow } else { 1180.0 };
+                if room.width() > width + 60.0 && !self.big_visual {
                     let column =
-                        egui::Rect::from_center_size(room.center(), vec2(1180.0, room.height()));
+                        egui::Rect::from_center_size(room.center(), vec2(width, room.height()));
                     ui.scope_builder(egui::UiBuilder::new().max_rect(column), |ui| {
                         self.player_page(ui)
                     });
@@ -4823,7 +5124,12 @@ impl eframe::App for App {
         // rest; off, the clock moves once a second; idle, nothing is drawn
         // until something changes (input, the engine: they wake the window)
         if self.mode == "off" {
-            if self.playing() {
+            // (a design's reels and needles move at a calm 15 frames a
+            // second; else the clock once a second)
+            let x = crate::design::current().extras;
+            if self.playing() && (x.reels || x.needles) {
+                ctx.request_repaint_after(Duration::from_secs_f32(1.0 / 15.0));
+            } else if self.playing() {
                 ctx.request_repaint_after(Duration::from_secs(1));
             }
         } else if self.playing()
@@ -5047,7 +5353,14 @@ fn cover_texture(ctx: &egui::Context, art: &crate::engine::Art) -> TextureHandle
 /// The look: the theme's (Midnight until the settings are read), its
 /// fonts.
 fn style(ctx: &egui::Context) {
-    apply_theme(ctx, th(), th().accent, th().padding);
+    apply_theme(
+        ctx,
+        th(),
+        th().accent,
+        th().padding,
+        crate::design::current(),
+        crate::design::current(),
+    );
     // small text readable (egui's is 9 px): 11 px on every tab
     ctx.all_styles_mut(|style| {
         style
@@ -5085,18 +5398,27 @@ fn style(ctx: &egui::Context) {
 
 /// A theme and an accent on the window: egui's visuals of both its light
 /// and dark styles (whichever the theme is, egui is told so), its density.
-fn apply_theme(ctx: &egui::Context, t: &crate::theme::Theme, accent: Color32, padding: [f32; 2]) {
+fn apply_theme(
+    ctx: &egui::Context,
+    t: &crate::theme::Theme,
+    accent: Color32,
+    padding: [f32; 2],
+    d: &crate::design::Design,
+    layout: &crate::design::Design,
+) {
     let which = if t.dark {
         egui::Theme::Dark
     } else {
         egui::Theme::Light
     };
     ctx.set_theme(which);
-    ctx.set_visuals_of(which, crate::theme::visuals(t, accent));
-    let padding = vec2(padding[0], padding[1]);
+    let mut visuals = crate::theme::visuals(t, accent);
+    crate::design::restyle(&mut visuals, d, t);
+    ctx.set_visuals_of(which, visuals);
     ctx.all_styles_mut(|s| {
-        s.spacing.item_spacing = vec2(8.0, 6.0);
-        s.spacing.button_padding = padding;
+        crate::design::retype(s, layout);
+        // (the theme's density where it asks more room: high contrast)
+        s.spacing.button_padding = s.spacing.button_padding.max(vec2(padding[0], padding[1]));
     });
 }
 
@@ -5122,6 +5444,12 @@ pub fn card_tint(accent: Color32) -> Color32 {
 }
 
 /// As [`card_tint`], in a theme.
+/// The now-playing card's fill in a theme, for an accent (as
+/// [`card_tint`]; the designs' tests).
+pub fn card_tint_for(t: &crate::theme::Theme, accent: Color32) -> Color32 {
+    card_tint_in(t, accent)
+}
+
 fn card_tint_in(t: &crate::theme::Theme, accent: Color32) -> Color32 {
     let need = crate::theme::text_contrast(t);
     let mut k = if t.high_contrast { 0.08 } else { 0.14 };
@@ -5387,7 +5715,11 @@ fn format_line(codec: &str, rate: u32, channels: usize, bits: Option<u32>) -> St
 /// the channels: "FLAC · 24-bit · 96 kHz · 2 ch", "MP3 · 192 kbps ·
 /// 44.1 kHz · 2 ch".
 fn card_format(i: &crate::engine::TrackInfo) -> String {
-    let mut parts = vec![i.codec.clone()];
+    // (the codec where it is known yet)
+    let mut parts: Vec<String> = Some(i.codec.clone())
+        .filter(|c| !c.is_empty())
+        .into_iter()
+        .collect();
     match (i.bits, i.bitrate) {
         (Some(b), _) if !i.codec.contains(&format!("{b}-bit")) => parts.push(format!("{b}-bit")),
         (None, Some(kbps)) => parts.push(format!("{kbps} kbps")),
@@ -5620,6 +5952,11 @@ mod tests {
         assert_eq!(
             card_format(&info("PCM 16-bit", 48_000, Some(16), Some(1536))),
             "PCM 16-bit · 48 kHz · 2 ch"
+        );
+        // (no codec known yet: no separator before nothing)
+        assert_eq!(
+            card_format(&info("", 48_000, Some(16), None)),
+            "16-bit · 48 kHz · 2 ch"
         );
     }
 

@@ -189,6 +189,8 @@ pub struct AmpSettings {
     pub display_name: String,
     pub display_sound: bool,
     pub display_open: bool,
+    /// The window's design (`design::DESIGNS`' key).
+    pub design: String,
 }
 
 /// The loudness targets offered: LUFS and what aims at it.
@@ -221,6 +223,7 @@ impl Default for AmpSettings {
             display_name: String::new(),
             display_sound: false,
             display_open: false,
+            design: "modern".into(),
         }
     }
 }
@@ -311,6 +314,11 @@ pub fn read_amp(path: &Path) -> AmpSettings {
     if let Some(on) = map.get("display_open").and_then(Value::as_bool) {
         settings.display_open = on;
     }
+    if let Some(d) =
+        text(&map, "design").filter(|k| crate::design::DESIGNS.iter().any(|d| d.key == k))
+    {
+        settings.design = d;
+    }
     settings
 }
 
@@ -348,6 +356,7 @@ pub fn write_amp(path: &Path, settings: &AmpSettings) -> std::io::Result<()> {
     map.insert("display_name".into(), json!(settings.display_name));
     map.insert("display_sound".into(), json!(settings.display_sound));
     map.insert("display_open".into(), json!(settings.display_open));
+    map.insert("design".into(), json!(settings.design));
     write_object(path, &map)
 }
 
@@ -883,6 +892,7 @@ mod tests {
             display_name: "LG TV".into(),
             display_sound: true,
             display_open: true,
+            design: "cassette".into(),
         };
         write_amp(&path, &settings).unwrap();
         let back = read_amp(&path);
@@ -910,6 +920,8 @@ mod tests {
         );
         assert!(back.display_sound && back.display_open);
         assert!(!fresh.display_open && !fresh.display_sound);
+        assert_eq!(back.design, "cassette");
+        assert_eq!(fresh.design, "modern", "the default design");
         assert_eq!(fresh.theme, "midnight", "the dark theme by default");
         assert!(fresh.cover_accent && !fresh.follow_system);
         assert_eq!(fresh.motion, "calm", "calm by default");
