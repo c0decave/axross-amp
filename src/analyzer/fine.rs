@@ -385,7 +385,14 @@ impl Fine {
             self.mel_history[self.head] = row;
             self.chroma_history[self.head] = self.chroma;
             self.key_history[self.head] = self.keys;
-            self.hd_history[self.head] = self.hd;
+            // (the fine waterfall's the same way: in bright schemes its
+            // scrolling rows flickered at up to 37 transitions a second)
+            let before = self.hd_history[(self.head + STEPS - 1) % STEPS];
+            let mut row = self.hd;
+            for (v, b) in row.iter_mut().zip(before) {
+                *v = b + (*v - b) * 0.25;
+            }
+            self.hd_history[self.head] = row;
         }
     }
 
@@ -496,6 +503,37 @@ mod tests {
         assert_eq!(note(261.63).0, 60);
         assert_eq!(note_name(60), "C4");
         assert_eq!(note_name(21), "A0");
+    }
+
+    #[test]
+    fn the_spectrograms_rows_do_not_jump_from_step_to_step() {
+        // a tone on and off every other step: scrolled past a pixel, a
+        // row's sharp change is a flash
+        let mut fine = Fine::new();
+        let tone: Vec<f32> = (0..2048)
+            .flat_map(|i| {
+                let v = (std::f32::consts::TAU * 1000.0 * i as f32 / 48_000.0).sin() * 0.8;
+                [v, v]
+            })
+            .collect();
+        let silence = vec![0.0f32; tone.len()];
+        for i in 0..60 {
+            let tap = if (i / 2) % 2 == 0 { &tone } else { &silence };
+            fine.update(tap, 48_000, 1.0 / STEP_HZ);
+        }
+        let jump = |a: &[f32], b: &[f32]| {
+            a.iter()
+                .zip(b)
+                .map(|(x, y)| (x - y).abs())
+                .fold(0.0f32, f32::max)
+        };
+        let (mut hd, mut mel) = (0.0f32, 0.0f32);
+        for age in 0..30 {
+            hd = hd.max(jump(fine.hd_row(age), fine.hd_row(age + 1)));
+            mel = mel.max(jump(fine.mel_row(age), fine.mel_row(age + 1)));
+        }
+        assert!(hd < 0.3, "the fine waterfall's rows jump by {hd}");
+        assert!(mel < 0.3, "the mel rows jump by {mel}");
     }
 
     #[test]

@@ -37,6 +37,28 @@ impl Motion {
         }
     }
 
+    /// How fast the onsets' phase (what twists the ribbon, turns the
+    /// kaleidoscope) follows its target (1/s): in Calm a jump of it is
+    /// spread over a third of a second, not a twentieth - each jump swept
+    /// the ribbon's lines across the picture, nine times a second.
+    pub fn phase_follow(self) -> f32 {
+        match self {
+            Motion::Calm => 3.0,
+            Motion::Intense => 18.0,
+            Motion::Reduced => 2.0,
+        }
+    }
+
+    /// How much of the row before a scrolling picture's new row keeps
+    /// (the waterfall's: less, and a kick's rows lay in stripes over half
+    /// of it in the bright schemes, a pattern hazard).
+    pub fn row_keep(self) -> f32 {
+        match self {
+            Motion::Calm | Motion::Intense => 0.8,
+            Motion::Reduced => 0.88,
+        }
+    }
+
     /// The pictures' clock against the music's (calm: slower).
     pub fn pace(self) -> f32 {
         match self {

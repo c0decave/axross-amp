@@ -72,6 +72,9 @@ pub struct State {
     morph_turn: f32,
     spiro: (f32, f32, f32),
     spiro_turn: f32,
+    /// The wheel the spirograph fades from, and how far (1: done).
+    spiro_from: f32,
+    spiro_fade: f32,
     rd_u: Vec<f32>,
     rd_v: Vec<f32>,
     rd_u2: Vec<f32>,
@@ -110,6 +113,8 @@ impl Default for State {
             morph_turn: 0.0,
             spiro: (0.4, 0.4, 0.6),
             spiro_turn: 0.0,
+            spiro_from: 0.4,
+            spiro_fade: 1.0,
             rd_u: Vec::new(),
             rd_v: Vec::new(),
             rd_u2: Vec::new(),
@@ -1167,7 +1172,10 @@ fn glowing_line(pen: &mut Pen<'_>, width: f32, colour: Color32, strength: f32) {
 
 fn spirograph(f: &Frame<'_>, pen: &mut Pen<'_>, st: &mut State, dt: f32) {
     let (a, s, r) = (f.a, f.s, f.rect);
-    // the wheel's size changes now and then on the beat, smoothly
+    // the wheel's size changes now and then on the beat: the curve of the
+    // new one fades in over the old in two seconds (it once followed the
+    // size itself - the far laps of a dense curve reshuffle at the least
+    // change of it, and the picture flickered 25 times a second)
     const RATIOS: [f32; 8] = [
         3.0 / 7.0,
         2.0 / 5.0,
@@ -1180,57 +1188,69 @@ fn spirograph(f: &Frame<'_>, pen: &mut Pen<'_>, st: &mut State, dt: f32) {
     ];
     if a.beat.count != st.last_beat {
         st.last_beat = a.beat.count;
-        if a.beat.count % 8 == 0 {
-            st.spiro.1 = RATIOS[(a.beat.count / 8) as usize % RATIOS.len()];
+        let next = RATIOS[(a.beat.count / 8) as usize % RATIOS.len()];
+        if a.beat.count % 8 == 0 && next != st.spiro.1 && st.spiro_fade >= 1.0 {
+            st.spiro_from = st.spiro.1;
+            st.spiro.1 = next;
+            st.spiro_fade = 0.0;
         }
     }
+    st.spiro_fade = (st.spiro_fade + dt / 2.0).min(1.0);
+    st.spiro.0 = st.spiro.1;
     let follow = 1.0 - (-dt * 1.5).exp();
-    st.spiro.0 += (st.spiro.1 - st.spiro.0) * follow;
     st.spiro.2 += ((0.45 + 0.5 * a.energy) - st.spiro.2) * follow;
     st.spiro_turn += dt * (0.1 + 0.4 * a.energy);
     let c = r.center();
     // as large as the picture: the curves and, behind, two larger copies
     // that run off its sides
     let size = r.height() / 2.0 - 4.0;
-    for layer in 0..5usize {
-        let big = match layer {
-            0 => 2.4,
-            1 => 1.7,
-            _ => 1.0,
-        };
-        let inner = layer.saturating_sub(2);
-        let ratio = st.spiro.0 * (1.0 + 0.07 * inner as f32);
-        let d = st.spiro.2 * (1.0 - 0.15 * inner as f32);
-        let scale = size * big / (1.0 - ratio + d).max(0.1);
-        let turn =
-            st.spiro_turn * (1.0 + 0.3 * inner as f32) * if layer % 2 == 0 { 1.0 } else { -1.0 };
-        const STEPS: usize = 1400;
-        let laps = 14.0;
-        let chunks = 28;
-        let faint = if layer < 2 { 0.35 } else { 1.0 };
-        for chunk in 0..chunks {
-            pen.points.clear();
-            for i in chunk * STEPS / chunks..=((chunk + 1) * STEPS / chunks).min(STEPS - 1) {
-                let t = i as f32 / STEPS as f32 * TAU * laps;
-                let k = (1.0 - ratio) / ratio;
-                let x = (1.0 - ratio) * t.cos() + d * (k * t).cos();
-                let y = (1.0 - ratio) * t.sin() - d * (k * t).sin();
-                let (sin, cos) = turn.sin_cos();
-                pen.points
-                    .push(c + vec2(x * cos - y * sin, x * sin + y * cos) * scale);
+    let fade = st.spiro_fade;
+    let wheels = [(st.spiro_from, 1.0 - fade), (st.spiro.1, fade)];
+    for (wheel, weight) in wheels {
+        if weight < 0.01 {
+            continue;
+        }
+        for layer in 0..5usize {
+            let big = match layer {
+                0 => 2.4,
+                1 => 1.7,
+                _ => 1.0,
+            };
+            let inner = layer.saturating_sub(2);
+            let ratio = wheel * (1.0 + 0.07 * inner as f32);
+            let d = st.spiro.2 * (1.0 - 0.15 * inner as f32);
+            let scale = size * big / (1.0 - ratio + d).max(0.1);
+            let turn = st.spiro_turn
+                * (1.0 + 0.3 * inner as f32)
+                * if layer % 2 == 0 { 1.0 } else { -1.0 };
+            const STEPS: usize = 1400;
+            let laps = 14.0;
+            let chunks = 28;
+            let faint = if layer < 2 { 0.35 } else { 1.0 } * weight;
+            for chunk in 0..chunks {
+                pen.points.clear();
+                for i in chunk * STEPS / chunks..=((chunk + 1) * STEPS / chunks).min(STEPS - 1) {
+                    let t = i as f32 / STEPS as f32 * TAU * laps;
+                    let k = (1.0 - ratio) / ratio;
+                    let x = (1.0 - ratio) * t.cos() + d * (k * t).cos();
+                    let y = (1.0 - ratio) * t.sin() - d * (k * t).sin();
+                    let (sin, cos) = turn.sin_cos();
+                    pen.points
+                        .push(c + vec2(x * cos - y * sin, x * sin + y * cos) * scale);
+                }
+                let level = band(a, chunk as f32 / chunks as f32);
+                let colour = mix(
+                    s.background,
+                    s.at(0.2 + 0.8 * level),
+                    (0.45 + 0.2 * (4 - layer) as f32 / 4.0 + 0.35 * a.beat.pulse) * faint,
+                );
+                glowing_line(
+                    pen,
+                    1.0 + 0.5 * inner as f32,
+                    colour,
+                    faint * (0.6 + 0.8 * level),
+                );
             }
-            let level = band(a, chunk as f32 / chunks as f32);
-            let colour = mix(
-                s.background,
-                s.at(0.2 + 0.8 * level),
-                (0.45 + 0.2 * (4 - layer) as f32 / 4.0 + 0.35 * a.beat.pulse) * faint,
-            );
-            glowing_line(
-                pen,
-                1.0 + 0.5 * inner as f32,
-                colour,
-                faint * (0.6 + 0.8 * level),
-            );
         }
     }
 }

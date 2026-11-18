@@ -321,8 +321,9 @@ impl Analyzer {
             self.clock -= step;
             self.tick();
         }
-        // the phase follows its target smoothly (no steps at 60 fps)
-        let follow = 1.0 - (-dt * 18.0).exp();
+        // the phase follows its target smoothly (no steps at 60 fps; in
+        // Calm slowly)
+        let follow = 1.0 - (-dt * self.motion.phase_follow()).exp();
         self.phase += (self.phase_target - self.phase) * follow;
 
         self.samples(tap, frames, live, dt);
@@ -363,9 +364,17 @@ impl Analyzer {
             self.phase_target -= 4.0 * std::f32::consts::PI;
             self.phase -= 4.0 * std::f32::consts::PI;
         }
+        // (the waterfall's rows eased in time - each keeps much of the one
+        // before: rows of a gated noise, bright and dark in turn, scrolled
+        // as stripes, 28 transitions a second)
+        let before = self.head * MAX_BARS;
         self.head = (self.head + 1) % HISTORY;
         let row = self.head * MAX_BARS;
-        self.raw_history[row..row + n].copy_from_slice(&self.raw);
+        let keep = self.motion.row_keep();
+        for i in 0..n {
+            let b = self.raw_history[before + i];
+            self.raw_history[row + i] = b + (self.raw[i] - b) * (1.0 - keep);
+        }
         self.history[row..row + n].copy_from_slice(&self.bars);
         self.filled = (self.filled + 1).min(HISTORY);
     }

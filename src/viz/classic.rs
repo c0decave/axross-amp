@@ -33,6 +33,7 @@ const SPARK_MAX: usize = 160;
 const SPARK_RISE: f32 = 0.5;
 const SPARK_LIFE: f32 = 1.2;
 /// The wave ribbon (RIBBON_*).
+/// The ribbon's lines at most (fewer in a small picture).
 const RIBBON_LINES: usize = 9;
 const RIBBON_POINTS: usize = 120;
 const RIBBON_TWISTS: f32 = 2.5;
@@ -80,6 +81,15 @@ pub struct State {
     scope_guard: crate::analyzer::guard::Guard,
     scope_last: Vec<f32>,
     scope_last_height: f32,
+    /// How bright the trace is drawn (eased: a dense wave dimmer).
+    scope_bright: f32,
+    /// The ribbon's height along it, eased.
+    ribbon_height: Vec<f32>,
+    /// The kaleidoscope's six groups and its peak, eased; its turn, and
+    /// the onsets' phase it last followed.
+    kaleido: [f32; 7],
+    kaleido_turn: f32,
+    kaleido_phase: f32,
 }
 
 /// A scope's gain for the highest sample lately `peak` (kept up to date,
@@ -160,8 +170,8 @@ pub fn draw(f: &Frame<'_>, key: &str, state: &mut VizState) {
         "terrain" => terrain(f, g, cv),
         "ring" => ring(f, g, cv, st),
         "bells" => bells(f, g, cv),
-        "ribbon" => ribbon(f, g, cv),
-        "kaleidoscope" => kaleidoscope(f, g, cv),
+        "ribbon" => ribbon(f, g, cv, st),
+        "kaleidoscope" => kaleidoscope(f, g, cv, st),
         "scope" => scope(f, g, cv, st),
         "lissajous" => lissajous(f, g, cv, st, trails),
         "vu" => vu(f, g, cv),
@@ -440,13 +450,16 @@ fn particles(f: &Frame<'_>, g: Area, cv: &mut Canvas, st: &mut State) {
             // (behind a lit column, a soft band of its colours: the dots on
             // it, not a grid of bright dots on black - a regular pattern of
             // high contrast is what a photosensitive eye cannot bear)
+            // (the columns touch, and the band is nearly the dots' own
+            // colour: at 320 x 180 a band of 75 % between gaps still made
+            // stripes over 40 % of the picture)
             if on > 0 {
                 let top = h - 2.0 - on as f32 * pitch;
-                let wide = (step * 0.9).max(size);
+                let wide = step.max(size);
                 pen.vertical(
                     g.r(x - wide / 2.0, top, wide, on as f32 * pitch),
-                    mix(s.background, s.at(on as f32 / rows as f32), 0.75),
-                    mix(s.background, s.at(0.0), 0.75),
+                    mix(s.background, s.at(on as f32 / rows as f32), 0.92),
+                    mix(s.background, s.at(0.0), 0.92),
                 );
             }
             for r in 0..rows {
@@ -756,7 +769,10 @@ fn ring(f: &Frame<'_>, g: Area, cv: &mut Canvas, st: &mut State) {
             .sort_by(|x, y| foot(*x).0.y.total_cmp(&foot(*y).0.y).then(x.cmp(y)));
     }
     let order = &st.ring_order;
-    let bar = TAU * rx / n as f32 * 0.5;
+    // (the bars touch: half as wide as their spacing, they made regular
+    // stripes over 40 % of a small picture - a pattern hazard; told apart
+    // by every other one a little darker instead)
+    let bar = TAU * rx / n as f32;
     let c = g.p(cx, cy);
     cv.draw(f.painter, |pen| {
         ellipse(pen, c, vec2(rx, ry), s.track());
@@ -775,7 +791,7 @@ fn ring(f: &Frame<'_>, g: Area, cv: &mut Canvas, st: &mut State) {
                     3.0,
                 ),
                 s.background,
-                (1.0 - scale) / (1.0 - RING_FAR) / 3.0,
+                (1.0 - scale) / (1.0 - RING_FAR) / 3.0 + if i % 2 == 1 { 0.06 } else { 0.0 },
             );
             let rise = a.bars[i] * reach * scale;
             if rise >= 1.0 {
@@ -874,7 +890,7 @@ fn bells(f: &Frame<'_>, g: Area, cv: &mut Canvas) {
     });
 }
 
-fn ribbon(f: &Frame<'_>, g: Area, cv: &mut Canvas) {
+fn ribbon(f: &Frame<'_>, g: Area, cv: &mut Canvas, st: &mut State) {
     let (a, s) = (f.a, f.s);
     let n = a.bars.len().max(1);
     let (w, h) = (g.w, g.h);
@@ -891,24 +907,44 @@ fn ribbon(f: &Frame<'_>, g: Area, cv: &mut Canvas) {
         let j = (i + 1).min(n - 1);
         smooth(i) + (smooth(j) - smooth(i)) * (x - i as f32)
     };
+    // (its height along it eased over a quarter of a second, in Calm half
+    // a second: the bundle of lines opening and closing with each onset
+    // swept a quarter of a small picture seven times a second)
+    if st.ribbon_height.len() != RIBBON_POINTS {
+        st.ribbon_height = vec![0.2; RIBBON_POINTS];
+    }
+    let ease = 1.0 - (-f.dt / (0.35 * a.motion.turn() / 0.25)).exp();
+    for (p, h) in st.ribbon_height.iter_mut().enumerate() {
+        let u = p as f32 / (RIBBON_POINTS - 1) as f32;
+        *h += (0.2 + 0.8 * level(u).max(0.0).sqrt() - *h) * ease;
+    }
+    let heights = &st.ribbon_height;
+    // (in a small picture fewer lines: nine bright lines moving together
+    // were a quarter of a field there - a flash - where at full screen they
+    // are a tenth)
+    let lines = match h {
+        h if h < 260.0 => 5,
+        h if h < 360.0 => 7,
+        _ => RIBBON_LINES,
+    };
     let y = |j: usize, p: usize| {
         let u = p as f32 / (RIBBON_POINTS - 1) as f32;
-        let offset = -1.0 + 2.0 * j as f32 / (RIBBON_LINES - 1) as f32;
-        let amplitude = 0.2 + 0.8 * level(u).max(0.0).sqrt();
+        let offset = -1.0 + 2.0 * j as f32 / (lines - 1) as f32;
+        let amplitude = heights[p];
         let envelope = (PI * u).sin().max(0.0).powf(0.6);
         let theta = TAU * RIBBON_TWISTS * u + phase;
         let wave = 0.7 * theta.sin() + 0.3 * (TAU * 1.3 * u - 0.5 * phase).sin();
         let shape = (wave + RIBBON_WIDTH * offset * theta.cos()) / (1.0 + RIBBON_WIDTH);
         g.p(u * w, h / 2.0 - h * 0.46 * envelope * amplitude * shape)
     };
-    let middle = RIBBON_LINES / 2;
+    let middle = lines / 2;
     cv.draw(f.painter, |pen| {
         for st in 0..RIBBON_COLOURS {
             let from = ((st * (RIBBON_POINTS - 1)) as f32 / RIBBON_COLOURS as f32).round() as usize;
             let to =
                 (((st + 1) * (RIBBON_POINTS - 1)) as f32 / RIBBON_COLOURS as f32).round() as usize;
             let colour = s.at((st as f32 + 0.5) / RIBBON_COLOURS as f32);
-            for j in 0..RIBBON_LINES {
+            for j in 0..lines {
                 if j == middle {
                     continue;
                 }
@@ -927,7 +963,7 @@ fn ribbon(f: &Frame<'_>, g: Area, cv: &mut Canvas) {
     });
 }
 
-fn kaleidoscope(f: &Frame<'_>, g: Area, cv: &mut Canvas) {
+fn kaleidoscope(f: &Frame<'_>, g: Area, cv: &mut Canvas, st: &mut State) {
     let (a, s) = (f.a, f.s);
     let n = a.bars.len().max(1);
     let c = g.p(g.w / 2.0, g.h / 2.0);
@@ -944,6 +980,15 @@ fn kaleidoscope(f: &Frame<'_>, g: Area, cv: &mut Canvas) {
         }
     }
     let peak = a.peaks.iter().cloned().fold(0.0f32, f32::max);
+    // (eased over a fifth of a second, a third in Calm: its petals, dots
+    // and diamonds, each following a group in its own time, made twelve
+    // transitions a second together - all 24 copies at once)
+    let ease = 1.0 - (-f.dt / (0.3 * a.motion.turn() / 0.25)).exp();
+    for (k, v) in groups.iter().chain([peak].iter()).enumerate() {
+        st.kaleido[k] += (v - st.kaleido[k]) * ease;
+    }
+    groups.copy_from_slice(&st.kaleido[..6]);
+    let peak = st.kaleido[6];
     let polar = |r: f32, angle: f32| vec2(r * angle.cos(), r * angle.sin());
     // the petal: two cubic curves, sampled
     let length = radius * (0.35 + 0.6 * (groups[0] + groups[1]) / 2.0);
@@ -978,7 +1023,17 @@ fn kaleidoscope(f: &Frame<'_>, g: Area, cv: &mut Canvas) {
         centroid += petal(k);
     }
     centroid /= (2 * STEPS) as f32;
-    let turn = a.phase * 0.5;
+    // (it turns with the onsets, but no faster than a petal's width in a
+    // third of a second: turned at once by an onset, petals and gaps
+    // changed places all round - a flash of half the picture)
+    let mut step = (a.phase - st.kaleido_phase) * 0.5;
+    if step < -PI {
+        step += TAU; // (the phase wrapped, at 4 pi)
+    }
+    st.kaleido_phase = a.phase;
+    let most = alpha * 3.0 * f.dt * 0.25 / a.motion.turn();
+    st.kaleido_turn = (st.kaleido_turn + step.clamp(-most, most)) % TAU;
+    let turn = st.kaleido_turn;
     cv.draw(f.painter, |pen| {
         // layer by layer, each in all twelve copies (axross's order)
         for layer in 0..5 {
@@ -1077,6 +1132,31 @@ fn scope(f: &Frame<'_>, g: Area, cv: &mut Canvas, st: &mut State) {
         }
         st.scope_last_height = shown_height.max(1e-3);
     }
+    // (a wave as dense as noise, whose trace lies in stripes, drawn dimmer
+    // - the held one too: moving stripes of high contrast are what a
+    // photosensitive eye cannot bear; at 0.35 an Intense, noise-dense
+    // trace still lay in moving stripes over 27 % of a small picture -
+    // and eased, so that the trace's brightness does not flicker itself)
+    // (crossings a point of the trace: the live wave's every sample, the
+    // held one's a point each)
+    let shown_wave: &[f32] = if fading {
+        &st.scope_last[..points]
+    } else {
+        wave
+    };
+    let crossings = shown_wave
+        .windows(2)
+        .filter(|w| (w[0] <= 0.0) != (w[1] <= 0.0))
+        .count() as f32
+        / points.min(shown_wave.len()).max(1) as f32;
+    let want = (1.3 - crossings * 2.5).clamp(0.25, 1.0);
+    // (dimmer at once, brighter again slowly)
+    if st.scope_bright <= 0.0 || want < st.scope_bright {
+        st.scope_bright = want;
+    } else {
+        st.scope_bright += (want - st.scope_bright) * (1.0 - (-f.dt / 0.5).exp());
+    }
+    let trace = mix(s.background, s.trace(), st.scope_bright);
     let kept = &st.scope_last;
     let kept_height = st.scope_last_height;
     cv.draw(f.painter, |pen| {
@@ -1094,24 +1174,12 @@ fn scope(f: &Frame<'_>, g: Area, cv: &mut Canvas, st: &mut State) {
                     mid - v * k * (mid - 2.0),
                 ));
             }
-            pen.line(TRACE, s.trace());
+            pen.line(TRACE, trace);
             return;
         }
         // (here: from a rising zero crossing - the wave stands still -
-        // half the samples, a point a pixel at most; a wave as dense as
-        // noise, whose trace lies in stripes, drawn dimmer: moving stripes
-        // of high contrast are what a photosensitive eye cannot bear)
+        // half the samples, a point a pixel at most)
         let points = points.min(wave.len());
-        let crossings = wave
-            .windows(2)
-            .filter(|w| (w[0] <= 0.0) != (w[1] <= 0.0))
-            .count() as f32
-            / points.max(1) as f32;
-        let trace = mix(
-            s.background,
-            s.trace(),
-            (1.3 - crossings * 2.0).clamp(0.35, 1.0),
-        );
         pen.points.clear();
         for p in 0..points {
             let k = p * (wave.len() - 1) / (points - 1);

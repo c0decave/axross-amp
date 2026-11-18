@@ -35,7 +35,12 @@ fn run(
     part: f32,
     setup: impl Fn(&mut axross_amp::viz::VizState),
 ) -> Report {
-    let music = worst_music(part);
+    // (AMP_FLASH_PLAIN: the plain test music instead, as long)
+    let music = if std::env::var_os("AMP_FLASH_PLAIN").is_some() {
+        faces::signal(part * 8.0)
+    } else {
+        worst_music(part)
+    };
     let secs = music.len() as f32 / 2.0 / 48_000.0;
     let mut h = faces::harness(key, vec2(size.0, size.1), true, 1.0);
     h.state_mut().fps = FPS;
@@ -48,9 +53,14 @@ fn run(
     setup(&mut h.state_mut().state);
     let frames = ((secs - 0.3) * FPS) as usize;
     let mut meter = Meter::new(size.0 as usize, size.1 as usize);
-    for _ in 0..frames {
+    // (AMP_FLASH_DUMP=dir: frames 100 - 160 kept as pictures there)
+    let dump = std::env::var("AMP_FLASH_DUMP").ok();
+    for f in 0..frames {
         faces::frame(&mut h);
         let img = h.render().unwrap();
+        if let Some(dir) = dump.as_deref().filter(|_| (100..160).contains(&f)) {
+            img.save(format!("{dir}/{key}-{f:03}.png")).unwrap();
+        }
         meter.push(&img);
     }
     let (transitions, red) = meter.most();
@@ -97,7 +107,6 @@ fn sweep(
     part: f32,
 ) -> Vec<String> {
     let mut failures = Vec::new();
-    let mut lines = Vec::new();
     for &motion in motions {
         for scheme in schemes {
             for (key, option) in cases(group) {
@@ -115,14 +124,14 @@ fn sweep(
                     "{motion:?} {scheme:<8} {name:<20} transitions/s {:>2}  red {:>2}  stripes {:.2} ({} frames)",
                     r.transitions, r.red, r.stripes, r.pattern_frames
                 );
+                // (as it is measured: a long sweep shows how far it is)
+                println!("{line}");
                 if r.transitions > 6 || r.red > 6 || r.pattern_frames > 0 {
-                    failures.push(line.clone());
+                    failures.push(line);
                 }
-                lines.push(line);
             }
         }
     }
-    println!("{}", lines.join("\n"));
     failures
 }
 
@@ -201,6 +210,50 @@ fn no_generative_face_flashes() {
     assert!(f.is_empty(), "{f:#?}");
 }
 
+/// What the whole sweep (below) found, kept in the suite: each at the
+/// scheme, motion and size where it failed.
+#[test]
+fn what_the_sweep_found_stays_fixed() {
+    let mut failures = Vec::new();
+    for (key, motion, scheme, hd, guard) in [
+        // the fine waterfall's rows (37 transitions a second, stripes)
+        ("waterfall", Motion::Calm, "neon", true, true),
+        // the 3D ring's bars and the particle columns (standing stripes)
+        ("ring", Motion::Calm, "neon", false, true),
+        ("particles", Motion::Calm, "classic", false, true),
+        // the oscilloscope's held wave (moving stripes)
+        ("scope", Motion::Intense, "neon", false, true),
+        // the plasma, unseen by the guard (11 transitions a second)
+        ("plasma", Motion::Intense, "mono", false, true),
+        // the ribbon by itself, nine lines moving together in a small
+        // picture (9)
+        ("ribbon", Motion::Calm, "classic", false, false),
+        // the waterfall's bars by themselves, a kick's rows in stripes
+        // (28 transitions a second; stripes over 66 %)
+        ("waterfall", Motion::Intense, "neon", false, false),
+        ("waterfall", Motion::Calm, "mono", false, false),
+        // the kaleidoscope by itself, turned at once by each onset (12)
+        ("kaleidoscope", Motion::Calm, "classic", false, false),
+        // the spirograph by itself, without the guard (18 - 25: its
+        // wheel's size followed, every lap of the curve moved)
+        ("spirograph", Motion::Calm, "classic", false, false),
+    ] {
+        let r = run(key, motion, scheme, (320.0, 180.0), 1.2, |s| {
+            s.waterfall_hd = hd;
+            s.flash_off = !guard;
+        });
+        let line = format!(
+            "{motion:?} {scheme} {key}: transitions/s {}  red {}  stripes {:.2} ({} frames)",
+            r.transitions, r.red, r.stripes, r.pattern_frames
+        );
+        println!("{line}");
+        if r.transitions > 6 || r.red > 6 || r.pattern_frames > 0 {
+            failures.push(line);
+        }
+    }
+    assert!(failures.is_empty(), "{failures:#?}");
+}
+
 /// Every face, both motions, several schemes (the bright and the dark),
 /// at 320 x 180: `--ignored --nocapture` (the report).
 #[test]
@@ -223,6 +276,66 @@ fn no_face_flashes_in_any_scheme_or_motion() {
     assert!(f.is_empty(), "{f:#?}");
 }
 
+/// The guard's estimate of a face against the picture rendered (the mean
+/// relative luminance of each cell): (the mean error, the picture's mean,
+/// the estimate's mean).
+fn estimate_error(key: &'static str, gpu: bool) -> (f32, f32, f32) {
+    let mut h = faces::harness(key, vec2(384.0, 216.0), gpu, 2.0);
+    h.state_mut().fps = FPS;
+    for _ in 0..40 {
+        faces::frame(&mut h);
+    }
+    let img = h.render().unwrap();
+    let (est, cols, rows) = h.state().state.flash.estimated();
+    let (w, h_) = (img.width() as f32 - 8.0, img.height() as f32 - 8.0);
+    let (mut err, mut shown, mut estimated, mut n) = (0.0, 0.0, 0.0, 0.0);
+    for cy in 0..rows {
+        for cx in 0..cols {
+            let (x0, y0) = (
+                4.0 + cx as f32 * w / cols as f32,
+                4.0 + cy as f32 * h_ / rows as f32,
+            );
+            let (mut s, mut k) = (0.0, 0);
+            for y in y0 as u32..(y0 + h_ / rows as f32).ceil() as u32 {
+                for x in x0 as u32..(x0 + w / cols as f32).ceil() as u32 {
+                    let p = img.get_pixel(x, y);
+                    s += 0.2126 * flashmeter::linear(p[0])
+                        + 0.7152 * flashmeter::linear(p[1])
+                        + 0.0722 * flashmeter::linear(p[2]);
+                    k += 1;
+                }
+            }
+            let s = s / k.max(1) as f32;
+            let e = est[cy * cols + cx];
+            err += (s - e).abs();
+            shown += s;
+            estimated += e;
+            n += 1.0;
+        }
+    }
+    (err / n, shown / n, estimated / n)
+}
+
+/// The guard sees the shader faces where they are painted: over the ground
+/// drawn before them (it once laid the ground over them, and saw nothing
+/// of the plasma, the fire or the smoke - they could have flashed unveiled).
+#[test]
+fn the_guard_sees_the_shader_faces() {
+    for (key, gpu) in [
+        ("plasma", true),
+        ("smoke", true),
+        ("julia", true),
+        ("plasma", false),
+    ] {
+        let (err, shown, estimated) = estimate_error(key, gpu);
+        println!("{key} (gpu {gpu}): error {err:.3}, picture {shown:.3}, estimate {estimated:.3}");
+        assert!(
+            err < 0.05 && estimated > shown * 0.6,
+            "{key} (gpu {gpu}): the estimate is off by {err:.3} (picture {shown:.3}, estimate {estimated:.3})"
+        );
+    }
+}
+
 /// How near the guard's estimate is to the picture (`--ignored`, a probe).
 #[test]
 #[ignore]
@@ -232,12 +345,26 @@ fn the_guards_estimate_follows_the_picture() {
             .unwrap_or("ridges".into())
             .into_boxed_str(),
     );
-    let mut h = faces::harness(key, vec2(384.0, 216.0), true, 1.0);
+    let mut h = faces::harness(key, vec2(384.0, 216.0), true, 7.0);
     h.state_mut().fps = FPS;
-    h.state_mut().sound = worst_music(1.2);
+    // (AMP_FLASH_PLAIN: the plain test music - a chord, a beat twice a
+    // second - how often the veil comes for it)
+    if std::env::var_os("AMP_FLASH_PLAIN").is_none() {
+        h.state_mut().sound = worst_music(1.2);
+    }
+    if std::env::var("AMP_FLASH_MOTIONS").is_ok_and(|m| m == "intense") {
+        h.state_mut().analyzer.motion = Motion::Intense;
+    }
+    if let Ok(scheme) = std::env::var("AMP_FLASH_SCHEMES") {
+        h.state_mut().scheme = scheme;
+    }
     let mut strength = Vec::new();
+    let mut veiled = 0;
     for i in 0..360 {
         faces::frame(&mut h);
+        if h.state().state.flash.strength > 0.1 {
+            veiled += 1;
+        }
         if i % 10 == 0 {
             let (raw, shown) = h.state().state.flash.pressure();
             strength.push(format!(
@@ -247,6 +374,7 @@ fn the_guards_estimate_follows_the_picture() {
         }
     }
     println!("veil: {}", strength.join(" "));
+    println!("veiled in {veiled} of 360 frames");
     let img = h.render().unwrap();
     let (est, cols, rows) = h.state().state.flash.estimated();
     let (w, h_) = (img.width() as f32 - 8.0, img.height() as f32 - 8.0);

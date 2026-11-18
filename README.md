@@ -191,24 +191,40 @@ What axross-amp does about it:
 
 - **A flash guard at the output.** After a face has drawn a frame, the guard
   estimates the picture on a grid of cells (128 across): the frame's shapes,
-  tessellated and laid onto the cells, a shader face by its own function
-  evaluated on the CPU (48 across). It follows each cell's relative luminance and
-  saturated red, and each *field* - a third of the picture each way, a 10°
-  view when the face fills the screen - in which a quarter of the cells
-  change the same way at once. Where a field has changed so three times in
-  the last second, it lays a veil over it: the cells blended towards a slow
-  average of themselves (more persistence), up to 85 - 95 %, easing off a
-  second after the danger is gone. It works the same whatever a face draws,
-  on the GPU and on the CPU's fallback. It costs about 0.5 - 3 ms of the CPU a
-  frame (`--release`; the spirograph's thousands of segments 7.6 ms), the faces
-  themselves 0.1 - 0.6 ms; the frame rate's cap on a software renderer counts
-  it in.
+  tessellated and laid onto the cells in the order they are painted, a
+  shader face by its own function evaluated on the CPU (48 across,
+  bilinear) where it is painted - over the ground drawn before it. It
+  follows each cell's relative luminance and saturated red, and each
+  *field* - a third of the picture each way, a 10° view when the face fills
+  the screen - in which a quarter of the area changes the same way at once
+  (a cell whose large content changes counts whole; one changed only by
+  small shapes - stars, thin lines - as much as they cover, as WCAG counts
+  the pixels that change; each cell taken with its neighbours, so that a
+  thin line's estimate moving from cell to cell is not a flash). Where a
+  field has changed so five times in the last second (a beat's pulse at
+  120 BPM, four, is within the rule and left alone), it lays a veil over
+  it - before the sixth and seventh, which would break the rule: the cells
+  blended towards a slow average of themselves (more persistence), up to
+  85 - 95 %, shaded smoothly and feathered at its edges, easing off a second
+  after the danger is gone. It works the same whatever a face draws, on the
+  GPU and on the CPU's fallback. It costs about 0.5 - 3 ms of the CPU a
+  frame (`--release`; the spirograph's thousands of segments 7.6 ms), the
+  faces themselves 0.1 - 0.6 ms; the frame rate's cap on a software
+  renderer counts it in.
 - **Calmer faces.** What drives the pictures' brightness (the bars, the
   beat's pulse, the VU meter, the oscilloscope's height) turns no faster
   than every quarter of a second in *Calm*; the fire is orange and slow;
   the moiré has few, broad, soft, slow rings; the tunnel fewer rings, slower;
-  the mel spectrogram's rows are eased in time; dense stripes (a noise-dense
-  oscilloscope trace, particle columns) are drawn with less contrast.
+  the waterfall's, the mel spectrogram's and the fine waterfall's rows are
+  eased in time (each keeps most of the one before); the onsets' twist of
+  the ribbon is spread over a third of a second, and the kaleidoscope turns
+  no faster than a petal in a third of a second; a small ribbon has fewer
+  lines;
+  regular stripes are drawn with less contrast or closed (a noise-dense
+  oscilloscope trace dimmed, the particle columns on a band of their own
+  colour, the 3D ring's bars touching); the spirograph's new wheel fades in
+  over the old instead of the curve following its size (every lap moved,
+  25 transitions a second).
 - **Calm by default.** *Intense* (Options) is livelier and only chosen after
   a photosensitivity warning; where the desktop asks for reduced motion
   (GNOME, KDE, GTK's settings, macOS, Windows) it cannot be chosen and the
@@ -228,10 +244,16 @@ What axross-amp does about it:
   mel spectrogram (37 transitions a second, and its stripes), the
   waterfall's bars and the spirograph (18), the oscilloscope (16, and its
   stripes), the kaleidoscope (15), the tunnel (10), the moiré (7), the
-  particles and the polygon morph (their stripes). Today's calmer faces
-  without the guard fail in 4 (the waterfall's bars and the spirograph 18,
-  the kaleidoscope 15, the oscilloscope 11); with the guard, in none - at
-  most 4 transitions a second, and no stripes.
+  particles and the polygon morph (their stripes). Today's faces pass it by
+  themselves, without the guard (at most 4 transitions a second); with the
+  guard too. Every face and option in Classic, Neon, Mono and Fire, in Calm
+  and Intense, at 320 x 180 (416 cases, `--ignored`): none fails - at most
+  6 transitions a second (the plasma and the smoke in Intense; 4 in Calm),
+  no red flashes, no stripes. That sweep found what the suite had not
+  (the fine waterfall in the bright schemes, the 3D ring's and the
+  particles' stripes, the oscilloscope's held wave in Intense, the ribbon
+  and the waterfall's bars in a small picture, and that the guard did not
+  see the shader faces at all); each is now a case of its own in the suite.
 
 What is not claimed: the guard estimates the picture (text and covers
 roughly); the test's music and sizes are ours, not every song or screen. It

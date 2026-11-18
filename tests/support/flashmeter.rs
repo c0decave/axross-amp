@@ -28,7 +28,7 @@
 pub const FPS: f32 = 60.0;
 
 /// sRGB (0..255) to linear light.
-fn linear(v: u8) -> f32 {
+pub fn linear(v: u8) -> f32 {
     let v = v as f32 / 255.0;
     if v <= 0.04045 {
         v / 12.92
