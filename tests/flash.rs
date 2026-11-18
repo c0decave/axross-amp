@@ -28,6 +28,7 @@ impl Report {
             || self.strict_red > 6
             || self.area > 6
             || self.area_red > 6
+            || self.red_gamma > 6
             || self.pattern_frames > 0
     }
 }
@@ -41,6 +42,9 @@ struct Report {
     /// By the area reading, whatever the phase (see the meter).
     area: usize,
     area_red: usize,
+    /// Red by the gamma-encoded reading: the most of its normal, strict
+    /// and either-way counts.
+    red_gamma: usize,
     pattern_frames: usize,
     stripes: f32,
     /// The share of frames the guard's veil was on (over 0.3).
@@ -188,6 +192,7 @@ fn measure(
     setup(&mut h.state_mut().state);
     let frames = ((secs - 0.3) * fps) as usize;
     let mut meter = Meter::with_fps(size.0 as usize, size.1 as usize, fps.round() as usize);
+    let mut gamma = Meter::gamma_red(size.0 as usize, size.1 as usize, fps.round() as usize);
     // (AMP_FLASH_DUMP=dir: frames 100 - 160 kept as pictures there)
     let dump = std::env::var("AMP_FLASH_DUMP").ok();
     let mut veiled = 0usize;
@@ -215,6 +220,7 @@ fn measure(
             }
         }
         meter.push(&img);
+        gamma.push(&img);
         if h.state().state.flash.strength > 0.3 {
             veiled += 1;
         }
@@ -250,6 +256,11 @@ fn measure(
         strict_red,
         area: meter.area,
         area_red: meter.area_red,
+        red_gamma: gamma
+            .most()
+            .1
+            .max(gamma.most_strict().1)
+            .max(gamma.area_red),
         pattern_frames: meter.pattern_frames,
         stripes: meter.stripes,
         veiled: veiled as f32 / frames.max(1) as f32,
@@ -301,7 +312,7 @@ fn probe() {
                 },
             );
             println!(
-                "{key:<13} {music:<7} {motion:?} {scheme} {}x{}@{fps}: transitions/s {:>2} ({:>2})  red {:>2} ({:>2})  stripes {:.2} ({} frames)  area {} (red {})  veiled {:.0} %",
+                "{key:<13} {music:<7} {motion:?} {scheme} {}x{}@{fps}: transitions/s {:>2} ({:>2})  red {:>2} ({:>2})  stripes {:.2} ({} frames)  area {} (red {})  gamma red {}  veiled {:.0} %",
                 size.0,
                 size.1,
                 r.transitions,
@@ -312,6 +323,7 @@ fn probe() {
                 r.pattern_frames,
                 r.area,
                 r.area_red,
+                r.red_gamma,
                 r.veiled * 100.0
             );
         }
@@ -364,7 +376,7 @@ fn sweep(
                     format!("{key} ({option})")
                 };
                 let line = format!(
-                    "{motion:?} {scheme:<8} {name:<20} transitions/s {:>2} ({:>2})  red {:>2} ({:>2})  stripes {:.2} ({} frames)  area {} (red {})",
+                    "{motion:?} {scheme:<8} {name:<20} transitions/s {:>2} ({:>2})  red {:>2} ({:>2})  stripes {:.2} ({} frames)  area {} (red {})  gamma red {}",
                     r.transitions,
                     r.strict,
                     r.red,
@@ -372,7 +384,8 @@ fn sweep(
                     r.stripes,
                     r.pattern_frames,
                     r.area,
-                    r.area_red
+                    r.area_red,
+                    r.red_gamma
                 );
                 // (as it is measured: a long sweep shows how far it is)
                 println!("{line}");
@@ -658,7 +671,7 @@ fn faces_with_history_stay_calm_through_steady_music() {
                 |s| s.waterfall_hd = hd,
             );
             let line = format!(
-                "{key} (hd {hd}) {music}: transitions/s {} ({})  red {} ({})  stripes {:.2} ({} frames)  area {} (red {})",
+                "{key} (hd {hd}) {music}: transitions/s {} ({})  red {} ({})  stripes {:.2} ({} frames)  area {} (red {})  gamma red {}",
                 r.transitions,
                 r.strict,
                 r.red,
@@ -666,7 +679,8 @@ fn faces_with_history_stay_calm_through_steady_music() {
                 r.stripes,
                 r.pattern_frames,
                 r.area,
-                r.area_red
+                r.area_red,
+                r.red_gamma
             );
             println!("{line}");
             if r.fails() {
@@ -787,7 +801,7 @@ fn the_options_at_their_extremes_keep_the_faces_calm() {
     ] {
         let r = run(key, motion, "classic", (320.0, 180.0), 1.2, FPS, |_| {});
         let line = format!(
-            "{motion:?} {key}: transitions/s {} ({})  red {} ({})  area {} ({})  stripes {:.2} ({} frames)",
+            "{motion:?} {key}: transitions/s {} ({})  red {} ({})  area {} ({})  stripes {:.2} ({} frames)  gamma red {}",
             r.transitions,
             r.strict,
             r.red,
@@ -795,7 +809,8 @@ fn the_options_at_their_extremes_keep_the_faces_calm() {
             r.area,
             r.area_red,
             r.stripes,
-            r.pattern_frames
+            r.pattern_frames,
+            r.red_gamma
         );
         println!("{line}");
         if r.fails() {
@@ -817,7 +832,7 @@ fn the_options_at_their_extremes_keep_the_faces_calm() {
             s.classic_plus = trails
         });
         let line = format!(
-            "{motion:?} {scheme} {key}: transitions/s {} ({})  red {} ({})  area {} ({})  stripes {:.2} ({} frames)",
+            "{motion:?} {scheme} {key}: transitions/s {} ({})  red {} ({})  area {} ({})  stripes {:.2} ({} frames)  gamma red {}",
             r.transitions,
             r.strict,
             r.red,
@@ -825,7 +840,8 @@ fn the_options_at_their_extremes_keep_the_faces_calm() {
             r.area,
             r.area_red,
             r.stripes,
-            r.pattern_frames
+            r.pattern_frames,
+            r.red_gamma
         );
         println!("{line}");
         if r.fails() {
@@ -925,7 +941,7 @@ fn what_the_sweep_found_stays_fixed() {
             s.flash_off = !guard;
         });
         let line = format!(
-            "{motion:?} {scheme} {key}: transitions/s {} ({})  red {} ({})  stripes {:.2} ({} frames)  area {} (red {})",
+            "{motion:?} {scheme} {key}: transitions/s {} ({})  red {} ({})  stripes {:.2} ({} frames)  area {} (red {})  gamma red {}",
             r.transitions,
             r.strict,
             r.red,
@@ -933,7 +949,8 @@ fn what_the_sweep_found_stays_fixed() {
             r.stripes,
             r.pattern_frames,
             r.area,
-            r.area_red
+            r.area_red,
+            r.red_gamma
         );
         println!("{line}");
         if r.fails() {
@@ -961,7 +978,7 @@ fn every_feedback_look_stays_calm() {
                 |s| axross_amp::viz::set_feedback_preset(s, k),
             );
             let line = format!(
-                "look {k} Intense {scheme}: transitions/s {} ({})  red {} ({})  stripes {:.2} ({} frames)  area {} (red {})",
+                "look {k} Intense {scheme}: transitions/s {} ({})  red {} ({})  stripes {:.2} ({} frames)  area {} (red {})  gamma red {}",
                 r.transitions,
                 r.strict,
                 r.red,
@@ -969,7 +986,8 @@ fn every_feedback_look_stays_calm() {
                 r.stripes,
                 r.pattern_frames,
                 r.area,
-                r.area_red
+                r.area_red,
+                r.red_gamma
             );
             println!("{line}");
             if r.fails() {
@@ -1157,4 +1175,30 @@ fn the_guards_estimate_follows_the_picture() {
         lines.push(line);
     }
     println!("{key} (shown/estimated)\n{}", lines.join("\n"));
+}
+
+/// Red by the gamma-encoded reading too: a pure red ground darkened to
+/// #330000 was under 20 in linear light but 64 gamma-encoded - the scope's
+/// dense trace over it swung a field's red 11 times a second, and the red
+/// scheme's trace 10 (a review's numbers).
+#[test]
+fn red_by_the_gamma_encoded_reading_too() {
+    let mut failures = Vec::new();
+    for (key, motion, scheme) in [
+        ("scope", Motion::Calm, "redbg"),
+        ("scope", Motion::Intense, "redcustom"),
+        ("terrain", Motion::Calm, "redbg"),
+        ("morph", Motion::Calm, "redbg"),
+    ] {
+        let r = run(key, motion, scheme, (320.0, 180.0), 1.2, FPS, |_| {});
+        let line = format!(
+            "{motion:?} {scheme} {key}: red {} ({}) area red {} gamma red {}",
+            r.red, r.strict_red, r.area_red, r.red_gamma
+        );
+        println!("{line}");
+        if r.fails() {
+            failures.push(line);
+        }
+    }
+    assert!(failures.is_empty(), "{failures:#?}");
 }

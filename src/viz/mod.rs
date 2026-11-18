@@ -524,11 +524,31 @@ pub fn scheme_calm(s: &Scheme) -> f32 {
     by_contrast.max(by_red)
 }
 
-/// A ground no flash can be red against: a saturated red one - by WCAG's
-/// measure, (R - G - B) x 320 of 20 or more, linear - darkened until it is
-/// under 16. On a pure red ground every dark mark that moves is a red
+/// The most of R over R + G + B by either encoding: in linear light (WCAG
+/// 2.0's measure) or as the values sent to the screen (gamma-encoded, as a
+/// review's reading took it).
+pub fn red_share(c: Color32) -> f32 {
+    let lin = |v: u8| LINEAR[v as usize];
+    let share = |r: f32, g: f32, b: f32| {
+        if r + g + b > 0.0 {
+            r / (r + g + b)
+        } else {
+            0.0
+        }
+    };
+    let linear = share(lin(c.r()), lin(c.g()), lin(c.b()));
+    let gamma = share(c.r() as f32, c.g() as f32, c.b() as f32);
+    linear.max(gamma)
+}
+
+/// A ground no flash can be red against: a saturated red one darkened -
+/// by WCAG's measure, (R - G - B) x 320 under 16, linear - and turned from
+/// red until it is no saturated red by either encoding (R over R + G + B
+/// under 0.75). On a pure red ground every dark mark that moves is a red
 /// flash (the oscilloscope's trace, the terrain's lines, the morph's: 8
-/// to 12 a second); a ground of dark red is not.
+/// to 12 a second); darkened only, to #330000, it was still saturated red
+/// as the screen's values have it, and the scope's trace over it swung a
+/// field's red 11 times a second by that reading.
 pub fn quiet_ground(c: Color32) -> Color32 {
     let red_of = |c: Color32| {
         flashguard::red(
@@ -537,11 +557,23 @@ pub fn quiet_ground(c: Color32) -> Color32 {
             LINEAR[c.b() as usize],
         )
     };
+    if red_share(c) < 0.75 {
+        return c;
+    }
     let mut out = c;
     let mut k = 0.0;
     while red_of(out) >= 16.0 && k < 1.0 {
         k += 0.05;
         out = mix(c, Color32::BLACK, k);
+    }
+    // (towards a grey as light: the red's hue let go of, not its lightness)
+    let v = ((out.r() as u32 + out.g() as u32 + out.b() as u32) / 3) as u8;
+    let grey = Color32::from_rgb(v, v, v);
+    let dark = out;
+    let mut t = 0.0;
+    while red_share(out) >= 0.75 && t < 1.0 {
+        t += 0.05;
+        out = mix(dark, grey, t);
     }
     out
 }
@@ -564,15 +596,17 @@ pub fn scheme(key: &str, custom: &std::collections::BTreeMap<String, String>) ->
                 v.len() == 7 && v.starts_with('#') && v[1..].chars().all(|c| c.is_ascii_hexdigit());
             hex(if ok { v } else { d })
         };
-        let low = get("low", "#1e90ff");
-        let high = get("high", "#ff1493");
+        // (no saturated red by either encoding: a pure red is taken toward
+        // a warm white until it is none - every face, whatever it draws)
+        let low = unred(get("low", "#1e90ff"));
+        let high = unred(get("high", "#ff1493"));
         let background = quiet_ground(get("background", "#000000"));
         return Scheme {
             background,
             low,
             mid: mix(low, high, 0.5),
             high,
-            peak: readable_on(get("peak", "#ffffff"), background, 3.0),
+            peak: unred(readable_on(get("peak", "#ffffff"), background, 3.0)),
         };
     }
     let colours = SCHEMES
@@ -666,11 +700,8 @@ fn towards(c: Color32, ground: Color32, want: f32) -> Color32 {
 /// linear): towards white until it is not - for what comes and goes on
 /// the beat, a red flash being stricter than any other.
 pub fn unred(c: Color32) -> Color32 {
-    let lin = |v: u8| LINEAR[v as usize];
-    let red = |c: Color32| {
-        let (r, g, b) = (lin(c.r()), lin(c.g()), lin(c.b()));
-        r + g + b > 0.0 && r / (r + g + b) >= 0.75
-    };
+    // (by either encoding: linear light, or the screen's values)
+    let red = |c: Color32| red_share(c) >= 0.75;
     let mut out = c;
     let mut t = 0.0;
     while red(out) && t < 1.0 {
@@ -1422,6 +1453,43 @@ pub fn needs_now(key: &str, state: &VizState) -> Needs {
 
 #[cfg(test)]
 mod tests {
+
+    /// Saturated red by either encoding: R over R + G + B at least 0.8, in
+    /// linear light or as the values sent to the screen.
+    fn saturated_red_either_way(c: Color32) -> bool {
+        let lin = |v: u8| LINEAR[v as usize];
+        let (r, g, b) = (lin(c.r()), lin(c.g()), lin(c.b()));
+        let linear = r + g + b > 0.0 && r / (r + g + b) >= 0.8;
+        let (r, g, b) = (c.r() as f32, c.g() as f32, c.b() as f32);
+        let gamma = r + g + b > 0.0 && r / (r + g + b) >= 0.8;
+        linear || gamma
+    }
+
+    #[test]
+    fn a_red_ground_or_colour_is_red_by_neither_reading() {
+        for ground in [
+            "#ff0000", "#cc0000", "#800000", "#ff2020", "#330000", "#ff0040",
+        ] {
+            let q = quiet_ground(hex(ground));
+            assert!(!saturated_red_either_way(q), "{ground} -> {q:?}");
+        }
+        // (a ground that is no red is left as it is)
+        assert_eq!(quiet_ground(hex("#ffffff")), hex("#ffffff"));
+        assert_eq!(quiet_ground(hex("#000000")), hex("#000000"));
+        let mut custom = std::collections::BTreeMap::new();
+        for (k, v) in [
+            ("background", "#000000"),
+            ("low", "#ff0000"),
+            ("high", "#ff0000"),
+            ("peak", "#ff3030"),
+        ] {
+            custom.insert(k.to_owned(), v.to_owned());
+        }
+        let s = scheme("custom", &custom);
+        for c in [s.low, s.mid, s.high, s.peak, s.background] {
+            assert!(!saturated_red_either_way(c), "{c:?} in the pure red scheme");
+        }
+    }
     use super::*;
 
     #[test]
@@ -1608,7 +1676,10 @@ mod scheme_calm_tests {
             ("peak", "#ff3030"),
         ]);
         assert!(scheme_calm(&scheme("custom", &bw)) > 1.55);
-        assert!(scheme_calm(&scheme("custom", &red)) > 1.55);
+        // (a pure red scheme is no saturated red any more: its colours
+        // are turned toward a warm white - see unred)
+        let red = scheme("custom", &red);
+        assert!(red_share(red.low) < 0.75 && red_share(red.peak) < 0.75);
         assert!(scheme_calm(&scheme("classic", &Default::default())) < 1.3);
     }
 }

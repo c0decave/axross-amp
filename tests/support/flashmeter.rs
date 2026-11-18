@@ -139,11 +139,24 @@ pub struct Meter {
     strict_red_events: Vec<Vec<usize>>,
     strict_lum_over: Vec<[bool; 2]>,
     strict_red_over: Vec<[bool; 2]>,
+    /// Red from the gamma-encoded values (R, G and B as sent to the
+    /// screen, 0..1) instead of linear light: the reading of a review that
+    /// found a dark saturated red ground (#330000) under 20 linear, but at
+    /// 64 gamma-encoded, a dense trace over it swinging a field's red.
+    /// Such a meter reads red only (no stripes).
+    gamma_red: bool,
 }
 
 impl Meter {
     pub fn new(w: usize, h: usize) -> Meter {
         Meter::with_fps(w, h, 60)
+    }
+
+    /// A meter of red alone, by the gamma-encoded reading.
+    pub fn gamma_red(w: usize, h: usize, fps: usize) -> Meter {
+        let mut m = Meter::with_fps(w, h, fps);
+        m.gamma_red = true;
+        m
     }
 
     /// A meter for frames shown `fps` a second.
@@ -192,6 +205,7 @@ impl Meter {
             area: 0,
             area_red: 0,
             area_at: Vec::new(),
+            gamma_red: false,
             strict_lum_events: vec![Vec::new(); n],
             strict_red_events: vec![Vec::new(); n],
             strict_lum_over: vec![[false; 2]; n],
@@ -215,7 +229,15 @@ impl Meter {
                     self.lum_at[i] = f;
                     self.lum_dir[i] = d;
                 }
-                let (r, g, b) = (linear(p[0]), linear(p[1]), linear(p[2]));
+                let (r, g, b) = if self.gamma_red {
+                    (
+                        p[0] as f32 / 255.0,
+                        p[1] as f32 / 255.0,
+                        p[2] as f32 / 255.0,
+                    )
+                } else {
+                    (linear(p[0]), linear(p[1]), linear(p[2]))
+                };
                 let sum = r + g + b;
                 let red = if sum > 0.0 && r / sum >= 0.8 {
                     ((r - g - b) * 320.0).max(0.0)
@@ -404,6 +426,10 @@ impl Meter {
         }
         self.area = area;
         self.area_red = area_red;
+        if self.gamma_red {
+            self.frame += 1;
+            return;
+        }
         // stripes: a hazard over 40 %, or over 25 % where they move
         let (share, marked) = stripes_marked(&lum_now, w, h);
         self.stripes = self.stripes.max(share);
