@@ -1372,6 +1372,12 @@ struct Part {
 }
 
 /// The pieces pending on cell `at` laid over it.
+/// The most pieces of a mesh laid one by one: in a mesh of more, one in
+/// so many, so many times over (dense small pieces - particles, a
+/// spirograph's segments - are evenly covered either way). 20,000 cost
+/// the shape-heavy faces 5 to 7 ms a frame at 1080p; 4,000 about 2.
+const PIECES: usize = 4_000;
+
 fn lay_parts(acc: &mut Onto<'_>, at: usize) {
     let part = &mut acc.parts[at];
     if !part.open {
@@ -1434,9 +1440,9 @@ fn lay_pieces(
     // (a mesh of tens of thousands of small pieces - the spirograph's
     // thousands of segments - laid one piece in so many, each counted so
     // many times: dense lines are evenly covered either way, and the frame
-    // costs what one of 20,000 pieces does; pieces over two cells are
+    // costs what one of PIECES does; pieces over two cells are
     // each laid over their box, as they lie)
-    let stride = (mesh.indices.len() / 3 / 20_000).max(1);
+    let stride = (mesh.indices.len() / 3 / PIECES).max(1);
     for (index, tri) in mesh.indices.as_chunks::<3>().0.iter().enumerate() {
         let sampled = stride > 1 && index % stride != 0;
         let v = [
@@ -1578,6 +1584,10 @@ fn lay_pieces(
             let k = SPREAD * area.abs() / (cw * ch);
             let (bw, bh) = ((max.x - min.x).max(1e-3), (max.y - min.y).max(1e-3));
             if (x1 - x0 >= 2 || y1 - y0 >= 2) && area.abs() >= bw * bh * 0.3 {
+                if sampled {
+                    continue;
+                }
+                let k = k * stride as f32;
                 // (over three cells or four, filling its box - a rectangle's
                 // half, a dot's wedge - over its box, as it overlaps
                 // each cell - at its centre, a band of two such triangles

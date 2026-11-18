@@ -69,6 +69,8 @@ pub struct State {
     sparks: Vec<[f32; 4]>,
     /// The ring's bars, far ones first, for its bar count.
     ring_order: Vec<usize>,
+    /// The ring's bars as shown: at a slow renderer's rate eased further.
+    ring_bars: Vec<f32>,
     seed: u32,
     /// The Lissajous figures before (x, y -1..1), LISSAJOUS_KEPT of
     /// LISSAJOUS_POINTS, a ring; the next to write, how many there are.
@@ -963,6 +965,26 @@ fn ring(f: &Frame<'_>, g: Area, cv: &mut Canvas, st: &mut State) {
         st.ring_order
             .sort_by(|x, y| foot(*x).0.y.total_cmp(&foot(*y).0.y).then(x.cmp(y)));
     }
+    // (at a slow renderer's rate - fewer than 40 frames a second - the near
+    // bars, half the picture, jumped from frame to frame: a quarter of a
+    // field changing at once 7 times a second at 12 frames by the
+    // either-way reading; there they follow by 150 ms, as at 60 frames they
+    // move in steps a fifth as large)
+    if st.ring_bars.len() != n {
+        st.ring_bars.clear();
+        st.ring_bars
+            .extend_from_slice(&a.bars[..n.min(a.bars.len())]);
+        st.ring_bars.resize(n, 0.0);
+    }
+    let ease = if f.dt > 1.0 / 40.0 {
+        1.0 - (-f.dt / 0.15).exp()
+    } else {
+        1.0
+    };
+    for (e, b) in st.ring_bars.iter_mut().zip(&a.bars) {
+        *e += (b - *e) * ease;
+    }
+    let bars = &st.ring_bars;
     let order = &st.ring_order;
     // (axross's bars, half as wide as their spacing; what lies between
     // them a shade dimmer than they - on the dark ground they made regular
@@ -988,7 +1010,7 @@ fn ring(f: &Frame<'_>, g: Area, cv: &mut Canvas, st: &mut State) {
                 s.background,
                 (1.0 - scale) / (1.0 - RING_FAR) / 3.0,
             );
-            let rise = a.bars[i] * reach * scale;
+            let rise = bars[i] * reach * scale;
             if rise >= 1.0 {
                 pen.rect(
                     Rect::from_min_max(
