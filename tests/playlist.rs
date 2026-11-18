@@ -294,11 +294,16 @@ fn play_next_from_a_rows_menu() {
     settle(&mut h, 2);
     let mut output = axross_amp::engine::RenderState::default();
     let mut order = vec![h.state().snapshot().current];
-    for _ in 0..20 {
+    // (as long as the four take, within 6 s: on a busy machine the
+    // device's pace in the test falls behind the clock - 2 s were too few)
+    for _ in 0..60 {
         listen(&mut h, &mut output, 0.1);
         let c = h.state().snapshot().current;
         if order.last() != Some(&c) {
             order.push(c);
+        }
+        if order.len() >= 4 {
+            break;
         }
     }
     // (then the list goes on from a: b, and c in its turn)
