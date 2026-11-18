@@ -436,6 +436,34 @@ impl App {
                 self.volume_group(ui, Some(knob), 80.0);
             },
         );
+        // (wide: the maker's plate at the unit's right, its lamp lit while
+        // it plays - a still dot, never blinking)
+        if inner.width() > 640.0 {
+            let fill = design::list_fill(design::find("rack"), t);
+            let ink = crate::theme::ink_on_in(t, fill);
+            let plate = inner.right_center() - vec2(4.0, 0.0);
+            ui.painter().text(
+                plate - vec2(0.0, 8.0),
+                egui::Align2::RIGHT_CENTER,
+                "AXROSS  AMP-1",
+                egui::FontId::new(15.0, egui::FontFamily::Name("bold".into())),
+                ink,
+            );
+            ui.painter().text(
+                plate + vec2(0.0, 12.0),
+                egui::Align2::RIGHT_CENTER,
+                "STEREO INTEGRATED AMPLIFIER",
+                egui::FontId::proportional(9.0),
+                ink,
+            );
+            let lamp = if self.playing() {
+                self.accent
+            } else {
+                crate::theme::mix(fill, Color32::BLACK, 0.4)
+            };
+            ui.painter()
+                .circle_filled(plate - vec2(150.0, 8.0), 3.5, lamp);
+        }
         ui.add_space(4.0);
         // the transport
         let narrow = w < 560.0;
@@ -507,6 +535,29 @@ impl App {
             (lcd.height() * 0.5).clamp(14.0, 30.0),
             t,
         );
+        // (beside the time: the state and the track's number, small)
+        let state = if self.playing() {
+            "▶ PLAY"
+        } else {
+            "‖ PAUSE"
+        };
+        let track = self.playlist.current.map_or(0, |i| i + 1);
+        if lcd.width() >= 170.0 {
+            ui.painter().text(
+                lcd.right_top() + vec2(-6.0, 6.0),
+                egui::Align2::RIGHT_TOP,
+                state,
+                egui::FontId::monospace(11.0),
+                crate::theme::ink_on_in(t, t.raised),
+            );
+            ui.painter().text(
+                lcd.right_bottom() + vec2(-6.0, -6.0),
+                egui::Align2::RIGHT_BOTTOM,
+                format!("TRACK {track:02}"),
+                egui::FontId::monospace(11.0),
+                crate::theme::ink_on_in(t, t.raised),
+            );
+        }
         let spectrum = Rect::from_min_max(
             pos2(lcd.right() + 6.0, body.top()),
             pos2(body.right(), lcd.bottom()),
