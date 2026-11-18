@@ -132,9 +132,9 @@ pub const THEMES: [Theme; 12] = [
         border: rgb(0xc9bda6),
         focus: rgb(0x1d4f91),
         focus_width: 2.0,
-        good: rgb(0x2b6836),
-        warn: rgb(0x805100),
-        bad: rgb(0xa02f27),
+        good: rgb(0x275e31),
+        warn: rgb(0x734900),
+        bad: rgb(0x962c25),
         track: rgb(0xaa9c84),
         selection: rgb(0xd4dff0),
         shadow: Color32::from_black_alpha(40),
@@ -154,7 +154,7 @@ pub const THEMES: [Theme; 12] = [
         surface: rgb(0x343a47),
         raised: rgb(0x3e4554),
         hover: rgb(0x47505f),
-        pressed: rgb(0x4a5466),
+        pressed: rgb(0x485163),
         text: rgb(0xe5e9f0),
         strong: rgb(0xf4f6f9),
         muted: rgb(0xc0c8d6),
@@ -166,9 +166,9 @@ pub const THEMES: [Theme; 12] = [
         focus_width: 2.0,
         good: rgb(0xb3d59a),
         warn: rgb(0xf0d39b),
-        bad: rgb(0xf3b1b6),
-        track: rgb(0x606c82),
-        selection: rgb(0x3e5470),
+        bad: rgb(0xf3b4b9),
+        track: rgb(0x5d687e),
+        selection: rgb(0x3d536e),
         shadow: Color32::from_black_alpha(80),
         radius: 8,
         padding: [10.0, 4.0],
@@ -197,9 +197,9 @@ pub const THEMES: [Theme; 12] = [
         focus: rgb(0x5fd1c6),
         focus_width: 2.0,
         good: rgb(0xb4c94a),
-        warn: rgb(0xf1936a),
-        bad: rgb(0xff8c84),
-        track: rgb(0x376874),
+        warn: rgb(0xf29c76),
+        bad: rgb(0xff9189),
+        track: rgb(0x356672),
         selection: rgb(0x124a58),
         shadow: Color32::from_black_alpha(100),
         radius: 5,
@@ -218,7 +218,7 @@ pub const THEMES: [Theme; 12] = [
         surface: rgb(0x1e1236),
         raised: rgb(0x2a1a4a),
         hover: rgb(0x35225c),
-        pressed: rgb(0x412a6e),
+        pressed: rgb(0x3d2868),
         text: rgb(0xe8dcff),
         strong: rgb(0xffffff),
         muted: rgb(0xb3a2d6),
@@ -346,7 +346,7 @@ pub const THEMES: [Theme; 12] = [
         surface: rgb(0xfffafb),
         raised: rgb(0xf0dbe2),
         hover: rgb(0xe8ccd6),
-        pressed: rgb(0xdfbdca),
+        pressed: rgb(0xe0bfcc),
         text: rgb(0x3b2932),
         strong: rgb(0x23141b),
         muted: rgb(0x644b57),
@@ -356,9 +356,9 @@ pub const THEMES: [Theme; 12] = [
         border: rgb(0xdcbcc8),
         focus: rgb(0x8a3563),
         focus_width: 2.0,
-        good: rgb(0x2b6644),
-        warn: rgb(0x824e00),
-        bad: rgb(0xa3283a),
+        good: rgb(0x285e3f),
+        warn: rgb(0x784800),
+        bad: rgb(0x9c2638),
         track: rgb(0xc19aa9),
         selection: rgb(0xf0d0dd),
         shadow: Color32::from_rgba_premultiplied(40, 10, 25, 50),
@@ -410,7 +410,7 @@ pub const THEMES: [Theme; 12] = [
         surface: rgb(0xffffff),
         raised: rgb(0xe4e9ef),
         hover: rgb(0xd8dfe7),
-        pressed: rgb(0xcbd4de),
+        pressed: rgb(0xd7dee6),
         text: rgb(0x1f2933),
         strong: rgb(0x0b1117),
         muted: rgb(0x4f5c69),
@@ -454,8 +454,8 @@ pub const THEMES: [Theme; 12] = [
         focus_width: 3.0,
         good: rgb(0x8cff8c),
         warn: rgb(0xffe100),
-        bad: rgb(0xff9e9e),
-        track: rgb(0x7e7e7e),
+        bad: rgb(0xffaeae),
+        track: rgb(0x000000),
         selection: rgb(0x00336b),
         shadow: Color32::TRANSPARENT,
         radius: 4,
@@ -520,8 +520,10 @@ pub fn accent_from(colour: Color32, t: &Theme) -> Color32 {
     } else {
         Color32::BLACK
     };
+    // (on every ground it may lie on: the cards, the controls at rest,
+    // under the pointer and pressed)
     let reads = |c: Color32| {
-        [t.ground, t.surface, t.raised]
+        [t.ground, t.surface, t.raised, t.hover, t.pressed]
             .iter()
             .all(|g| crate::viz::contrast(c, *g) >= need)
     };
@@ -710,9 +712,12 @@ mod tests {
             ("surface", t.surface),
             ("raised", t.raised),
             ("hover", t.hover),
+            ("pressed", t.pressed),
+            ("selection", t.selection),
         ] {
             // the accent as text and links; good, warning and error
             for (name, c) in [
+                ("text", t.text),
                 ("accent", t.accent),
                 ("good", t.good),
                 ("warn", t.warn),
@@ -732,17 +737,21 @@ mod tests {
             out.push(("focus ring", t.focus, g, gc, edge));
         }
         out.push(("warn", t.warn, "no-sound banner", warn_fill(t), text));
+        // (a check box's mark and a closed combo box's words lie on the rail
+        // colour)
+        out.push(("text", t.text, "slider rail", t.track, text));
         out.push(("text", t.text, "no-sound banner", warn_fill(t), text));
         let (fill, _) = selection(t, t.accent);
         out.push(("slider fill", fill, "slider rail", t.track, 3.0));
         out.push(("slider fill", fill, "ground", t.ground, 3.0));
-        out.push((
-            "slider rail",
-            t.track,
-            "ground",
-            t.ground,
-            if t.high_contrast { 3.0 } else { 1.5 },
-        ));
+        // (in high contrast the rail is black, outlined in white: its edge
+        // stands out, not its fill - and a check box's mark on it reads at
+        // 21 : 1)
+        if t.high_contrast {
+            out.push(("control outline", t.border, "ground", t.ground, 3.0));
+        } else {
+            out.push(("slider rail", t.track, "ground", t.ground, 1.5));
+        }
         for (g, gc) in [
             ("accent", t.accent),
             ("accent hover", t.accent_hover),
