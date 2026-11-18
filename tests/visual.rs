@@ -161,7 +161,7 @@ fn the_menus_lowest_rows_take_their_clicks() {
 
 #[test]
 fn intense_motion_only_after_the_photosensitivity_warning() {
-    // calm (flash-safe) by default; "Intense…" shows a warning first, and
+    // calm by default; "Intense…" shows a warning first, and
     // only its own button turns it on
     let dir = folder("visual-motion");
     let files = tracks(&dir, &["a.wav"], 3.0);

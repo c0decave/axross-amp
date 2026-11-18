@@ -205,8 +205,8 @@ What axross-amp does about it:
   120 BPM, four, is within the rule and left alone), it lays a veil over
   it - before the sixth and seventh, which would break the rule: the cells
   blended towards a slow average of themselves (more persistence), up to
-  85 - 95 %, shaded smoothly and feathered at its edges, easing off a second
-  after the danger is gone. It works the same whatever a face draws, on the
+  85 - 95 %, easing off a second after the danger is gone. The veil is
+  visible: a smeared ghost of the picture. It works the same whatever a face draws, on the
   GPU and on the CPU's fallback. It costs about 1 - 4 ms of the CPU a
   frame (`--release`, `tests/frame_cost.rs`; 7 - 9 ms for the spirograph's
   thousands of segments, and for the particles and the skyline at 3840 x
@@ -245,16 +245,34 @@ What axross-amp does about it:
   mel spectrogram (37 transitions a second, and its stripes), the
   waterfall's bars and the spirograph (18), the oscilloscope (16, and its
   stripes), the kaleidoscope (15), the tunnel (10), the moiré (7), the
-  particles and the polygon morph (their stripes). Today's faces pass it by
-  themselves, without the guard (at most 4 transitions a second); with the
-  guard too. Every face and option in Classic, Neon, Mono and Fire, in Calm
-  and Intense, at 320 x 180 (416 cases, `--ignored`): none fails - at most
-  6 transitions a second (the plasma and the smoke in Intense; 4 in Calm),
-  no red flashes, no stripes. That sweep found what the suite had not
-  (the fine waterfall in the bright schemes, the 3D ring's and the
-  particles' stripes, the oscilloscope's held wave in Intense, the ribbon
-  and the waterfall's bars in a small picture, and that the guard did not
-  see the shader faces at all); each is now a case of its own in the suite.
+  particles and the polygon morph (their stripes). 0.11.0's faces pass
+  *this suite's* music without the guard, and its sweep of every scheme
+  and both motions at 320 x 180 with it.
+
+**Known failures (0.11.0, found by an independent review).** The suite's
+music changes every 1.2 s; steadier and finer music breaks the promise:
+
+- The mel spectrogram, with steady rhythmic music (bass and treble in turn
+  three times a second, a chirp, plain 120 BPM pop), is a moving regular
+  grating over 40 - 85 % of the picture (Calm, Classic, the guard on; it
+  never engages) - a pattern hazard.
+- The waterfall with bars, under a click train of 9 or 13 a second, flashes
+  25 - 28 times a second at 480 x 270 to 1920 x 1080 with the guard on: the
+  guard's estimate (128 cells, smoothed) does not see stripes that fine.
+- The Cover face over a checkerboard cover lies in stripes over 40 % of the
+  picture: the guard takes any picture but text as a flat grey.
+- Red flashes are reckoned on gamma-encoded values, not linear ones as WCAG
+  defines them: an orange-red such as #ff4000 flashing is not seen as red.
+- The guard fires where nothing flashes: the spectrum (the default face)
+  is veiled 40 - 85 % of the time on house and drum and bass, the line
+  spectrum 89 %; on a steady loop the veil pumps on and off. Its fields
+  are a third of the face, not of the screen - far stricter than WCAG in a
+  small window.
+- Tested only at 60 frames a second; the player draws its faces at 30, and
+  at 3 - 12 on a software renderer.
+
+These are being fixed; until they are, treat the photosensitivity guard as
+reducing the risk, not removing it.
 
 What is not claimed: the guard estimates the picture (text and covers
 roughly); the test's music and sizes are ours, not every song or screen. It

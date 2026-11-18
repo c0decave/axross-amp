@@ -170,7 +170,7 @@ pub struct AmpSettings {
     /// The starfield and the stereo scope with trails and glow (not as
     /// axross draws them).
     pub classic_plus: bool,
-    /// How the pictures move: "calm" (flash-safe, the default) or
+    /// How the pictures move: "calm" (calmer, the default) or
     /// "intense" (livelier, still never more than three flashes a second;
     /// chosen only after a photosensitivity warning).
     pub motion: String,
@@ -822,7 +822,7 @@ mod tests {
         let fresh = AmpSettings::default();
         assert!(fresh.waterfall_hd && !fresh.classic_plus && !fresh.fade_on_skip);
         assert_eq!(back.motion, "intense");
-        assert_eq!(fresh.motion, "calm", "flash-safe by default");
+        assert_eq!(fresh.motion, "calm", "calm by default");
         assert!(AmpSettings::default().cover_colours);
         assert_eq!(back.replay_gain, "album");
         assert_eq!(back.preamp_db, 15.0);
