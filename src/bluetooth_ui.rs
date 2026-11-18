@@ -15,9 +15,6 @@ use egui::{Color32, ComboBox, Id, Modal, RichText, Ui};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-const MUTED: Color32 = Color32::from_rgb(0x8b, 0x94, 0x9e);
-const GOOD: Color32 = Color32::from_rgb(0x56, 0xd3, 0x64);
-const BAD: Color32 = Color32::from_rgb(0xff, 0x7b, 0x72);
 /// How long *Use as audio output* waits for the sound server to make the
 /// device's output once it is connected.
 pub const OUTPUT_WAIT: Duration = Duration::from_secs(20);
@@ -318,15 +315,57 @@ pub fn show(
     changes
 }
 
+/// A card of the page.
+fn card<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> R {
+    egui::Frame::new()
+        .fill(crate::theme::current().surface)
+        .corner_radius(10)
+        .inner_margin(egui::Margin::symmetric(10, 8))
+        .show(ui, |ui| {
+            ui.set_min_width(ui.available_width());
+            add(ui)
+        })
+        .inner
+}
+
+/// A device's sign: what it is (headphones, a speaker, or a dot).
+fn sign(d: &Device) -> &'static str {
+    let kind = d.kind().to_lowercase();
+    if kind.contains("head") || kind.contains("ear") {
+        "🎧"
+    } else if kind.contains("speaker") || kind.contains("audio") {
+        "🔊"
+    } else {
+        "●"
+    }
+}
+
 fn body(ui: &mut Ui, page: &mut BluetoothPage, client: &Bluetooth, view: &BluetoothView) {
-    ui.label(RichText::new("Bluetooth").strong().size(16.0));
+    // (a column of a readable width in the middle of a wide window)
+    let room = ui.available_width();
+    if room > 980.0 {
+        let side = (room - 980.0) / 2.0;
+        ui.horizontal(|ui| {
+            ui.add_space(side);
+            ui.vertical(|ui| {
+                ui.set_max_width(980.0);
+                body_in(ui, page, client, view);
+            });
+        });
+    } else {
+        body_in(ui, page, client, view);
+    }
+}
+
+fn body_in(ui: &mut Ui, page: &mut BluetoothPage, client: &Bluetooth, view: &BluetoothView) {
+    ui.label(RichText::new("Bluetooth").strong().size(18.0));
     if view.status != Status::Ready {
         ui.add_space(6.0);
         ui.horizontal_wrapped(|ui| {
             if view.status == Status::Starting {
                 ui.spinner();
             }
-            ui.label(RichText::new(view.status.text()).color(MUTED));
+            ui.label(RichText::new(view.status.text()).color(crate::theme::current().muted));
         });
         // no D-Bus, or BlueZ that would not tell: nothing changes by itself
         // (BlueZ starting, an adapter plugged in are noticed without this)
@@ -367,7 +406,7 @@ fn body(ui: &mut Ui, page: &mut BluetoothPage, client: &Bluetooth, view: &Blueto
                 page.adapter = Some(chosen);
             }
         } else {
-            ui.label(RichText::new(adapter.display_name()).color(MUTED))
+            ui.label(RichText::new(adapter.display_name()).color(crate::theme::current().muted))
                 .on_hover_text(&adapter.address);
         }
         let mut powered = adapter.powered;
@@ -428,12 +467,13 @@ fn body(ui: &mut Ui, page: &mut BluetoothPage, client: &Bluetooth, view: &Blueto
     });
     if !adapter.powered {
         ui.label(
-            RichText::new("The adapter is off: switch it on to scan and connect.").color(MUTED),
+            RichText::new("The adapter is off: switch it on to scan and connect.")
+                .color(crate::theme::current().muted),
         );
     } else if adapter.discovering && !scanning {
         ui.label(
             RichText::new("Another program is scanning; Scan starts this player's own scan.")
-                .color(MUTED),
+                .color(crate::theme::current().muted),
         );
     }
     ui.add_space(4.0);
@@ -477,27 +517,64 @@ fn body(ui: &mut Ui, page: &mut BluetoothPage, client: &Bluetooth, view: &Blueto
         } else {
             format!("{mine} devices")
         })
-        .color(MUTED)
+        .color(crate::theme::current().muted)
         .small(),
     );
-    // -- the devices
-    egui::Frame::group(ui.style()).show(ui, |ui| {
-        ui.set_min_height(120.0);
-        ui.set_width(ui.available_width());
-        if devices.is_empty() {
+    // -- the devices, in sections: connected, paired, nearby - each a card
+    if devices.is_empty() {
+        card(ui, |ui| {
+            ui.set_min_height(80.0);
             ui.label(
                 RichText::new(if adapter.powered {
                     "No devices - Scan looks for ones nearby (put a new one into pairing mode first)."
                 } else {
                     "No devices."
                 })
-                .color(MUTED),
+                .color(crate::theme::current().muted),
             );
+        });
+    }
+    let groups: [(&str, Vec<&Device>); 3] = [
+        (
+            "Connected",
+            devices.iter().copied().filter(|d| d.connected).collect(),
+        ),
+        (
+            "Paired",
+            devices
+                .iter()
+                .copied()
+                .filter(|d| d.paired && !d.connected)
+                .collect(),
+        ),
+        (
+            "Nearby",
+            devices
+                .iter()
+                .copied()
+                .filter(|d| !d.paired && !d.connected)
+                .collect(),
+        ),
+    ];
+    for (title, group) in groups {
+        if group.is_empty() {
+            continue;
         }
-        for d in &devices {
-            device_row(ui, page, view, d);
-        }
-    });
+        ui.add_space(8.0);
+        ui.horizontal(|ui| {
+            ui.label(RichText::new(title).strong().size(15.0));
+            ui.label(
+                RichText::new(group.len().to_string())
+                    .small()
+                    .color(crate::theme::current().muted),
+            );
+        });
+        card(ui, |ui| {
+            for d in &group {
+                device_row(ui, page, view, d);
+            }
+        });
+    }
     // -- what can be done with the one selected
     if let Some(device) = page
         .selected
@@ -532,21 +609,23 @@ fn device_row(ui: &mut Ui, page: &mut BluetoothPage, view: &BluetoothView, d: &D
     let style = ui.style().clone();
     let width = ui.available_width();
     let pad = egui::vec2(8.0, 4.0);
+    // (its sign at the left, the words after it)
+    let sign_width = 30.0;
     let name_galley = ui.painter().layout(
         d.display_name(),
         egui::TextStyle::Body.resolve(&style),
         if d.connected {
-            GOOD
+            crate::theme::current().good
         } else {
             style.visuals.strong_text_color()
         },
-        width - 2.0 * pad.x,
+        width - 2.0 * pad.x - sign_width,
     );
     let detail_galley = ui.painter().layout(
         detail.join(" · "),
         egui::TextStyle::Small.resolve(&style),
-        MUTED,
-        width - 2.0 * pad.x,
+        crate::theme::current().muted,
+        width - 2.0 * pad.x - sign_width,
     );
     let height = name_galley.size().y + detail_galley.size().y + 2.0 * pad.y + 1.0;
     let (rect, response) = ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::click());
@@ -558,7 +637,18 @@ fn device_row(ui: &mut Ui, page: &mut BluetoothPage, view: &BluetoothView, d: &D
             ui.painter()
                 .rect_filled(rect, visuals.corner_radius, visuals.weak_bg_fill);
         }
-        let top = rect.min + pad;
+        ui.painter().text(
+            egui::pos2(rect.left() + pad.x + 10.0, rect.center().y),
+            egui::Align2::CENTER_CENTER,
+            sign(d),
+            egui::FontId::proportional(18.0),
+            if d.connected {
+                crate::theme::current().good
+            } else {
+                crate::theme::current().muted
+            },
+        );
+        let top = rect.min + pad + egui::vec2(sign_width, 0.0);
         let name_height = name_galley.size().y;
         ui.painter().galley(top, name_galley, Color32::PLACEHOLDER);
         ui.painter().galley(
@@ -660,7 +750,11 @@ fn actions(
 fn message_line(ui: &mut Ui, page: &BluetoothPage) {
     if !page.message.is_empty() {
         ui.add_space(4.0);
-        ui.label(RichText::new(&page.message).color(if page.message_bad { BAD } else { MUTED }));
+        ui.label(RichText::new(&page.message).color(if page.message_bad {
+            crate::theme::current().bad
+        } else {
+            crate::theme::current().muted
+        }));
     }
 }
 

@@ -103,6 +103,18 @@ fn every_state_of_the_window() {
     play(&mut h, &mut out, 1.5);
     assert!(h.state().playing());
     shoot(&mut h, "playing");
+    // wide: the cover a hero, and what comes next beside it
+    {
+        let mut wide = window(&home.join("wide"), files.clone(), egui::vec2(1400.0, 900.0));
+        let mut wide_out = RenderState::default();
+        assert!(until(&mut wide, 5.0, |a| a.is_loaded()));
+        play(&mut wide, &mut wide_out, 1.0);
+        assert!(
+            wide.query_by_label("Up next").is_some(),
+            "a wide window shows what comes next"
+        );
+        shoot(&mut wide, "wide");
+    }
     // paused: the picture stands as it was (not emptied), the button says Play
     let picture = h.get_by_role(egui::accesskit::Role::Image).rect();
     let before = h.render().unwrap();

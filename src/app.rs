@@ -17,9 +17,10 @@ use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-const ACCENT: Color32 = Color32::from_rgb(0x4c, 0x9a, 0xff);
-const MUTED: Color32 = Color32::from_rgb(0x8b, 0x94, 0x9e);
-const PANEL: Color32 = Color32::from_rgb(0x16, 0x1b, 0x22);
+/// The theme shown (its tokens: see `theme`).
+fn th() -> &'static crate::theme::Theme {
+    crate::theme::current()
+}
 const SAVE_EVERY: Duration = Duration::from_secs(3);
 /// How long a message stays in the status line.
 const STATUS_FOR: Duration = Duration::from_secs(8);
@@ -37,8 +38,6 @@ const LEAST_LIST: f32 = 170.0;
 const POSITION_EVERY: Duration = Duration::from_secs(30);
 /// The equalizer is written this long after its last change (axross's 250 ms).
 const EQ_SETTLE: Duration = Duration::from_millis(250);
-/// A track that could not be played (axross's red).
-const BROKEN: Color32 = Color32::from_rgb(0xe0, 0x5a, 0x4b);
 
 #[derive(PartialEq)]
 enum Picking {
@@ -57,9 +56,16 @@ pub struct App {
     sizer: crate::cover::Sizer,
     /// The pictures' colours from the cover (when it has colour).
     cover_scheme: Option<viz::Scheme>,
-    /// The accent: from the cover (its strongest colour, readable on the
-    /// window), else the window's blue.
+    /// The accent: from the cover (its strongest colour, made to read in
+    /// the theme), else the theme's own.
     accent: Color32,
+    /// The cover's strongest hue, as it is.
+    cover_hue: Option<Color32>,
+    /// The theme and accent the window shows (set again only when either
+    /// changes: no cost a frame), and the one shown while the pointer is on
+    /// it in the picker.
+    theme_shown: (&'static str, Color32, &'static str),
+    theme_preview: Option<&'static str>,
     analyzer: Analyzer,
     /// Loudness, beat, notes, key: on their own thread, every sample heard.
     meters: crate::meters::Meters,
@@ -165,6 +171,9 @@ pub struct App {
     adding: std::collections::VecDeque<Adding>,
     /// Reads titles and lengths of the tracks in the background.
     scanner: Scanner,
+    /// Albums' covers: asked for (none yet, or none at all), and the reader.
+    album_covers: std::collections::HashMap<String, Option<TextureHandle>>,
+    album_loader: AlbumCovers,
     /// The playlist's filter, and the rows it lets through (for its
     /// words and the playlist's version).
     filter: String,
@@ -317,6 +326,111 @@ impl Scanner {
     }
 }
 
+/// A row of the playlist as shown: an album's head, or a track.
+#[derive(Clone, Debug, PartialEq)]
+enum Entry {
+    Album(AlbumHead),
+    Track(usize),
+}
+
+/// An album's head: its name, who made it, its tracks and length, the
+/// first of them (for its cover), and the key its cover is kept under.
+#[derive(Clone, Debug, PartialEq)]
+struct AlbumHead {
+    album: String,
+    artist: String,
+    tracks: usize,
+    ms: u64,
+    first: usize,
+    key: String,
+}
+
+/// The rows with a head over each album of two tracks or more that follow
+/// one another (an album is its name in its folder).
+fn with_albums(tracks: &[Track], rows: &[usize]) -> Vec<Entry> {
+    let key = |t: &Track| {
+        let folder = std::path::Path::new(&t.path)
+            .parent()
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        (!t.album.is_empty()).then(|| format!("{folder}\u{1f}{}", t.album))
+    };
+    let mut out = Vec::with_capacity(rows.len() + 8);
+    let mut k = 0;
+    while k < rows.len() {
+        let first = &tracks[rows[k]];
+        let Some(album) = key(first) else {
+            out.push(Entry::Track(rows[k]));
+            k += 1;
+            continue;
+        };
+        let mut end = k + 1;
+        while end < rows.len() && key(&tracks[rows[end]]).as_deref() == Some(album.as_str()) {
+            end += 1;
+        }
+        if end - k >= 2 {
+            let artists: std::collections::BTreeSet<&str> = rows[k..end]
+                .iter()
+                .map(|&i| tracks[i].artist.as_str())
+                .filter(|a| !a.is_empty())
+                .collect();
+            let artist = match artists.len() {
+                0 => String::new(),
+                1 => artists.iter().next().unwrap().to_string(),
+                _ => "Various artists".to_owned(),
+            };
+            out.push(Entry::Album(AlbumHead {
+                album: first.album.clone(),
+                artist,
+                tracks: end - k,
+                ms: rows[k..end].iter().map(|&i| tracks[i].duration_ms).sum(),
+                first: rows[k],
+                key: album,
+            }));
+        }
+        out.extend(rows[k..end].iter().map(|&i| Entry::Track(i)));
+        k = end;
+    }
+    out
+}
+
+/// A thread that reads albums' covers (from a track of each), made small:
+/// (key, path) in, (key, picture or none) out.
+struct AlbumCovers {
+    tx: crossbeam_channel::Sender<(String, String)>,
+    rx: crossbeam_channel::Receiver<(String, Option<egui::ColorImage>)>,
+}
+
+impl AlbumCovers {
+    fn start(wake: impl Fn() + Send + 'static) -> AlbumCovers {
+        let (tx, asks) = crossbeam_channel::unbounded::<(String, String)>();
+        let (out, rx) = crossbeam_channel::unbounded();
+        let _ = std::thread::Builder::new()
+            .name("amp-album-covers".into())
+            .spawn(move || {
+                while let Ok((key, path)) = asks.recv() {
+                    let image = crate::engine::probe(&path).ok().and_then(|info| {
+                        let art = info.art?;
+                        let rgba =
+                            image::RgbaImage::from_raw(art.width, art.height, art.rgba.clone())?;
+                        let small = image::imageops::thumbnail(&rgba, 64, 64);
+                        Some(egui::ColorImage::from_rgba_unmultiplied(
+                            [small.width() as usize, small.height() as usize],
+                            small.as_raw(),
+                        ))
+                    });
+                    if out.send((key, image)).is_err() {
+                        return;
+                    }
+                    if asks.is_empty() {
+                        wake();
+                    }
+                }
+            });
+        AlbumCovers { tx, rx }
+    }
+}
+
 /// Where the app keeps its state and what it connects to (tests use a
 /// folder of their own and leave the desktop alone).
 #[derive(Clone, Debug)]
@@ -428,7 +542,10 @@ impl App {
             cover: None,
             sizer: crate::cover::Sizer::default(),
             cover_scheme: None,
-            accent: ACCENT,
+            accent: th().accent,
+            cover_hue: None,
+            theme_shown: ("", Color32::TRANSPARENT, ""),
+            theme_preview: None,
             analyzer: Analyzer::new(),
             meters,
             viz_state,
@@ -508,6 +625,11 @@ impl App {
             scanner: {
                 let ctx = cc.egui_ctx.clone();
                 Scanner::start(move || ctx.request_repaint())
+            },
+            album_covers: std::collections::HashMap::new(),
+            album_loader: {
+                let ctx = cc.egui_ctx.clone();
+                AlbumCovers::start(move || ctx.request_repaint())
             },
             filter: String::new(),
             focus_filter: false,
@@ -617,7 +739,7 @@ impl App {
                  service. On this system, pair and connect them in the system's settings; \
                  they then appear as outputs in the Mixer tab.",
             )
-            .color(MUTED),
+            .color(th().muted),
         );
     }
 
@@ -646,7 +768,7 @@ impl App {
         };
         let why = why.to_owned();
         egui::Frame::new()
-            .fill(Color32::from_rgb(0x3a, 0x2a, 0x10))
+            .fill(crate::theme::warn_fill(th()))
             .corner_radius(CornerRadius::same(8))
             .inner_margin(8.0)
             .show(ui, |ui| {
@@ -654,8 +776,7 @@ impl App {
                 ui.horizontal(|ui| {
                     ui.add(
                         egui::Label::new(
-                            RichText::new(format!("⚠ No sound – {why}"))
-                                .color(Color32::from_rgb(0xe3, 0xb3, 0x41)),
+                            RichText::new(format!("⚠ No sound – {why}")).color(th().warn),
                         )
                         .wrap(),
                     );
@@ -986,11 +1107,8 @@ impl App {
             .art
             .as_deref()
             .and_then(|art| viz::cover_scheme(&art.rgba));
-        let accent = info.art.as_deref().and_then(accent_of).unwrap_or(ACCENT);
-        if accent != self.accent {
-            self.accent = accent;
-            accent_style(ctx, accent);
-        }
+        self.cover_hue = info.art.as_deref().and_then(cover_hue);
+        self.update_theme(ctx);
         self.art_url.clear();
         #[cfg(target_os = "linux")]
         if self.mpris.is_some() {
@@ -1114,7 +1232,7 @@ impl App {
                     "A track fades into the next - never inside an album, which plays gapless.",
                 )
                 .small()
-                .color(MUTED),
+                .color(th().muted),
             );
             if secs != self.amp.crossfade {
                 self.amp.crossfade = secs;
@@ -1166,7 +1284,7 @@ impl App {
             ui.label(
                 RichText::new("Levels tracks by their ReplayGain tags (a moment later: what is decoded ahead plays as it was).")
                     .small()
-                    .color(MUTED),
+                    .color(th().muted),
             );
             if amp != self.amp {
                 self.amp = amp;
@@ -1242,7 +1360,7 @@ impl App {
         // (the card's look: rounded, the panel's colour, room inside)
         let card = egui::Frame::window(&ctx.global_style())
             .corner_radius(CornerRadius::same(12))
-            .fill(viz::mix(PANEL, self.accent, 0.08))
+            .fill(viz::mix(th().surface, self.accent, 0.08))
             .inner_margin(14.0);
         egui::Window::new("Track details")
             .frame(card)
@@ -1313,7 +1431,7 @@ impl App {
                             .striped(true)
                             .show(ui, |ui| {
                                 for (k, v) in rows {
-                                    ui.label(RichText::new(k).color(MUTED));
+                                    ui.label(RichText::new(k).color(th().muted));
                                     ui.add(egui::Label::new(v).wrap().selectable(true));
                                     ui.end_row();
                                 }
@@ -1913,6 +2031,53 @@ impl App {
         steps as i32
     }
 
+    /// Chooses the window's theme (as the picker does; tests, the gallery).
+    pub fn set_theme(&mut self, key: &str) {
+        self.amp.theme = crate::theme::find(key).key.to_owned();
+        self.amp.follow_system = false;
+        self.amp_dirty = true;
+    }
+
+    /// The theme the window shows.
+    pub fn theme_shown(&self) -> &'static str {
+        self.theme_shown.0
+    }
+
+    /// The theme to show: the one the pointer is on in the picker, else
+    /// the chosen one (or, following the desktop, its light or dark one),
+    /// with the cover's accent made to read in it; set on the window only
+    /// when it changes.
+    fn update_theme(&mut self, ctx: &egui::Context) {
+        let chosen = if self.amp.follow_system {
+            match ctx.system_theme() {
+                Some(egui::Theme::Light) => &self.amp.light_theme,
+                _ => &self.amp.dark_theme,
+            }
+        } else {
+            &self.amp.theme
+        };
+        // (the picker says it again each frame the pointer stays on it)
+        let kept = crate::theme::find(chosen);
+        let t = self
+            .theme_preview
+            .take()
+            .map(crate::theme::find)
+            .unwrap_or(kept);
+        crate::theme::set(t.key);
+        let accent = match self.cover_hue {
+            Some(c) if self.amp.cover_accent => accent_for(c, t),
+            _ => t.accent,
+        };
+        if self.theme_shown != (t.key, accent, kept.key) {
+            self.theme_shown = (t.key, accent, kept.key);
+            self.accent = accent;
+            // (the chosen theme's density, also while another is shown in
+            // the picker: its rows stay under the pointer)
+            apply_theme(ctx, t, accent, kept.padding);
+            ctx.request_repaint();
+        }
+    }
+
     fn top_bar(&mut self, ui: &mut Ui) {
         ui.horizontal(|ui| {
             ui.label(
@@ -2002,7 +2167,7 @@ impl App {
                         viz::Group::Generative,
                     ] {
                         ui.vertical(|ui| {
-                            ui.label(RichText::new(group.name()).strong().color(MUTED));
+                            ui.label(RichText::new(group.name()).strong().color(th().muted));
                             for face in viz::FACES.iter().filter(|f| f.group == group) {
                                 if ui.radio(self.mode == face.key, face.name).clicked() {
                                     self.mode = face.key;
@@ -2035,9 +2200,110 @@ impl App {
         // (last: their menus open over nothing of this one but themselves)
         ui.separator();
         ui.horizontal(|ui| {
+            ui.menu_button("Theme", |ui| self.theme_menu(ui));
             ui.menu_button("Colours", |ui| self.colours_menu(ui));
             ui.menu_button("Options", |ui| self.options_menu(ui));
         });
+    }
+
+    /// The window's theme: each with its colours at a glance; the pointer
+    /// on one shows it at once, a click keeps it. Following the desktop's
+    /// light and dark: a click sets the light or the dark one.
+    fn theme_menu(&mut self, ui: &mut Ui) {
+        ui.set_min_width(300.0);
+        let follow = self.amp.follow_system;
+        for t in &crate::theme::THEMES {
+            let chosen = if follow {
+                self.amp.light_theme == t.key || self.amp.dark_theme == t.key
+            } else {
+                self.amp.theme == t.key
+            };
+            let r = ui
+                .horizontal(|ui| {
+                    // its ground, its cards, its text and its accent
+                    let (rect, _) = ui.allocate_exact_size(vec2(46.0, 16.0), Sense::hover());
+                    let p = ui.painter();
+                    p.rect_filled(rect, 4.0, t.ground);
+                    p.rect_stroke(
+                        rect,
+                        4.0,
+                        Stroke::new(1.0, th().border),
+                        egui::StrokeKind::Inside,
+                    );
+                    for (k, c) in [t.surface, t.text, t.accent].into_iter().enumerate() {
+                        let at = egui::pos2(rect.left() + 10.0 + k as f32 * 13.0, rect.center().y);
+                        p.circle_filled(at, 4.5, c);
+                    }
+                    let shade = if t.dark { "dark" } else { "light" };
+                    ui.radio(chosen, t.name)
+                        .on_hover_text(format!("{} ({shade})", t.character))
+                })
+                .inner;
+            if r.hovered() {
+                self.theme_preview = Some(t.key);
+            }
+            if r.clicked() {
+                if follow {
+                    if t.dark {
+                        self.amp.dark_theme = t.key.into();
+                    } else {
+                        self.amp.light_theme = t.key.into();
+                    }
+                } else {
+                    self.amp.theme = t.key.into();
+                }
+                self.amp_dirty = true;
+            }
+        }
+        ui.separator();
+        if ui
+            .checkbox(
+                &mut self.amp.follow_system,
+                "Follow the desktop's light or dark",
+            )
+            .changed()
+        {
+            self.amp_dirty = true;
+        }
+        if self.amp.follow_system {
+            let name = |k: &str| crate::theme::find(k).name;
+            ui.label(
+                RichText::new(format!(
+                    "Light: {} · Dark: {}",
+                    name(&self.amp.light_theme),
+                    name(&self.amp.dark_theme)
+                ))
+                .small()
+                .color(th().muted),
+            );
+        }
+        if ui
+            .checkbox(
+                &mut self.amp.cover_accent,
+                "The accent from the cover (made to read)",
+            )
+            .changed()
+        {
+            self.amp_dirty = true;
+        }
+        // (the faces' colours stay their own: a theme only suggests some)
+        // (always there - greyed where its scheme is the faces' already -:
+        // the menu keeps its size, whichever theme is shown)
+        let faces = th().faces;
+        let name = viz::SCHEMES
+            .iter()
+            .find(|(k, _, _)| *k == faces)
+            .map_or(faces, |(_, n, _)| *n);
+        if ui
+            .add_enabled(
+                self.scheme_key != faces,
+                egui::Button::new(format!("Faces in {name}, as the theme suggests")),
+            )
+            .clicked()
+        {
+            self.scheme_key = faces.to_owned();
+            self.dirty = true;
+        }
     }
 
     fn colours_menu(&mut self, ui: &mut Ui) {
@@ -2187,28 +2453,43 @@ impl App {
                     None
                 };
                 ui.horizontal(|ui| {
-                    // (the cover as large as the window allows: 120..200 px,
-                    // 260 wide)
-                    let most = if wide { 260.0 } else { 200.0 };
-                    let side = (ui.available_width() * 0.22).clamp(120.0, most);
+                    // (the cover as large as the window allows: 120..200 px;
+                    // wide, a hero as Amberol has it - up to 320 px, lifted
+                    // off the card by a soft shadow)
+                    let most = if wide { 320.0 } else { 200.0 };
+                    let share = if wide { 0.27 } else { 0.22 };
+                    let side = (ui.available_width() * share).clamp(120.0, most);
                     let size = vec2(side, side);
                     let px = side * ui.ctx().pixels_per_point();
                     if let Some(texture) = self.sizer.get(px).or(self.cover.as_ref()) {
-                        ui.add(
-                            egui::Image::new(texture)
-                                .fit_to_exact_size(size)
-                                .corner_radius(CornerRadius::same(8)),
-                        );
+                        let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
+                        if wide {
+                            ui.painter().add(
+                                egui::epaint::Shadow {
+                                    offset: [0, 8],
+                                    blur: 28,
+                                    spread: 0,
+                                    color: Color32::from_black_alpha(110),
+                                }
+                                .as_shape(rect, CornerRadius::same(10)),
+                            );
+                        }
+                        egui::Image::new(texture)
+                            .corner_radius(CornerRadius::same(if wide { 10 } else { 8 }))
+                            .paint_at(ui, rect);
                     } else {
                         let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
-                        ui.painter()
-                            .rect_filled(rect, 8.0, viz::mix(PANEL, self.accent, 0.3));
+                        ui.painter().rect_filled(
+                            rect,
+                            8.0,
+                            viz::mix(th().surface, self.accent, 0.3),
+                        );
                         ui.painter().text(
                             rect.center(),
                             egui::Align2::CENTER_CENTER,
                             "♫",
                             egui::FontId::proportional(36.0),
-                            viz::mix(MUTED, Color32::WHITE, 0.4),
+                            viz::mix(th().muted, th().strong, 0.4),
                         );
                     }
                     ui.vertical(|ui| {
@@ -2217,9 +2498,7 @@ impl App {
                         // the accent, the album quieter, the format small
                         ui.add(
                             egui::Label::new(
-                                RichText::new(title)
-                                    .font(bold(21.0))
-                                    .color(Color32::from_rgb(0xf0, 0xf3, 0xf6)),
+                                RichText::new(title).font(bold(21.0)).color(th().strong),
                             )
                             .truncate(),
                         );
@@ -2235,7 +2514,7 @@ impl App {
                         if !self.info.album.is_empty() && !by.contains(&self.info.album) {
                             ui.add(
                                 egui::Label::new(
-                                    RichText::new(&self.info.album).size(13.5).color(MUTED),
+                                    RichText::new(&self.info.album).size(13.5).color(th().muted),
                                 )
                                 .truncate(),
                             );
@@ -2244,7 +2523,7 @@ impl App {
                             ui.label(
                                 RichText::new(card_format(&self.info))
                                     .size(11.5)
-                                    .color(MUTED),
+                                    .color(th().muted),
                             );
                         }
                     });
@@ -2252,19 +2531,19 @@ impl App {
                         ui.with_layout(Layout::right_to_left(Align::Min), |ui| {
                             ui.set_max_width(260.0);
                             ui.vertical(|ui| {
-                                ui.label(RichText::new("Up next").size(11.5).color(MUTED));
+                                ui.label(RichText::new("Up next").size(11.5).color(th().muted));
                                 ui.add(
                                     egui::Label::new(
-                                        RichText::new(title)
-                                            .size(15.0)
-                                            .color(Color32::from_rgb(0xe6, 0xea, 0xef)),
+                                        RichText::new(title).size(15.0).color(th().strong),
                                     )
                                     .truncate(),
                                 );
                                 if !by.is_empty() {
                                     ui.add(
-                                        egui::Label::new(RichText::new(by).size(12.5).color(MUTED))
-                                            .truncate(),
+                                        egui::Label::new(
+                                            RichText::new(by).size(12.5).color(th().muted),
+                                        )
+                                        .truncate(),
                                     );
                                 }
                             });
@@ -2282,13 +2561,17 @@ impl App {
         painter.rect_filled(
             zone,
             16.0,
-            viz::mix(PANEL, self.accent, if dragging { 0.18 } else { 0.06 }),
+            viz::mix(
+                th().surface,
+                self.accent,
+                if dragging { 0.18 } else { 0.06 },
+            ),
         );
         // a dashed edge round it
         let edge = if dragging {
             self.accent
         } else {
-            viz::mix(PANEL, MUTED, 0.6)
+            viz::mix(th().surface, th().muted, 0.6)
         };
         let corners = [
             zone.left_top(),
@@ -2324,12 +2607,12 @@ impl App {
             ui.label(
                 RichText::new("Drop music here")
                     .font(bold(22.0))
-                    .color(Color32::from_rgb(0xf0, 0xf3, 0xf6)),
+                    .color(th().strong),
             );
             ui.label(
                 RichText::new("Files, folders and playlists - or open them, or a radio's URL")
                     .size(13.5)
-                    .color(MUTED),
+                    .color(th().muted),
             );
             ui.add_space(14.0);
             // (a row, centred, as wide as its buttons; one under another
@@ -2381,7 +2664,7 @@ impl App {
                         .show(ui, |ui| {
                             for (key, what) in keys {
                                 ui.label(RichText::new(key).monospace().color(self.accent));
-                                ui.label(RichText::new(what).size(13.0).color(MUTED));
+                                ui.label(RichText::new(what).size(13.0).color(th().muted));
                                 ui.end_row();
                             }
                         })
@@ -2759,6 +3042,7 @@ impl App {
         } else {
             crate::analyzer::guard::Motion::Calm
         };
+        self.analyzer.calm = viz::scheme_calm(&scheme);
         if self.mode != "off" && !frozen {
             self.analyzer.set_readings(self.meters.read());
             self.analyzer.update(
@@ -2890,7 +3174,7 @@ impl App {
             .unwrap_or_else(|| self.engine.shared.position());
         let seekable = self.info.seekable && self.duration.is_some();
         ui.horizontal(|ui| {
-            ui.label(RichText::new(clock(pos)).monospace().color(MUTED));
+            ui.label(RichText::new(clock(pos)).monospace().color(th().muted));
             let total = self.duration.unwrap_or(0.0);
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 ui.label(
@@ -2902,7 +3186,7 @@ impl App {
                         "--:--".into()
                     })
                     .monospace()
-                    .color(MUTED),
+                    .color(th().muted),
                 );
                 ui.spacing_mut().slider_width = ui.available_width() - 8.0;
                 let mut value = pos.min(total.max(0.0));
@@ -2986,7 +3270,7 @@ impl App {
                     egui::Button::new(RichText::new("🔀").size(16.0).color(if shuffle {
                         self.accent
                     } else {
-                        MUTED
+                        th().muted
                     }))
                     .selected(shuffle),
                 )
@@ -3017,7 +3301,7 @@ impl App {
                     egui::Button::new(RichText::new(icon).size(16.0).color(if on {
                         self.accent
                     } else {
-                        MUTED
+                        th().muted
                     }))
                     .selected(on),
                 )
@@ -3177,15 +3461,15 @@ impl App {
                                 Some(r) => r.union(response.rect),
                                 None => response.rect,
                             });
-                            ui.label(RichText::new(band_name(*band)).small().color(MUTED));
+                            ui.label(RichText::new(band_name(*band)).small().color(th().muted));
                             ui.label(
                                 RichText::new(format!("{:+.0}", gains[i]))
                                     .small()
                                     .monospace()
                                     .color(if gains[i].abs() < 0.05 {
-                                        MUTED
+                                        th().muted
                                     } else {
-                                        Color32::from_rgb(0xc9, 0xd1, 0xd9)
+                                        th().text
                                     }),
                             );
                         });
@@ -3231,7 +3515,7 @@ impl App {
                             egui::pos2(rails.left() - 4.0, zero),
                             egui::pos2(rails.right() + 4.0, zero),
                         ],
-                        Stroke::new(1.0, MUTED.gamma_multiply(0.6)),
+                        Stroke::new(1.0, th().muted.gamma_multiply(0.6)),
                     );
                     let step = eq::MAX_GAIN_DB / 2.0;
                     for k in -2..=2 {
@@ -3245,7 +3529,7 @@ impl App {
                                 format!("{db:+.0}")
                             },
                             egui::FontId::proportional(11.0),
-                            MUTED,
+                            th().muted,
                         );
                     }
                 }
@@ -3331,10 +3615,23 @@ impl App {
                         self.playlist.tracks.len()
                     ))
                     .small()
-                    .color(MUTED),
+                    .color(th().muted),
                 );
             }
-            let count = rows.len();
+            // (unfiltered, an album's tracks under a head of their own)
+            let entries = if filtered {
+                rows.iter().map(|&i| Entry::Track(i)).collect()
+            } else {
+                with_albums(&self.playlist.tracks, &rows)
+            };
+            for (key, picture) in self.album_loader.rx.try_iter() {
+                let texture = picture.map(|p| {
+                    ui.ctx()
+                        .load_texture(format!("album {key}"), p, egui::TextureOptions::LINEAR)
+                });
+                self.album_covers.insert(key, texture);
+            }
+            let count = entries.len();
             let mut play: Option<usize> = None;
             let mut remove: Option<usize> = None;
             let mut details: Option<usize> = None;
@@ -3349,7 +3646,7 @@ impl App {
             if let Some(target) = self
                 .scroll_to
                 .take()
-                .and_then(|t| rows.iter().position(|r| *r == t))
+                .and_then(|t| entries.iter().position(|e| *e == Entry::Track(t)))
             {
                 // (the row chosen by a key comes into view)
                 let id = ui.make_persistent_id("playlist-rows");
@@ -3368,7 +3665,22 @@ impl App {
                 area = area.vertical_scroll_offset(wanted.max(0.0));
             }
             area.show_rows(ui, row, count, |ui, range| {
-                for i in range.map(|r| rows[r]) {
+                for r in range {
+                    let i = match &entries[r] {
+                        Entry::Album(head) => {
+                            if !self.album_covers.contains_key(&head.key) {
+                                self.album_covers.insert(head.key.clone(), None);
+                                let path = self.playlist.tracks[head.first].path.clone();
+                                if !playlist::is_stream(&path) {
+                                    let _ = self.album_loader.tx.send((head.key.clone(), path));
+                                }
+                            }
+                            let cover = self.album_covers.get(&head.key).cloned().flatten();
+                            album_head(ui, head, row, cover.as_ref(), self.accent);
+                            continue;
+                        }
+                        Entry::Track(i) => *i,
+                    };
                     let track = &self.playlist.tracks[i];
                     let current = self.playlist.current == Some(i);
                     let title = if track.title.is_empty() {
@@ -3392,21 +3704,21 @@ impl App {
                     });
                     if current || selected || response.hovered() {
                         let fill = if current {
-                            self.accent.gamma_multiply(0.25)
+                            crate::theme::playing_row(th(), self.accent)
                         } else if selected {
-                            Color32::from_rgb(0x24, 0x2c, 0x38)
+                            th().selection
                         } else {
-                            Color32::from_rgb(0x1c, 0x22, 0x2b)
+                            th().hover
                         };
                         ui.painter().rect_filled(rect, 4.0, fill);
                     }
                     let broken = self.broken.get(&track.path);
                     let colour = if broken.is_some() {
-                        BROKEN
+                        th().bad
                     } else if current {
-                        Color32::WHITE
+                        th().strong
                     } else {
-                        Color32::from_rgb(0xc9, 0xd1, 0xd9)
+                        th().text
                     };
                     let painter = ui.painter();
                     // the left: the cover and a playing mark for the track
@@ -3456,7 +3768,7 @@ impl App {
                             egui::Align2::CENTER_CENTER,
                             format!("{}", i + 1),
                             egui::FontId::monospace(12.0),
-                            MUTED,
+                            th().muted,
                         );
                     }
                     if let Some(n) = self.playlist.up_next_place(i) {
@@ -3489,7 +3801,7 @@ impl App {
                         egui::Align2::RIGHT_CENTER,
                         duration,
                         egui::FontId::monospace(12.0),
-                        MUTED,
+                        th().muted,
                     );
                     let clip = egui::Rect::from_min_max(
                         rect.left_top() + vec2(46.0, 0.0),
@@ -3509,7 +3821,7 @@ impl App {
                             egui::Align2::LEFT_CENTER,
                             by,
                             egui::FontId::proportional(11.5),
-                            MUTED,
+                            th().muted,
                         );
                     }
                     // the path, and why it could not be played (axross's tooltip)
@@ -3729,7 +4041,7 @@ impl App {
                 ui.label(
                     RichText::new("Photosensitivity warning")
                         .font(bold(16.0))
-                        .color(Color32::from_rgb(0xe3, 0xb3, 0x41)),
+                        .color(th().warn),
                 );
                 ui.label(
                     "Intense motion makes the pictures faster and livelier, with more \
@@ -3873,6 +4185,7 @@ impl eframe::App for App {
     }
 
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
+        self.update_theme(&ui.ctx().clone());
         let ctx = ui.ctx().clone();
         // the cover made at the sizes it is shown: what is done comes in
         self.sizer.poll(&ctx);
@@ -3909,16 +4222,12 @@ impl eframe::App for App {
             }
         };
         egui::Panel::top("top")
-            .frame(
-                egui::Frame::new()
-                    .fill(Color32::from_rgb(0x0d, 0x11, 0x17))
-                    .inner_margin(8.0),
-            )
+            .frame(egui::Frame::new().fill(th().ground).inner_margin(8.0))
             .show(ui, |ui| column(ui, &mut |ui| self.top_bar(ui)));
         egui::Panel::bottom("status")
             .frame(
                 egui::Frame::new()
-                    .fill(Color32::from_rgb(0x0d, 0x11, 0x17))
+                    .fill(th().ground)
                     .inner_margin(egui::Margin::symmetric(8, 3)),
             )
             .show(ui, |ui| {
@@ -3942,7 +4251,8 @@ impl eframe::App for App {
                             String::new()
                         };
                         ui.add(
-                            egui::Label::new(RichText::new(line).small().color(MUTED)).truncate(),
+                            egui::Label::new(RichText::new(line).small().color(th().muted))
+                                .truncate(),
                         );
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                             // (said the same way as the banner says it)
@@ -3950,17 +4260,13 @@ impl eframe::App for App {
                                 Some(why) => format!("No sound – {why}"),
                                 None => self.output.clone(),
                             };
-                            ui.label(RichText::new(output).small().color(MUTED));
+                            ui.label(RichText::new(output).small().color(th().muted));
                         });
                     });
                 })
             });
         egui::CentralPanel::default()
-            .frame(
-                egui::Frame::new()
-                    .fill(Color32::from_rgb(0x0d, 0x11, 0x17))
-                    .inner_margin(10.0),
-            )
+            .frame(egui::Frame::new().fill(th().ground).inner_margin(10.0))
             .show(ui, |ui| {
                 match self.tab {
                     Tab::Mixer => {
@@ -3972,6 +4278,7 @@ impl eframe::App for App {
                             self.volume,
                             self.muted,
                             self.eq.enabled,
+                            self.accent,
                             move || wake.request_repaint(),
                         );
                         for change in changes {
@@ -4085,6 +4392,92 @@ fn file_url(path: &str) -> String {
     out
 }
 
+/// An album's head in the playlist: its cover, its name and who made it,
+/// its tracks and length.
+fn album_head(
+    ui: &mut Ui,
+    head: &AlbumHead,
+    row: f32,
+    cover: Option<&TextureHandle>,
+    accent: Color32,
+) {
+    let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), row), Sense::hover());
+    let title = if head.artist.is_empty() {
+        head.album.clone()
+    } else {
+        format!("{} – {}", head.album, head.artist)
+    };
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Label, true, &title));
+    if !ui.is_rect_visible(rect) {
+        return;
+    }
+    let painter = ui.painter();
+    let art =
+        egui::Rect::from_min_size(rect.left_top() + vec2(4.0, 3.0), vec2(row - 6.0, row - 6.0));
+    match cover {
+        Some(t) => {
+            painter.add(
+                egui::epaint::RectShape::filled(art, CornerRadius::same(5), Color32::WHITE)
+                    .with_texture(
+                        t.id(),
+                        egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                    ),
+            );
+        }
+        None => {
+            painter.rect_filled(art, 5.0, viz::mix(th().surface, accent, 0.3));
+            painter.text(
+                art.center(),
+                egui::Align2::CENTER_CENTER,
+                "♫",
+                egui::FontId::proportional(16.0),
+                viz::mix(th().muted, th().strong, 0.4),
+            );
+        }
+    }
+    let x = art.right() + 10.0;
+    painter.text(
+        egui::pos2(x, rect.center().y - 8.0),
+        egui::Align2::LEFT_CENTER,
+        &head.album,
+        bold(14.0),
+        th().strong,
+    );
+    painter.text(
+        egui::pos2(x, rect.center().y + 9.0),
+        egui::Align2::LEFT_CENTER,
+        if head.artist.is_empty() {
+            ""
+        } else {
+            head.artist.as_str()
+        },
+        egui::FontId::proportional(12.0),
+        accent,
+    );
+    let tracks = if head.tracks == 1 {
+        "1 track".to_owned()
+    } else {
+        format!("{} tracks", head.tracks)
+    };
+    let length = if head.ms > 0 {
+        format!(" · {}", length(head.ms as f64 / 1000.0))
+    } else {
+        String::new()
+    };
+    painter.text(
+        egui::pos2(rect.right() - 8.0, rect.center().y),
+        egui::Align2::RIGHT_CENTER,
+        format!("{tracks}{length}"),
+        egui::FontId::proportional(12.0),
+        th().muted,
+    );
+    painter.hline(
+        rect.x_range(),
+        rect.bottom() - 0.5,
+        egui::Stroke::new(1.0, viz::mix(th().surface, accent, 0.25)),
+    );
+}
+
 /// The playlist's folding header (opened from a menu and Ctrl+F too).
 /// A row's two lines: its title (without the artist the title begins
 /// with, when the second line names it) and "artist · album".
@@ -4150,30 +4543,10 @@ fn cover_texture(ctx: &egui::Context, art: &crate::engine::Art) -> TextureHandle
     ctx.load_texture("cover", colour, egui::TextureOptions::LINEAR)
 }
 
-/// The look: dark, rounded, one blue accent.
+/// The look: the theme's (Midnight until the settings are read), its
+/// fonts.
 fn style(ctx: &egui::Context) {
-    let mut visuals = egui::Visuals::dark();
-    visuals.panel_fill = Color32::from_rgb(0x0d, 0x11, 0x17);
-    visuals.window_fill = PANEL;
-    visuals.extreme_bg_color = Color32::from_rgb(0x0a, 0x0d, 0x12);
-    let (fill, ink) = selection_colours(ACCENT);
-    visuals.selection.bg_fill = fill;
-    visuals.selection.stroke = Stroke::new(1.0, ink);
-    visuals.hyperlink_color = ACCENT;
-    // (no lines down the side of what folds open)
-    visuals.indent_has_left_vline = false;
-    for w in [
-        &mut visuals.widgets.inactive,
-        &mut visuals.widgets.hovered,
-        &mut visuals.widgets.active,
-        &mut visuals.widgets.open,
-    ] {
-        w.corner_radius = CornerRadius::same(6);
-    }
-    visuals.widgets.inactive.weak_bg_fill = Color32::from_rgb(0x21, 0x26, 0x2d);
-    visuals.widgets.hovered.weak_bg_fill = Color32::from_rgb(0x30, 0x36, 0x3d);
-    visuals.slider_trailing_fill = true;
-    ctx.set_visuals(visuals);
+    apply_theme(ctx, th(), th().accent, th().padding);
     // small text readable (egui's is 9 px): 11 px on every tab
     ctx.all_styles_mut(|style| {
         style
@@ -4207,9 +4580,22 @@ fn style(ctx: &egui::Context) {
         .families
         .insert(egui::FontFamily::Name("bold".into()), bold);
     ctx.set_fonts(fonts);
-    ctx.global_style_mut(|s| {
+}
+
+/// A theme and an accent on the window: egui's visuals of both its light
+/// and dark styles (whichever the theme is, egui is told so), its density.
+fn apply_theme(ctx: &egui::Context, t: &crate::theme::Theme, accent: Color32, padding: [f32; 2]) {
+    let which = if t.dark {
+        egui::Theme::Dark
+    } else {
+        egui::Theme::Light
+    };
+    ctx.set_theme(which);
+    ctx.set_visuals_of(which, crate::theme::visuals(t, accent));
+    let padding = vec2(padding[0], padding[1]);
+    ctx.all_styles_mut(|s| {
         s.spacing.item_spacing = vec2(8.0, 6.0);
-        s.spacing.button_padding = vec2(10.0, 4.0);
+        s.spacing.button_padding = padding;
     });
 }
 
@@ -4228,23 +4614,22 @@ fn bold(size: f32) -> egui::FontId {
     egui::FontId::new(size, egui::FontFamily::Name("bold".into()))
 }
 
-/// The window's colours of selection and links in `accent`.
-fn accent_style(ctx: &egui::Context, accent: Color32) {
-    let mut visuals = ctx.global_style().visuals.clone();
-    let (fill, ink) = selection_colours(accent);
-    visuals.selection.bg_fill = fill;
-    visuals.selection.stroke = Stroke::new(1.0, ink);
-    visuals.hyperlink_color = accent;
-    ctx.set_visuals(visuals);
-}
-
 /// The now-playing card's fill: the window's panel tinted with the accent,
 /// a light accent less (its quiet words and the accent must read on it).
 pub fn card_tint(accent: Color32) -> Color32 {
-    let mut k = 0.14;
+    card_tint_in(th(), accent)
+}
+
+/// As [`card_tint`], in a theme.
+fn card_tint_in(t: &crate::theme::Theme, accent: Color32) -> Color32 {
+    let need = crate::theme::text_contrast(t);
+    let mut k = if t.high_contrast { 0.08 } else { 0.14 };
     loop {
-        let card = viz::mix(PANEL, accent, k);
-        if k <= 0.02 || (viz::contrast(MUTED, card) >= 4.5 && viz::contrast(accent, card) >= 4.5) {
+        let card = viz::mix(t.surface, accent, k);
+        let reads = [t.muted, t.text, accent]
+            .iter()
+            .all(|c| viz::contrast(*c, card) >= need);
+        if k <= 0.02 || reads {
             return card;
         }
         k -= 0.02;
@@ -4255,15 +4640,7 @@ pub fn card_tint(accent: Color32) -> Color32 {
 /// filled with the accent, its words light or dark on it - whichever
 /// reads (WCAG 1.4.3: 4.5:1), the fill made darker where neither does.
 pub fn selection_colours(accent: Color32) -> (Color32, Color32) {
-    let mut fill = viz::mix(PANEL, accent, 0.7);
-    for _ in 0..12 {
-        let ink = ink_on(fill);
-        if viz::contrast(ink, fill) >= 4.5 {
-            return (fill, ink);
-        }
-        fill = viz::mix(fill, PANEL, 0.15);
-    }
-    (fill, ink_on(fill))
+    crate::theme::selection(th(), accent)
 }
 
 /// The toolbar's icons, drawn (one set, one stroke: not emoji glyphs of
@@ -4464,17 +4841,33 @@ fn setting(text: &str, key: &str) -> Option<String> {
 /// colourful and how bright), made readable on the window as text (WCAG AA,
 /// 4.5:1); none for a grey cover.
 pub fn accent_of(art: &crate::engine::Art) -> Option<Color32> {
-    let mut c = viz::hues(&art.rgba)?[0].1.0;
-    // readable on the window and on the card it tints (4.5:1)
-    let ground = Color32::from_rgb(0x0d, 0x11, 0x17);
+    cover_hue(art).map(|c| accent_for(c, th()))
+}
+
+/// The cover's strongest colourful hue, as it is (none for a grey cover).
+fn cover_hue(art: &crate::engine::Art) -> Option<Color32> {
+    Some(viz::hues(&art.rgba)?[0].1.0)
+}
+
+/// A colour (the cover's) made the accent of a theme: its text reads on
+/// the window, the cards, the controls and the now-playing card it tints
+/// (4.5:1; 7:1 in high contrast).
+pub fn accent_for(colour: Color32, t: &crate::theme::Theme) -> Color32 {
+    let need = crate::theme::text_contrast(t);
+    let toward = if t.dark {
+        Color32::WHITE
+    } else {
+        Color32::BLACK
+    };
+    let mut c = crate::theme::accent_from(colour, t);
     for _ in 0..24 {
-        let card = card_tint(c);
-        if viz::contrast(c, ground) >= 4.5 && viz::contrast(c, card) >= 4.5 {
+        let card = card_tint_in(t, c);
+        if viz::contrast(c, t.ground) >= need && viz::contrast(c, card) >= need {
             break;
         }
-        c = viz::mix(c, Color32::WHITE, 0.12);
+        c = viz::mix(c, toward, 0.12);
     }
-    Some(c)
+    c
 }
 
 /// A track's format in words: its codec, rate, channels and bits (unless
@@ -4509,14 +4902,9 @@ fn card_format(i: &crate::engine::TrackInfo) -> String {
     parts.join(" · ")
 }
 
-/// White or near-black, whichever reads better on `fill`.
+/// The theme's light or dark ink, whichever reads better on `fill`.
 fn ink_on(fill: Color32) -> Color32 {
-    let dark = Color32::from_rgb(0x0d, 0x11, 0x17);
-    if viz::contrast(Color32::WHITE, fill) >= viz::contrast(dark, fill) {
-        Color32::WHITE
-    } else {
-        dark
-    }
+    crate::theme::ink_on(fill)
 }
 
 /// The faces in their groups, to choose one (the mode box).
@@ -4524,7 +4912,7 @@ fn faces_list(ui: &mut Ui, mode: &mut &'static str) {
     let mut last = None;
     for face in viz::FACES {
         if last != Some(face.group) && face.group != viz::Group::Off {
-            ui.label(RichText::new(face.group.name()).small().color(MUTED));
+            ui.label(RichText::new(face.group.name()).small().color(th().muted));
         } else if face.group == viz::Group::Off {
             ui.separator();
         }
@@ -4536,6 +4924,46 @@ fn faces_list(ui: &mut Ui, mode: &mut &'static str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_albums_tracks_come_under_its_head() {
+        let t = |path: &str, album: &str, artist: &str, ms: u64| Track {
+            path: path.into(),
+            album: album.into(),
+            artist: artist.into(),
+            duration_ms: ms,
+            ..Default::default()
+        };
+        let tracks = vec![
+            t("/m/a/1.flac", "Blue", "Joni", 1000),
+            t("/m/a/2.flac", "Blue", "Joni", 2000),
+            t("/m/single.mp3", "", "", 0),
+            t("/m/b/1.flac", "Blue", "Other", 500),
+            t("/m/c/1.flac", "Mix", "X", 0),
+            t("/m/c/2.flac", "Mix", "Y", 0),
+        ];
+        let rows: Vec<usize> = (0..tracks.len()).collect();
+        let entries = with_albums(&tracks, &rows);
+        let heads: Vec<(String, String, usize, u64)> = entries
+            .iter()
+            .filter_map(|e| match e {
+                Entry::Album(h) => Some((h.album.clone(), h.artist.clone(), h.tracks, h.ms)),
+                _ => None,
+            })
+            .collect();
+        // (an album of one track - in another folder - has no head; one of
+        // several artists is "Various artists")
+        assert_eq!(
+            heads,
+            vec![
+                ("Blue".into(), "Joni".into(), 2, 3000),
+                ("Mix".into(), "Various artists".into(), 2, 0),
+            ]
+        );
+        assert_eq!(entries.len(), tracks.len() + 2);
+        assert_eq!(entries[1], Entry::Track(0));
+        assert_eq!(entries[3], Entry::Track(2));
+    }
 
     #[test]
     fn the_start_tells_the_slow_frame_rate_as_it_is() {
@@ -4567,7 +4995,7 @@ mod tests {
     fn chosen_things_read_whatever_the_cover() {
         // covers of every hue, light and dark: the accent made of them, the
         // chosen tab's words on its fill, the accent's words on the window
-        let ground = Color32::from_rgb(0x0d, 0x11, 0x17);
+        let ground = th().ground;
         for k in 0..36 {
             for (l, c) in [(0.45, 0.15), (0.7, 0.18), (0.85, 0.1), (0.3, 0.12)] {
                 let colour = viz::from_oklch(l, c, k as f32 * 10.0);
@@ -4581,7 +5009,7 @@ mod tests {
                     png: Vec::new(),
                     large: None,
                 };
-                let accent = accent_of(&art).unwrap_or(ACCENT);
+                let accent = accent_of(&art).unwrap_or(th().accent);
                 let (fill, ink) = selection_colours(accent);
                 assert!(
                     viz::contrast(ink, fill) >= 4.5,
@@ -4601,12 +5029,12 @@ mod tests {
                     viz::contrast(accent, card)
                 );
                 assert!(
-                    viz::contrast(MUTED, card) >= 4.5,
+                    viz::contrast(th().muted, card) >= 4.5,
                     "{colour:?}: quiet words on the card"
                 );
             }
         }
-        let (fill, ink) = selection_colours(ACCENT);
+        let (fill, ink) = selection_colours(th().accent);
         assert!(viz::contrast(ink, fill) >= 4.5);
     }
 
@@ -4671,7 +5099,7 @@ mod tests {
                 large: None,
             }
         };
-        let ground = Color32::from_rgb(0x0d, 0x11, 0x17);
+        let ground = th().ground;
         // a dark red cover: a red accent, lightened until it reads (4.5:1)
         let red = accent_of(&art([120, 10, 20], 6)).expect("an accent");
         assert!(red.r() > red.g() && red.r() > red.b(), "{red:?}");
@@ -4679,7 +5107,7 @@ mod tests {
         // a grey cover: none (the window's own)
         assert_eq!(accent_of(&art([100, 100, 100], 10)), None);
         // the play button's mark reads on any accent
-        for c in [red, Color32::from_rgb(250, 240, 120), ACCENT] {
+        for c in [red, Color32::from_rgb(250, 240, 120), th().accent] {
             assert!(viz::contrast(ink_on(c), c) >= 3.0, "{c:?}");
         }
     }

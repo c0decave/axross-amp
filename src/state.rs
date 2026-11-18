@@ -174,6 +174,14 @@ pub struct AmpSettings {
     /// "intense" (livelier, still never more than three flashes a second;
     /// chosen only after a photosensitivity warning).
     pub motion: String,
+    /// The window's theme (`theme::THEMES`' key); following the desktop's
+    /// light or dark, the two it pairs; the accent from the cover (made to
+    /// read in the theme) or the theme's own.
+    pub theme: String,
+    pub follow_system: bool,
+    pub light_theme: String,
+    pub dark_theme: String,
+    pub cover_accent: bool,
 }
 
 /// The loudness targets offered: LUFS and what aims at it.
@@ -197,6 +205,11 @@ impl Default for AmpSettings {
             fade_on_skip: false,
             classic_plus: false,
             motion: "calm".into(),
+            theme: "midnight".into(),
+            follow_system: false,
+            light_theme: "paper".into(),
+            dark_theme: "midnight".into(),
+            cover_accent: true,
         }
     }
 }
@@ -259,6 +272,22 @@ pub fn read_amp(path: &Path) -> AmpSettings {
     if let Some(m) = text(&map, "motion").filter(|m| m == "calm" || m == "intense") {
         settings.motion = m;
     }
+    let known = |k: &String| crate::theme::THEMES.iter().any(|t| t.key == k);
+    if let Some(t) = text(&map, "theme").filter(known) {
+        settings.theme = t;
+    }
+    if let Some(t) = text(&map, "light_theme").filter(known) {
+        settings.light_theme = t;
+    }
+    if let Some(t) = text(&map, "dark_theme").filter(known) {
+        settings.dark_theme = t;
+    }
+    if let Some(on) = map.get("follow_system").and_then(Value::as_bool) {
+        settings.follow_system = on;
+    }
+    if let Some(on) = map.get("cover_accent").and_then(Value::as_bool) {
+        settings.cover_accent = on;
+    }
     settings
 }
 
@@ -284,6 +313,11 @@ pub fn write_amp(path: &Path, settings: &AmpSettings) -> std::io::Result<()> {
     map.insert("fade_on_skip".into(), json!(settings.fade_on_skip));
     map.insert("classic_plus".into(), json!(settings.classic_plus));
     map.insert("motion".into(), json!(settings.motion));
+    map.insert("theme".into(), json!(settings.theme));
+    map.insert("follow_system".into(), json!(settings.follow_system));
+    map.insert("light_theme".into(), json!(settings.light_theme));
+    map.insert("dark_theme".into(), json!(settings.dark_theme));
+    map.insert("cover_accent".into(), json!(settings.cover_accent));
     write_object(path, &map)
 }
 
@@ -810,6 +844,11 @@ mod tests {
             fade_on_skip: true,
             classic_plus: true,
             motion: "intense".into(),
+            theme: "sakura".into(),
+            follow_system: true,
+            light_theme: "daylight".into(),
+            dark_theme: "contrast".into(),
+            cover_accent: false,
         };
         write_amp(&path, &settings).unwrap();
         let back = read_amp(&path);
@@ -822,6 +861,17 @@ mod tests {
         let fresh = AmpSettings::default();
         assert!(fresh.waterfall_hd && !fresh.classic_plus && !fresh.fade_on_skip);
         assert_eq!(back.motion, "intense");
+        assert_eq!(
+            (
+                back.theme.as_str(),
+                back.light_theme.as_str(),
+                back.dark_theme.as_str()
+            ),
+            ("sakura", "daylight", "contrast")
+        );
+        assert!(back.follow_system && !back.cover_accent);
+        assert_eq!(fresh.theme, "midnight", "the dark theme by default");
+        assert!(fresh.cover_accent && !fresh.follow_system);
         assert_eq!(fresh.motion, "calm", "calm by default");
         assert!(AmpSettings::default().cover_colours);
         assert_eq!(back.replay_gain, "album");

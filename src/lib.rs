@@ -24,4 +24,5 @@ pub mod saver;
 pub mod state;
 #[cfg(test)]
 pub(crate) mod testdir;
+pub mod theme;
 pub mod viz;
