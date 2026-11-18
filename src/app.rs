@@ -47,6 +47,17 @@ enum Picking {
     SavePlaylist,
 }
 
+/// The pictures shown on a display of their own.
+struct External {
+    monitor: crate::display::Monitor,
+    /// The sound moved there too, and the output it was on before.
+    with_sound: bool,
+    previous_output: Option<String>,
+    /// The track's words over the picture: which track, since when.
+    told: String,
+    told_at: f64,
+}
+
 pub struct App {
     engine: Engine,
     playlist: Playlist,
@@ -66,6 +77,13 @@ pub struct App {
     /// it in the picker.
     theme_shown: (&'static str, Color32, &'static str),
     theme_preview: Option<&'static str>,
+    /// "Show on display": the monitors connected (asked on a thread every
+    /// two seconds where the window belongs to a desktop; set by tests),
+    /// the view open on one, and whether to open it again (where it was
+    /// open when the program ended).
+    monitors: Arc<Mutex<Vec<crate::display::Monitor>>>,
+    external: Option<External>,
+    reopen_display: bool,
     analyzer: Analyzer,
     /// Loudness, beat, notes, key: on their own thread, every sample heard.
     meters: crate::meters::Meters,
@@ -553,6 +571,14 @@ impl App {
             cover_hue: None,
             theme_shown: ("", Color32::TRANSPARENT, ""),
             theme_preview: None,
+            monitors: if setup.desktop {
+                let ctx = cc.egui_ctx.clone();
+                crate::display::watch(move || ctx.request_repaint())
+            } else {
+                Arc::new(Mutex::new(Vec::new()))
+            },
+            external: None,
+            reopen_display: false,
             analyzer: Analyzer::new(),
             meters,
             viz_state,
@@ -679,6 +705,9 @@ impl App {
             });
         }
         app.scanner.scan(&app.playlist.tracks);
+        // (the display view open when it ended: opened there again once
+        // the monitors are known)
+        app.reopen_display = app.amp.display_open;
         if !args.is_empty() {
             app.add(&args, Then::Play);
         } else if saved.current >= 0 {
@@ -1880,6 +1909,31 @@ impl App {
                 self.seek(pos + sign * step);
             }
         }
+        // D: the pictures on the display last chosen (or the first other
+        // than the window's), or back
+        if pressed(Key::D) && !modifiers.any() {
+            if self.external.is_some() {
+                self.close_display(None);
+            } else {
+                let monitors = self.monitors();
+                let chosen = crate::display::find(
+                    &monitors,
+                    &self.amp.display_connector,
+                    &self.amp.display_name,
+                )
+                .or_else(|| monitors.iter().find(|m| !m.primary))
+                .map(|m| m.connector.clone());
+                match chosen {
+                    Some(c) => {
+                        let sound = self.amp.display_sound;
+                        if let Err(why) = self.show_on(&c, sound) {
+                            self.notice = why;
+                        }
+                    }
+                    None => self.notice = "No other display is connected".into(),
+                }
+            }
+        }
         // (15 s back and on: J and L, as video players have them - the
         // arrows already seek 5 s, 30 s with Shift)
         if pressed(Key::J) && !modifiers.any() {
@@ -2087,6 +2141,282 @@ impl App {
         steps as i32
     }
 
+    /// The monitors connected (as last asked).
+    pub fn monitors(&self) -> Vec<crate::display::Monitor> {
+        self.monitors.lock().map(|m| m.clone()).unwrap_or_default()
+    }
+
+    /// The monitors connected, as a test says (a display plugged in or
+    /// out).
+    pub fn set_monitors(&mut self, monitors: Vec<crate::display::Monitor>) {
+        if let Ok(mut m) = self.monitors.lock() {
+            *m = monitors;
+        }
+    }
+
+    /// The screen the flash guard's fields are a third of (tests).
+    pub fn guard_screen(&self) -> Option<egui::Vec2> {
+        self.viz_state.flash.screen_is
+    }
+
+    /// The last message said (the status line's notice; tests).
+    pub fn notice(&self) -> &str {
+        &self.notice
+    }
+
+    /// The display the pictures are shown on (its connector), if any.
+    pub fn display_shown(&self) -> Option<&str> {
+        self.external.as_ref().map(|e| e.monitor.connector.as_str())
+    }
+
+    /// Show the pictures on the monitor at `connector` (with the sound
+    /// too: its HDMI or DisplayPort output, where it has one - else the
+    /// pictures only, and said why). Remembered.
+    pub fn show_on(&mut self, connector: &str, with_sound: bool) -> Result<(), String> {
+        let monitors = self.monitors();
+        let Some(monitor) = monitors.iter().find(|m| m.connector == connector).cloned() else {
+            return Err(format!("{connector} is not connected"));
+        };
+        if self.external.is_some() {
+            self.close_display(None);
+        }
+        let mut external = External {
+            monitor: monitor.clone(),
+            with_sound: false,
+            previous_output: None,
+            told: String::new(),
+            told_at: f64::NEG_INFINITY,
+        };
+        let mut said = format!("Showing the pictures on {}", monitor.label());
+        if with_sound {
+            match self.sound_to(&monitor) {
+                Ok(sink) => {
+                    external.previous_output = Some(self.output_choice.clone());
+                    external.with_sound = true;
+                    self.apply(crate::mixer_ui::PlayerChange::Output(sink));
+                    said.push_str(", with the sound");
+                }
+                Err(why) => said = format!("{said} - the sound stays here: {why}"),
+            }
+        }
+        // (its flash guard sized for that screen: a third of it a field)
+        self.viz_state.flash.screen_is = Some(vec2(
+            monitor.width.max(640) as f32,
+            monitor.height.max(480) as f32,
+        ));
+        self.external = Some(external);
+        self.amp.display_connector = monitor.connector.clone();
+        self.amp.display_name = monitor.name.clone();
+        self.amp.display_sound = with_sound;
+        self.amp.display_open = true;
+        self.amp_dirty = true;
+        self.notice = said;
+        Ok(())
+    }
+
+    /// Close the display view: the pictures back in the window, the sound
+    /// back on the output it was on (`why`: said, as when it was
+    /// unplugged).
+    pub fn close_display(&mut self, why: Option<String>) {
+        let Some(external) = self.external.take() else {
+            return;
+        };
+        if let Some(previous) = external.previous_output {
+            self.apply(crate::mixer_ui::PlayerChange::Output(previous));
+        }
+        self.viz_state.flash.screen_is = None;
+        if why.is_none() {
+            self.amp.display_open = false;
+            self.amp_dirty = true;
+        }
+        self.notice = why.unwrap_or_else(|| "The pictures are back here".into());
+    }
+
+    /// The sound server's output on a monitor (switching its card to the
+    /// HDMI / DisplayPort profile where that makes it); its sink's name.
+    fn sound_to(&mut self, monitor: &crate::display::Monitor) -> Result<String, String> {
+        use crate::display::SoundOn;
+        if !monitor.can_play() {
+            return Err(format!("{} carries no sound", monitor.connector));
+        }
+        let snapshot = crate::mixer::refresh()?;
+        match crate::display::sound_on(monitor, &snapshot) {
+            Some(SoundOn::Sink(name)) => Ok(name),
+            Some(SoundOn::Profile { card, profile }) => {
+                let (args, what) = crate::mixer::Action::Profile {
+                    card,
+                    profile: profile.clone(),
+                }
+                .command()?;
+                let (ok, _, err) = crate::mixer::run(&args)?;
+                if !ok {
+                    return Err(crate::mixer::error_sentence(&what, &err));
+                }
+                // (its sink comes a moment later)
+                for _ in 0..15 {
+                    let snapshot = crate::mixer::refresh()?;
+                    if let Some(SoundOn::Sink(name)) = crate::display::sound_on(monitor, &snapshot)
+                    {
+                        return Ok(name);
+                    }
+                    std::thread::sleep(Duration::from_millis(200));
+                }
+                Err(format!("no output came for {profile}"))
+            }
+            None => Err(format!("no sound output for {}", monitor.connector)),
+        }
+    }
+
+    /// Each frame: the display view's display unplugged (closed, the sound
+    /// back, said) or to be opened again (as it was when the program
+    /// ended).
+    fn follow_displays(&mut self) {
+        let monitors = self.monitors();
+        if let Some(e) = &self.external
+            && !monitors.iter().any(|m| m.connector == e.monitor.connector)
+        {
+            let what = e.monitor.connector.clone();
+            self.close_display(Some(format!(
+                "{what} was disconnected: the pictures are back here"
+            )));
+        }
+        if self.reopen_display && !monitors.is_empty() {
+            self.reopen_display = false;
+            let (connector, name, sound) = (
+                self.amp.display_connector.clone(),
+                self.amp.display_name.clone(),
+                self.amp.display_sound,
+            );
+            if let Some(m) = crate::display::find(&monitors, &connector, &name) {
+                let c = m.connector.clone();
+                let _ = self.show_on(&c, sound);
+            }
+        }
+    }
+
+    /// The menu: the monitors to show the pictures on.
+    fn display_menu(&mut self, ui: &mut Ui) {
+        ui.set_min_width(260.0);
+        let monitors = self.monitors();
+        if monitors.is_empty() {
+            ui.label(RichText::new("No other display is known here").color(th().muted));
+        }
+        let mut sound = self.amp.display_sound;
+        if ui
+            .checkbox(&mut sound, "With the sound (HDMI, DisplayPort)")
+            .changed()
+        {
+            self.amp.display_sound = sound;
+            self.amp_dirty = true;
+        }
+        for m in &monitors {
+            let shown = self.display_shown() == Some(m.connector.as_str());
+            let label = if m.primary {
+                format!("{} - this window's", m.label())
+            } else {
+                m.label()
+            };
+            if ui.radio(shown, label).clicked() && !shown {
+                if let Err(why) = self.show_on(&m.connector, sound) {
+                    self.notice = why;
+                }
+                ui.close();
+            }
+        }
+        if self.external.is_some() {
+            ui.separator();
+            if ui.button("Bring the pictures back (D)").clicked() {
+                self.close_display(None);
+                ui.close();
+            }
+        }
+    }
+
+    /// The display view: the face over the whole of it, the track's words
+    /// for a moment when it changes; Escape closes it, V / Shift+V the
+    /// faces, Space plays and pauses.
+    fn external_view(&mut self, ctx: &egui::Context) {
+        let Some(e) = &self.external else {
+            return;
+        };
+        let monitor = e.monitor.clone();
+        let mut builder = egui::ViewportBuilder::default()
+            .with_title(format!("axross-amp - {}", monitor.connector))
+            .with_decorations(false)
+            .with_fullscreen(true);
+        if let Some((x, y)) = monitor.at {
+            builder = builder.with_position(egui::pos2(x as f32, y as f32));
+        }
+        if monitor.width > 0 {
+            builder = builder.with_inner_size(vec2(monitor.width as f32, monitor.height as f32));
+        }
+        let mut close = false;
+        ctx.show_viewport_immediate(
+            egui::ViewportId::from_hash_of("amp-display"),
+            builder,
+            |ctx, _class| {
+                if ctx.input(|i| i.viewport().close_requested() || i.key_pressed(Key::Escape)) {
+                    close = true;
+                }
+                if ctx.input(|i| i.key_pressed(Key::V)) {
+                    let back = ctx.input(|i| i.modifiers.shift);
+                    self.mode = if back {
+                        viz::previous(self.mode)
+                    } else {
+                        viz::next(self.mode)
+                    };
+                    self.dirty = true;
+                }
+                if ctx.input(|i| i.key_pressed(Key::Space)) {
+                    self.toggle_play();
+                }
+                egui::CentralPanel::default()
+                    .frame(egui::Frame::new().fill(Color32::BLACK))
+                    .show(ctx, |ui| {
+                        let rect = ui.max_rect();
+                        let hover = ui.input(|i| i.pointer.hover_pos());
+                        self.draw_face(ui, rect, hover);
+                        self.track_words(ui, rect);
+                    });
+            },
+        );
+        if close {
+            self.close_display(None);
+        }
+    }
+
+    /// The track's title and artist over the display view's picture, for
+    /// four seconds after it changes, fading in and out over one (calm:
+    /// words, small, no flash).
+    fn track_words(&mut self, ui: &mut Ui, rect: egui::Rect) {
+        let now = ui.input(|i| i.time);
+        let words = self
+            .window_title
+            .strip_prefix("axross-amp – ")
+            .unwrap_or("")
+            .to_owned();
+        let Some(e) = self.external.as_mut() else {
+            return;
+        };
+        if words != e.told {
+            e.told = words.clone();
+            e.told_at = now;
+        }
+        let age = (now - e.told_at) as f32;
+        if words.is_empty() || age > 5.0 {
+            return;
+        }
+        let k = (age.min(5.0 - age)).clamp(0.0, 1.0);
+        ui.painter().text(
+            rect.left_bottom() + vec2(32.0, -32.0),
+            egui::Align2::LEFT_BOTTOM,
+            words,
+            egui::FontId::proportional((rect.height() / 30.0).clamp(16.0, 48.0)),
+            Color32::from_white_alpha((200.0 * k) as u8),
+        );
+        ui.ctx().request_repaint_after(Duration::from_millis(50));
+    }
+
     /// Chooses the window's theme (as the picker does; tests, the gallery).
     pub fn set_theme(&mut self, key: &str) {
         self.amp.theme = crate::theme::find(key).key.to_owned();
@@ -2277,6 +2607,7 @@ impl App {
         // (last: their menus open over nothing of this one but themselves)
         ui.separator();
         ui.horizontal(|ui| {
+            ui.menu_button("Show on display", |ui| self.display_menu(ui));
             ui.menu_button("Theme", |ui| self.theme_menu(ui));
             ui.menu_button("Colours", |ui| self.colours_menu(ui));
             ui.menu_button("Options", |ui| self.options_menu(ui));
@@ -3113,18 +3444,9 @@ impl App {
         self.overview = Some((path, shared, stop));
     }
 
-    fn visual(&mut self, ui: &mut Ui, height: f32) {
-        let (rect, response) =
-            ui.allocate_exact_size(vec2(ui.available_width(), height), Sense::click());
-        // (a screen reader names the picture by its face)
-        let name = viz::name(self.mode);
-        response.widget_info(|| {
-            egui::WidgetInfo::labeled(
-                egui::accesskit::Role::Image,
-                true,
-                format!("Visualization: {name}"),
-            )
-        });
+    /// The face drawn into `rect` (the window's picture, or the display
+    /// view's): the analysis of this frame's sound, then the face.
+    fn draw_face(&mut self, ui: &Ui, rect: egui::Rect, hover: Option<egui::Pos2>) {
         let scheme = self.scheme();
         self.viz_state.waterfall_hd = self.amp.waterfall_hd;
         self.viz_state.classic_plus = self.amp.classic_plus;
@@ -3183,7 +3505,7 @@ impl App {
             overview: overview.as_deref(),
             position: self.engine.shared.position() as f32,
             duration: self.duration.unwrap_or(0.0) as f32,
-            hover: response.hover_pos(),
+            hover,
             opacity: 1.0,
             second: false,
             loudness_target: self.amp.loudness_target,
@@ -3200,6 +3522,40 @@ impl App {
         self.viz_state.gpu.interval = 1.0 / self.fps_cap();
         viz::draw(&frame, self.mode, &mut self.viz_state);
         drop(overview);
+    }
+
+    fn visual(&mut self, ui: &mut Ui, height: f32) {
+        let (rect, response) =
+            ui.allocate_exact_size(vec2(ui.available_width(), height), Sense::click());
+        // (a screen reader names the picture by its face)
+        let name = viz::name(self.mode);
+        response.widget_info(|| {
+            egui::WidgetInfo::labeled(
+                egui::accesskit::Role::Image,
+                true,
+                format!("Visualization: {name}"),
+            )
+        });
+        // (shown on a display of its own: here what is shown where, and a
+        // way to bring it back - the face drawn once, there)
+        if let Some(e) = &self.external {
+            let label = e.monitor.label();
+            let said = format!("Showing on {label}");
+            response.widget_info(|| {
+                egui::WidgetInfo::labeled(egui::accesskit::Role::Image, true, said.clone())
+            });
+            ui.painter().rect_filled(rect, 8.0, th().surface);
+            ui.painter().text(
+                rect.center(),
+                egui::Align2::CENTER_CENTER,
+                format!("Showing on {label}\nD or Escape there brings it back"),
+                egui::FontId::proportional(15.0),
+                th().muted,
+            );
+            return;
+        }
+        let scheme = self.scheme();
+        self.draw_face(ui, rect, response.hover_pos());
         // the face's name, for a moment after it changed (axross's 1.5 s)
         let now = ui.input(|i| i.time);
         if self.label_for != self.mode {
@@ -4334,6 +4690,7 @@ impl eframe::App for App {
         }
         self.gate = self.key_gate(&ctx);
         self.keys(ui);
+        self.follow_displays();
         // dropped files and folders
         let dropped: Vec<String> = ui.input(|i| {
             i.raw
@@ -4455,6 +4812,10 @@ impl eframe::App for App {
                 *written = Instant::now();
                 let _ = std::fs::write(&*path, format!("frames {frames}\n"));
             }
+        }
+        // the pictures on a display of their own
+        if self.external.is_some() {
+            self.external_view(&ctx);
         }
         self.govern();
         let fps = self.fps_cap();

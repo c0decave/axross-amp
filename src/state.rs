@@ -182,6 +182,13 @@ pub struct AmpSettings {
     pub light_theme: String,
     pub dark_theme: String,
     pub cover_accent: bool,
+    /// "Show on display": the display last chosen (its connector, its
+    /// monitor's name), with the sound too or not, and whether the view was
+    /// open when the program ended (it opens there again).
+    pub display_connector: String,
+    pub display_name: String,
+    pub display_sound: bool,
+    pub display_open: bool,
 }
 
 /// The loudness targets offered: LUFS and what aims at it.
@@ -210,6 +217,10 @@ impl Default for AmpSettings {
             light_theme: "paper".into(),
             dark_theme: "midnight".into(),
             cover_accent: true,
+            display_connector: String::new(),
+            display_name: String::new(),
+            display_sound: false,
+            display_open: false,
         }
     }
 }
@@ -288,6 +299,18 @@ pub fn read_amp(path: &Path) -> AmpSettings {
     if let Some(on) = map.get("cover_accent").and_then(Value::as_bool) {
         settings.cover_accent = on;
     }
+    if let Some(v) = text(&map, "display_connector").filter(|v| v.len() < 64) {
+        settings.display_connector = v;
+    }
+    if let Some(v) = text(&map, "display_name").filter(|v| v.len() < 128) {
+        settings.display_name = v;
+    }
+    if let Some(on) = map.get("display_sound").and_then(Value::as_bool) {
+        settings.display_sound = on;
+    }
+    if let Some(on) = map.get("display_open").and_then(Value::as_bool) {
+        settings.display_open = on;
+    }
     settings
 }
 
@@ -318,6 +341,13 @@ pub fn write_amp(path: &Path, settings: &AmpSettings) -> std::io::Result<()> {
     map.insert("light_theme".into(), json!(settings.light_theme));
     map.insert("dark_theme".into(), json!(settings.dark_theme));
     map.insert("cover_accent".into(), json!(settings.cover_accent));
+    map.insert(
+        "display_connector".into(),
+        json!(settings.display_connector),
+    );
+    map.insert("display_name".into(), json!(settings.display_name));
+    map.insert("display_sound".into(), json!(settings.display_sound));
+    map.insert("display_open".into(), json!(settings.display_open));
     write_object(path, &map)
 }
 
@@ -849,6 +879,10 @@ mod tests {
             light_theme: "daylight".into(),
             dark_theme: "contrast".into(),
             cover_accent: false,
+            display_connector: "HDMI-1".into(),
+            display_name: "LG TV".into(),
+            display_sound: true,
+            display_open: true,
         };
         write_amp(&path, &settings).unwrap();
         let back = read_amp(&path);
@@ -870,6 +904,12 @@ mod tests {
             ("sakura", "daylight", "contrast")
         );
         assert!(back.follow_system && !back.cover_accent);
+        assert_eq!(
+            (back.display_connector.as_str(), back.display_name.as_str()),
+            ("HDMI-1", "LG TV")
+        );
+        assert!(back.display_sound && back.display_open);
+        assert!(!fresh.display_open && !fresh.display_sound);
         assert_eq!(fresh.theme, "midnight", "the dark theme by default");
         assert!(fresh.cover_accent && !fresh.follow_system);
         assert_eq!(fresh.motion, "calm", "calm by default");

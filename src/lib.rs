@@ -9,6 +9,7 @@ pub mod bluetooth;
 pub mod bluetooth_ui;
 pub mod cover;
 pub mod desktop_theme;
+pub mod display;
 pub mod engine;
 pub mod eq;
 pub mod fspath;
