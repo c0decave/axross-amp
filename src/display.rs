@@ -256,10 +256,11 @@ pub fn sound_on_among(m: &Monitor, monitors: &[Monitor], s: &Snapshot) -> Option
         .collect();
     // by the monitor's name (ELD = EDID)
     if !m.name.is_empty() {
-        if let Some(sink) = hdmi_sinks
-            .iter()
-            .find(|d| d.monitors.iter().any(|n| same_name(n, &m.name)))
-        {
+        if let Some(sink) = hdmi_sinks.iter().find(|d| {
+            s.displays
+                .iter()
+                .any(|(sink, n)| *sink == d.name && same_name(n, &m.name))
+        }) {
             return Some(SoundOn::Sink(sink.name.clone()));
         }
         for card in &s.cards {
@@ -497,7 +498,7 @@ VGA-1 connected (normal left inverted right x axis y axis)
         assert_eq!(m[0].label(), "HDMI-1 (LG TV) 3840 x 2160");
     }
 
-    fn sink(name: &str, description: &str, monitor: &str) -> Device {
+    fn sink(name: &str, description: &str) -> Device {
         Device {
             kind: Kind::Sink,
             index: 0,
@@ -513,12 +514,15 @@ VGA-1 connected (normal left inverted right x axis y axis)
             card_index: None,
             bus: String::new(),
             form_factor: String::new(),
-            monitors: if monitor.is_empty() {
-                Vec::new()
-            } else {
-                vec![monitor.into()]
-            },
         }
+    }
+
+    /// The (sink, display) pairs of sinks that say whose they are.
+    fn says(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
+        pairs
+            .iter()
+            .map(|(a, b)| ((*a).into(), (*b).into()))
+            .collect()
     }
 
     fn mon(connector: &str, name: &str) -> Monitor {
@@ -554,23 +558,21 @@ VGA-1 connected (normal left inverted right x axis y axis)
         let analog = sink(
             "alsa_output.pci-0000_00_1f.3.analog-stereo",
             "Built-in Audio Analog Stereo",
-            "",
         );
         // two displays, two HDMI outputs, each saying whose it is (ELD)
         let s = Snapshot {
             sinks: vec![
                 analog.clone(),
-                sink(
-                    "alsa_output.pci-0000_01_00.1.hdmi-stereo",
-                    "GA104 HDMI 0",
-                    "DELL U2415",
-                ),
+                sink("alsa_output.pci-0000_01_00.1.hdmi-stereo", "GA104 HDMI 0"),
                 sink(
                     "alsa_output.pci-0000_01_00.1.hdmi-stereo-extra1",
                     "GA104 HDMI 1",
-                    "LG TV",
                 ),
             ],
+            displays: says(&[
+                ("alsa_output.pci-0000_01_00.1.hdmi-stereo", "DELL U2415"),
+                ("alsa_output.pci-0000_01_00.1.hdmi-stereo-extra1", "LG TV"),
+            ]),
             ..Default::default()
         };
         let dell = mon("DP-1", "DELL U2415");
@@ -593,15 +595,10 @@ VGA-1 connected (normal left inverted right x axis y axis)
         let s_nameless = Snapshot {
             sinks: vec![
                 analog.clone(),
-                sink(
-                    "alsa_output.pci-0000_01_00.1.hdmi-stereo",
-                    "GA104 HDMI 0",
-                    "",
-                ),
+                sink("alsa_output.pci-0000_01_00.1.hdmi-stereo", "GA104 HDMI 0"),
                 sink(
                     "alsa_output.pci-0000_01_00.1.hdmi-stereo-extra1",
                     "GA104 HDMI 1",
-                    "",
                 ),
             ],
             ..Default::default()
@@ -622,7 +619,6 @@ VGA-1 connected (normal left inverted right x axis y axis)
                 sink(
                     "alsa_output.pci-0000_00_1f.3.hdmi-stereo",
                     "Built-in Audio Digital Stereo (HDMI)",
-                    "",
                 ),
             ],
             ..Default::default()
@@ -636,7 +632,7 @@ VGA-1 connected (normal left inverted right x axis y axis)
         );
         // a display called "TV" and a Bluetooth soundbar called "TV
         // Soundbar": never the soundbar
-        let mut bar = sink("bluez_output.11_22.1", "TV Soundbar", "");
+        let mut bar = sink("bluez_output.11_22.1", "TV Soundbar");
         bar.bus = "bluetooth".into();
         let tv_short = mon("HDMI-1", "TV");
         let s_bar = Snapshot {

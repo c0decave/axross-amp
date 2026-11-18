@@ -118,7 +118,9 @@ picture is made by `AMP_DEMO_TRACK=… cargo test --test ui -- --ignored`.</sub>
   frame for all faces, and neither that nor most faces allocate in a frame; the
   pictures move alike at any frame rate. In axross's colour schemes (Classic, Fire,
   Ice, Neon, Mono, Follow the theme, Custom - edited here; a saturated red ground is
-  shown darker, as on it whatever moves flashes red), with its options (bars,
+  shown darker and turned from red, as on it whatever moves flashes red, and
+  a custom colour that is saturated red - in linear light or as the screen's
+  values - is taken toward a warm white), with its options (bars,
   smoothing - no less than 75 % -, peak fall - no faster than 100 % a second: at
   their extremes the faces flashed -, frame rate). A click shows the next face (Shift+V the one
   before), a double-click makes it large (its title kept above it, with "Show the
@@ -134,25 +136,45 @@ picture is made by `AMP_DEMO_TRACK=… cargo test --test ui -- --ignored`.</sub>
   controls go on working; where the picture was, it says where it is
   shown: the face is drawn once, there). The monitors are listed with their
   connector (HDMI-1, DP-2, VGA-1), their own name where the system knows it
-  and their mode. *With the sound*: the sound moves to that display's HDMI
-  or DisplayPort output (its sink, matched by the monitor's name or the
-  output's number - HDMI-1 `hdmi-stereo`, HDMI-2 `hdmi-stereo-extra1` - or
-  the card switched to that profile) and back to where it was when the view
-  closes; VGA and DVI carry no sound, and it says so. In the view: Escape
-  closes it, V / Shift+V change the face, Space plays and pauses, and the
-  track's title shows for a few seconds when it changes, fading in and out.
-  A display unplugged closes its view (the sound back, said); one plugged
-  in is offered. The view opens again on the next start, on the same
-  display (by its connector, else its name). Its flash guard is sized for
-  that screen - a TV's fields are a third of the TV - and Calm or Intense
-  hold there as here. Limits: the monitors are asked of `xrandr` (X11) or
-  the kernel's DRM connectors (`/sys/class/drm`, Wayland): on Wayland a
-  program cannot place its window on an output - the compositor decides
-  where the full-screen view goes; macOS and Windows list no monitors here.
-  The second window itself has been checked only on X11 by hand-made
-  monitor lists in the tests (`tests/display.rs`: the menu, the sound to an
-  HDMI sink of axross's fake pactl and back, unplugging, opening again, the
-  guard's size), not on a real second screen.
+  (EDID) and their mode. *With the sound*: the sound moves to that display's
+  HDMI or DisplayPort output - the sink (or the card's port, switching the
+  card to its profile) whose display name (the ELD the display sends:
+  `device.product.name`, a port's name in brackets) is the monitor's own
+  name, the same name and never a part of one (a display called "TV" is not
+  a "TV Soundbar"), never a Bluetooth sink; without names only where it
+  cannot be mistaken: the one HDMI output for the one display that carries
+  sound. Otherwise it says it cannot tell which output plays there (choose
+  it in the Mixer tab): a connector's number is no guide - DP-1 and HDMI-1
+  are both a card's first HDMI output, as NVIDIA's HDMI-0 and DP-0 are.
+  pactl and the wait for a switched card's output run on a thread of their
+  own (the window is never held). When the view closes the sound goes back
+  where it was - the output and the card's profile (on Intel HDA one card
+  is analog *or* HDMI: left on HDMI, the analog output was gone for every
+  program); a switch whose output does not come is undone at once. What it
+  was is kept in axross-amp's own file before anything moves it, so it is
+  put back also after a restart (the view opened again does not take the
+  display's output for "before"), after a crash, or when the remembered
+  display is gone. VGA and DVI carry no sound, and it says so. In the view:
+  Escape closes it, V / Shift+V change the face, Space plays and pauses, and
+  the track's title shows for a few seconds when it changes, fading in and
+  out. A display unplugged closes its view (the sound back, said); one
+  plugged in is offered. The view opens again on the next start, on the
+  same display (by its connector, else its name). Its flash guard is given
+  that screen in points, as the faces are drawn (its pixels over the
+  desktop's scale - on a 2 x desktop not four times too large a field), and
+  Calm or Intense hold there as here. Limits: the monitors are asked of
+  `xrandr --current` on X11 (only while the menu is open, the view shown or
+  about to open again, and on D - no prober running all session) and of the
+  kernel's DRM connectors (`/sys/class/drm`) under Wayland (XWayland's
+  XWAYLAND0, XWAYLAND1 are never taken for displays); on Wayland a program
+  cannot place its window on an output - the compositor decides where the
+  full-screen view goes; the desktop's scale is taken as this window's
+  (one scale for all displays); macOS and Windows list no monitors here.
+  The second window itself has been checked only by hand-made monitor
+  lists in the tests (`tests/display.rs`: the menu, the sound to an HDMI
+  sink of axross's fake pactl and back, a card switched to HDMI and back,
+  a switch that fails, the sound back after a restart, unplugging, opening
+  again, the guard's size at 1 x and 2 x), not on a real second screen.
 - **Themes** for the window (⚙ → Theme), twelve, each a set of design tokens
   (grounds, cards, text, secondary text, the accent with its hover and pressed
   shades, borders, the focus ring, good / warning / error, a slider's rail,
@@ -163,8 +185,10 @@ picture is made by `AMP_DEMO_TRACK=… cargo test --test ui -- --ignored`.</sub>
   contrast* (black and white, yellow for what is chosen, a 3 px focus ring, 7 : 1
   text). The pointer on one in the menu shows it at once; a click keeps it (in
   axross-amp's own file). Optionally the desktop's light or dark decides (on Linux
-  asked of the XDG desktop portal, else GNOME's `color-scheme`, else GTK's setting;
-  winit says nothing there), between
+  asked of the XDG desktop portal, else GNOME's `color-scheme` - its "Default"
+  is light, unless the GTK theme is a dark one - else GTK's setting; winit says
+  nothing there; watched only while followed, on one D-Bus connection woken by
+  the portal's SettingChanged), between
   a light and a dark theme of one's choice. The accent comes from the cover (made
   to read in the theme: lightened or darkened until it does) or is the theme's
   own. A test checks every theme's text, secondary, disabled and selected text,
@@ -174,51 +198,67 @@ picture is made by `AMP_DEMO_TRACK=… cargo test --test ui -- --ignored`.</sub>
   colour schemes (a theme only suggests one) and so every limit on flashes.
   Switching costs one frame; nothing a frame.
 - **Designs** for the window (⚙ → Design), ten, apart from the themes (any
-  design in any theme): how panels, buttons, type and room are drawn, made of
-  tokens (corners, stroke, shadow, padding, spacing, type sizes, monospace or
-  not) and a few painters. *Modern* (the default: soft cards), *Minimal / Zen*
-  (no panels, a column 720 points wide, the row of buttons quiet - no fills or
-  frames, their symbols at full contrast - until the pointer or the keys come to
-  it), *Hi-fi rack* (brushed metal with screws, a segment readout of the track
-  and time, two VU needles, the volume as a knob: drag, wheel or arrow keys),
-  *90s desktop* (bevelled panels, a sunken picture, monospace), *Cassette deck*
-  (the readout, two reels turning a quarter turn a second while it plays and
-  standing still where the desktop asks for less motion, the transport as
-  square piano keys, the play key pressed in), *Terminal* (monospace, boxes
-  with corner marks, the position as `[####------]`), *Brutalist* (3 px black
-  strokes, hard offset shadows, a 34 pt title), *Glass* (frosted panels over a
-  haze of the cover's colours), *Soft* (neumorphic: panels pressed out of the
-  ground, the picture pressed in) and *Collage* (paper sheets turned a little,
-  tape, the title in capitals, the artist in typewriter italics). The pointer
-  on one in the menu shows its panels and colours at once (its type and room
-  once chosen, so the menu's rows stay under the pointer); a click keeps it, in
-  axross-amp's own file; the menu works by the keys alone. Every design keeps
-  every control and the playlist: a test (`tests/designs.rs`) finds each control
-  of the window - files, folder, URL, ⚙, the position, previous, 15 s back and
-  on, play, stop, next, shuffle, repeat, volume, mute, ⋯, the equalizer, save,
-  clear, the filter, sort, the playlist's first row - in every design at
-  420 x 420, 620 x 860 and 1400 x 900, inside the window, none over another, each
-  at least 24 x 24 points (WCAG 2.2's target size; a slider 18 high along its
-  length), and clicks each where it is drawn (play, pause, the 15 s buttons,
-  next, previous, shuffle, repeat, the volume by its arrow keys, mute, stop, a
-  double-click on the playlist's row, the two menus). A low window shrinks the
-  picture to a strip before the playlist loses its rows. Text keeps 4.5 : 1
-  (7 : 1 in high contrast) on every design's card and playlist panel in every
-  theme over 24 cover hues, and on the glass haze (each of its colours taken
-  toward the ground until every word and the accent reads as on the ground).
-  What moves (the reels, the needles - which follow the sound with the
-  picture off too, 15 frames a second - the readout) was put through the
-  flash meter with the picture off and the loudest test music, once with the
-  window as the screen and once with the card alone as the whole screen (the
-  strictest): 0 by every reading - transitions, the strict reading, the
-  either-way area, red - and no stripes, in Zen, the rack, the 90s desktop and
-  the cassette deck. Zen's quiet buttons change only when the pointer comes
-  (no fading animation). A design's own drawing - its panels, the picture's
-  frame, the readout, the reels, the needles, tessellated - takes 0.003 to
-  0.06 ms a frame at 1920 x 1080 (`tests/frame_cost.rs`; the limit 1 ms) and
-  allocates nothing for its size: 0 to 32 small allocations a frame (egui's
-  meshes and text), the same in a 420 x 420 and a 1400 x 900 window
-  (`tests/frame_alloc.rs`). The glass haze is made once a cover and theme.
+  design in any theme). Each is a layout of its own over the same player -
+  where the parts go, in what sizes, drawn how (`src/app_layouts.rs`, the
+  painters in `src/design.rs`):
+  *Modern* (the default: a card of what plays, the picture large, the
+  controls, the playlist); *Minimal / Zen* (one column 720 points wide, its
+  bars too; the cover large in the middle, the picture a quiet band, the keys
+  without fills or frames); *Hi-fi rack* (units one above the other, brushed
+  and screwed: a display unit with a fluorescent readout and the picture as
+  its scope, an amplifier with two VU meters, the volume knob and the
+  switches, a transport with metal keys named under their symbols, a changer
+  holding the playlist); *90s desktop* (a compact main strip - a title bar,
+  the time in an LCD well, a small spectrum, a slowly scrolling title, tiny
+  bevelled keys - with the playlist as a panel of its own under it; in a wide
+  window docked at the strip's right, the picture in a window under the
+  strip; everything monospace); *Cassette deck* (the cassette with its label,
+  the picture in its window behind two large reels winding from one to the
+  other with the track and turning a quarter turn a second while it plays,
+  a mechanical tape counter, level meters, piano keys with their names, the
+  playlist on the cassette's card insert); *Terminal* (boxes drawn with lines
+  and named in their edges, every text monospace, `[ PLAY ]` keys, the
+  position and the volume as bars of characters - sliders to the keys and
+  the pointer - no rounded corner anywhere); *Brutalist* (an asymmetric hard
+  grid: the title huge, the cover square in a 3 px frame, the keys heavy
+  blocks with their names, the picture a band across, no corners or
+  shadows); *Glass* (light behind frosted, translucent panes, over a haze of
+  the cover's colours); *Soft* (neumorphic: panels and keys pressed out of
+  the ground, the picture pressed in); *Collage* (a turned photo of the
+  cover, the title cut letter by letter from other pages in mixed type, a
+  sticker, the picture on a torn sheet, the keys on paper scraps along a
+  strip of tape, the playlist on a ruled page - turned shapes anti-aliased,
+  never over a control). The pointer on one in the menu shows its panels and
+  colours at once (its type and room once chosen, so the menu's rows stay
+  under the pointer); a click keeps it, in axross-amp's own file; the menu
+  works by the keys alone. A test (`tests/designs.rs`) checks every design
+  at 420 x 420, 800 x 600 and 1920 x 1080: each control of the window -
+  files, folder, URL, ⚙, the position, previous, 15 s back and on, play,
+  stop, next, shuffle, repeat, volume, mute, ⋯, the equalizer, save, clear,
+  the filter, sort, the playlist's first row - inside the window, none over
+  another, each at least 24 x 24 points (WCAG 2.2's target size; a slider
+  18 high along its length), and clicked where it is drawn (play, pause,
+  the 15 s keys, next, previous, shuffle, repeat, the volume by its arrow
+  keys, mute, stop, a double-click on the playlist's row, the two menus);
+  and that Tab goes through the controls in the order they are seen (row
+  by row, left to right; a column after the one at its left). A low window
+  gives the playlist its rows first: the picture shrinks to a strip, the
+  rack's amplifier and transport share a unit, the keys share a row. Text
+  keeps 4.5 : 1 (7 : 1 in high contrast) on every design's card and on what
+  its playlist lies on (the changer, the 90s panel, the card insert, the
+  ruled page) in every theme over 24 cover hues, and on the glass haze and
+  light (each of their colours taken toward the ground until every word and
+  the accent reads as on the ground). What moves (the reels, the needles -
+  which follow the sound with the picture off too, 15 frames a second - the
+  counter, the marquee) was put through the flash meter with the picture off
+  and the loudest test music, the window and its upper part each taken as
+  the whole screen: 0 by every reading - transitions, the strict reading,
+  the either-way area, red - and no stripes. A design's own drawing - its
+  panels, the picture's frame, the readouts, the reels, the needles,
+  tessellated - takes 0.003 to 0.06 ms a frame at 1920 x 1080
+  (`tests/frame_cost.rs`; the limit 1 ms) and allocates nothing for its
+  size: 0 to 32 small allocations a frame (egui's meshes and text), the same
+  in a 420 x 420 and a 1400 x 900 window (`tests/frame_alloc.rs`).
 - **The window**: wider than 1240 points the player is a centred column
   1180 wide (Zen: 720). Text on the cover's colour (the chosen row, the buttons) is light
   or dark, whichever reads at 4.5 : 1 or more (WCAG 1.4.3) - tested over 144
@@ -288,10 +328,10 @@ renders each in the window's other states into a contact sheet).</sub>
 
 ![The designs](docs/designs.png)
 
-<sub>Every design, playing, each in the theme it suggests (`cargo test --test
-designs -- --ignored`; each also in `target/screenshots/designs/`). Top:
-Modern, Zen, Hi-fi rack, 90s desktop, Cassette deck; below: Terminal,
-Brutalist, Glass, Soft, Collage.</sub>
+<sub>Every design, playing, at 1280 x 800, each in the theme it suggests (`cargo
+test --test designs -- --ignored`; each also in `target/screenshots/designs/`).
+Two a row: Modern, Zen; Hi-fi rack, 90s desktop; Cassette deck, Terminal;
+Brutalist, Glass; Soft, Collage.</sub>
 
 ## Photosensitivity
 
@@ -385,7 +425,10 @@ What axross-amp does about it:
   (GNOME, KDE, GTK's settings, macOS, Windows) it cannot be chosen and the
   pictures are calmer still.
 - **Measured.** `tests/support/flashmeter.rs` measures rendered frames:
-  per pixel (relative luminance; saturated red with R, G and B linear),
+  per pixel (relative luminance; saturated red with R, G and B linear -
+  and, as a fourth reading, saturated red from the gamma-encoded values as
+  sent to the screen, the way a review found a red ground darkened to
+  #330000 still red: 64 by it, 10 linear),
   any field a third of the picture each way (the picture taken as the
   whole screen: the strictest case), both readings above; regular stripes
   (five light-dark pairs or more, full periods alike, uneven gratings too)
@@ -480,11 +523,19 @@ Keys (on the Player tab, not while typing in a field):
 | Enter, Delete | play the chosen track; remove it |
 | Ctrl+Z | undo the playlist's last change |
 
+A focused control keeps its own keys: with the volume (its slider, the
+rack's knob, the terminal's bar) or the position focused, the arrows move
+it alone - no seek, no second volume step; Space and Enter press the focused
+button.
+
 The buttons beside play wind 15 s back and on (their tooltips name J and L):
 from 0:00 at the least; past a track's end on to the next, as at its end (the
-last one stops); paused, it stays paused; the time and the slider show the new
-place at once; greyed where there is nothing to wind (no track opened, a radio
-stream). MPRIS's Seek does the same for the desktop's own buttons.
+last one stops); paused, it stays paused - past the end too, the next track
+waiting paused; the time and the slider show the new place at once; greyed
+where there is nothing to wind (no track opened, a radio stream). MPRIS's Seek
+does the same for the desktop's own buttons, two quick ones adding up (each
+from where the last asked, not from what is heard yet); its Next and Previous
+leave a paused player paused, as MPRIS asks.
 
 ![The row of buttons](docs/transport.png)
 

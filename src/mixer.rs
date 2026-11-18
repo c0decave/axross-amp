@@ -80,10 +80,6 @@ pub struct Device {
     pub card_index: Option<u32>,
     pub bus: String,
     pub form_factor: String,
-    /// The display it plays on, as the display says (its ELD: an HDMI /
-    /// DisplayPort sink's `device.product.name`, a port's name for it in
-    /// brackets); empty for the others.
-    pub monitors: Vec<String>,
 }
 
 impl Device {
@@ -202,6 +198,10 @@ pub struct Snapshot {
     pub cards: Vec<Card>,
     pub default_sink: String,
     pub default_source: String,
+    /// The displays the sinks play on, as the displays say (their ELD: an
+    /// HDMI / DisplayPort sink's `device.product.name`, a port's name for
+    /// it in brackets): (the sink's name, the display's name).
+    pub displays: Vec<(String, String)>,
 }
 
 // -- parsing pactl -f json ----------------------------------------------------------------------
@@ -347,7 +347,6 @@ pub fn parse_devices(raw: &str, kind: Kind, default: &str) -> Result<Vec<Device>
                 card_index: None,
                 bus: prop(e, "device.bus"),
                 form_factor: prop(e, "device.form_factor"),
-                monitors: monitor_names(e),
                 name,
             })
         })
@@ -523,7 +522,15 @@ pub fn build_snapshot(
         }
         Ok(devices)
     };
+    let displays = list(get("sinks"), "sinks")?
+        .iter()
+        .flat_map(|v| {
+            let name = text(v, "name");
+            monitor_names(v).into_iter().map(move |m| (name.clone(), m))
+        })
+        .collect();
     Ok(Snapshot {
+        displays,
         sinks: link(get("sinks"), Kind::Sink, &default_sink)?,
         sources: link(get("sources"), Kind::Source, &default_source)?,
         sink_inputs: parse_streams(get("sink-inputs"), Kind::SinkInput)?,
@@ -1172,6 +1179,43 @@ pub fn wants_refresh(line: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn the_displays_a_sink_or_a_port_plays_on_are_read() {
+        let sinks = r#"[
+            {"index": 70, "name": "alsa_output.hdmi-stereo", "description": "HDMI",
+             "properties": {"device.product.name": "DELL U2415"}},
+            {"index": 71, "name": "alsa_output.hdmi-stereo-extra1", "description": "HDMI 2",
+             "ports": [{"name": "hdmi-output-1", "description": "HDMI / DisplayPort 2 (LG TV)"}]},
+            {"index": 72, "name": "alsa_output.analog-stereo", "description": "Analog"}
+        ]"#;
+        let cards = r#"[
+            {"index": 1, "name": "alsa_card.pci", "properties": {},
+             "profiles": {"output:hdmi-stereo-extra2": {"description": "HDMI 3", "available": true}},
+             "active_profile": "output:analog-stereo",
+             "ports": {"hdmi-output-2": {"description": "HDMI 3", "properties": {"device.product.name": "Beamer"},
+                       "profiles": ["output:hdmi-stereo-extra2"]}}}
+        ]"#;
+        let mut outputs = std::collections::HashMap::new();
+        outputs.insert("sinks", sinks.to_owned());
+        outputs.insert("cards", cards.to_owned());
+        let s = build_snapshot(&outputs).unwrap();
+        assert_eq!(
+            s.displays,
+            vec![
+                (
+                    "alsa_output.hdmi-stereo".to_owned(),
+                    "DELL U2415".to_owned()
+                ),
+                (
+                    "alsa_output.hdmi-stereo-extra1".to_owned(),
+                    "LG TV".to_owned()
+                ),
+            ]
+        );
+        assert_eq!(s.cards[0].ports[0].monitor, "Beamer");
+        assert_eq!(s.cards[0].ports[0].profiles, ["output:hdmi-stereo-extra2"]);
+    }
     use super::*;
 
     #[test]
