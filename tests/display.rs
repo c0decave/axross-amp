@@ -226,6 +226,7 @@ fn the_sound_goes_to_the_display_and_comes_back() {
     );
 }
 
+#[cfg(unix)]
 /// axross's fake pactl in `dir`, as Intel HDA has it: one card, analog OR
 /// HDMI - its HDMI profile available, no HDMI sink until the card is
 /// switched to it (`swaps`: the switch makes the HDMI sink, as on a real
@@ -301,12 +302,14 @@ fn hda_card(dir: &Path, swaps: bool) -> Option<PathBuf> {
 }
 
 /// The card's profile now, as the fake has it.
+#[cfg(unix)]
 fn card_profile(state: &Path) -> String {
     let text = std::fs::read_to_string(state).unwrap();
     let v: serde_json::Value = serde_json::from_str(&text).unwrap();
     v["cards"][0]["active_profile"].as_str().unwrap().to_owned()
 }
 
+#[cfg(unix)]
 fn hdmi_only() -> Vec<Monitor> {
     vec![
         Monitor {
@@ -328,6 +331,7 @@ fn hdmi_only() -> Vec<Monitor> {
 }
 
 /// Waits (the sound is moved on a thread of its own) until `done`.
+#[allow(dead_code)]
 fn wait_for(h: &mut Harness<'static, App>, done: impl Fn(&App) -> bool) -> bool {
     // (a card switched and its output waited for: 3 s and the fake
     // pactl's own time, longer on a busy machine)
@@ -350,6 +354,7 @@ static PACTL: std::sync::Mutex<()> = std::sync::Mutex::new(());
 /// the output - else the analog output is gone for every program. And the
 /// window is never held while pactl works.
 #[test]
+#[cfg(unix)]
 fn the_cards_profile_comes_back_with_the_sound() {
     let _one = PACTL.lock().unwrap_or_else(|e| e.into_inner());
     let dir = Scratch::new("display-profile");
@@ -384,6 +389,7 @@ fn the_cards_profile_comes_back_with_the_sound() {
 /// The card switched, but no HDMI output came: the profile is put back at
 /// once (not left on HDMI with no sound anywhere), and it is said.
 #[test]
+#[cfg(unix)]
 fn a_failed_switch_puts_the_profile_back() {
     let _one = PACTL.lock().unwrap_or_else(|e| e.into_inner());
     let dir = Scratch::new("display-profile-fail");
@@ -412,6 +418,7 @@ fn a_failed_switch_puts_the_profile_back() {
 /// next start - and closed, the sound and the card are back where they were
 /// before the view, not on HDMI for good.
 #[test]
+#[cfg(unix)]
 fn the_sound_comes_back_after_a_restart() {
     let _one = PACTL.lock().unwrap_or_else(|e| e.into_inner());
     let dir = Scratch::new("display-restart");
