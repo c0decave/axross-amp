@@ -136,6 +136,9 @@ pub struct App {
     /// The desktop's light or dark, asked (winit says nothing on Linux);
     /// None where the window does not belong to a desktop (tests).
     desktop_shade: Option<crate::desktop_theme::Shade>,
+    /// Where the desktop's shade is asked (Some(None): the session bus;
+    /// None: not at all - no desktop).
+    shade_bus: Option<Option<String>>,
     /// The height of what lies between the picture and the playlist (the
     /// position, the transport, the switch), as last laid out.
     controls_height: f32,
@@ -626,12 +629,9 @@ impl App {
             big_list: false,
             intense_asked: false,
             reduced_motion: desktop_reduced_motion(),
-            desktop_shade: setup.desktop.then(|| {
-                let ctx = cc.egui_ctx.clone();
-                crate::desktop_theme::watch(setup.desktop_bus.clone(), move || {
-                    ctx.request_repaint()
-                })
-            }),
+            // (watched only while followed: see update_theme)
+            desktop_shade: None,
+            shade_bus: setup.desktop.then(|| setup.desktop_bus.clone()),
             controls_height: 110.0,
             overview: None,
             pending_click: None,
@@ -2499,6 +2499,19 @@ impl App {
     /// with the cover's accent made to read in it; set on the window only
     /// when it changes.
     fn update_theme(&mut self, ctx: &egui::Context) {
+        // the desktop watched while followed, else let go (its thread ends)
+        if self.amp.follow_system {
+            if self.desktop_shade.is_none()
+                && let Some(bus) = &self.shade_bus
+            {
+                let wake = ctx.clone();
+                self.desktop_shade = Some(crate::desktop_theme::watch(bus.clone(), move || {
+                    wake.request_repaint()
+                }));
+            }
+        } else {
+            self.desktop_shade = None;
+        }
         let chosen = if self.amp.follow_system {
             // (the desktop asked first - on Linux winit knows nothing -
             // then winit's word, else dark)
