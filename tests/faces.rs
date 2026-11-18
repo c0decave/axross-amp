@@ -458,7 +458,7 @@ fn a_new_face_fades_in_over_the_one_before() {
         faces::frame(&mut h);
     }
     let before = mean(&h.render().unwrap());
-    h.state_mut().key = "plasma";
+    h.state_mut().key = "julia";
     faces::frame(&mut h);
     assert_eq!(
         viz::fading(&h.state().state),
@@ -483,10 +483,25 @@ fn a_new_face_fades_in_over_the_one_before() {
     // (give or take the faces' own motion over the frames between), and
     // the whole of it neither the one nor the other
     let far = |a: [f32; 3], b: [f32; 3]| (0..3).map(|c| (a[c] - b[c]).abs()).sum::<f32>();
+    // (how much the new face moves by itself over those frames: alone, the
+    // same frames into it)
+    let mut alone = faces::harness("julia", vec2(320.0, 180.0), true, 4.0);
+    for _ in 0..39 {
+        faces::frame(&mut alone);
+    }
+    let then = mean(&alone.render().unwrap());
+    for _ in 0..12 {
+        faces::frame(&mut alone);
+    }
+    let later = mean(&alone.render().unwrap());
     for c in 0..3 {
-        let (lo, hi) = (before[c].min(after[c]), before[c].max(after[c]));
+        let drift = (then[c] - later[c]).abs();
+        let (lo, hi) = (
+            before[c].min(after[c]).min(then[c]),
+            before[c].max(after[c]).max(then[c]),
+        );
         assert!(
-            during[c] > lo - 4.0 && during[c] < hi + 4.0,
+            during[c] > lo - 4.0 - drift && during[c] < hi + 4.0 + drift,
             "channel {c}: {before:?} -> {during:?} -> {after:?}"
         );
     }

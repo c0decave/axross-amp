@@ -878,13 +878,20 @@ impl FlashGuard {
                 mean: vec![[0.0; 3]; n],
                 marked: vec![false; n],
                 past: Default::default(),
+                spare: Vec::new(),
+                sums: Vec::new(),
+                contrast: Vec::new(),
+                wide: Vec::new(),
+                src: Vec::new(),
             };
         }
-        let y: Vec<f32> = self
-            .raw
-            .iter()
-            .map(|c| 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2])
-            .collect();
+        let mut y = p.spare.pop().unwrap_or_default();
+        y.clear();
+        y.extend(
+            self.raw
+                .iter()
+                .map(|c| 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]),
+        );
         p.marked.iter_mut().for_each(|m| *m = false);
         let share = stripes(&y, cols, rows, &mut p.marked);
         let moving = share > 0.0
@@ -901,16 +908,22 @@ impl FlashGuard {
         p.past.push_back(y);
         let keep = ((0.1 / dt.max(1e-3)).round() as usize).max(1);
         while p.past.len() > keep {
-            p.past.pop_front();
+            if let Some(old) = p.past.pop_front() {
+                p.spare.push(old);
+            }
         }
         let hazard = share >= 0.35 || (share >= 0.25 && moving);
         // (the marks spread over a few cells: the stripes' runs end at
         // their turns, and what lies between two runs is the pattern too)
         if hazard {
             let reach = 6usize;
-            let mut wide = p.marked.clone();
+            let mut wide = std::mem::take(&mut p.wide);
+            wide.clear();
+            wide.extend_from_slice(&p.marked);
+            let mut src = std::mem::take(&mut p.src);
             for _ in 0..2 {
-                let src = wide.clone();
+                src.clear();
+                src.extend_from_slice(&wide);
                 for cy in 0..rows {
                     for cx in 0..cols {
                         if src[cy * cols + cx] {
@@ -924,14 +937,17 @@ impl FlashGuard {
                     }
                 }
             }
-            p.marked = wide;
+            p.wide = std::mem::replace(&mut p.marked, wide);
+            p.src = src;
         }
         // the mean of each cell's neighbourhood (21 x 21 cells: wider than
         // the stripes' period, so that it is even), and how far its light
         // and dark lie apart (5 x 5)
         const R: usize = 10;
         let stride = cols + 1;
-        let mut sums = vec![[0.0f32; 3]; stride * (rows + 1)];
+        let mut sums = std::mem::take(&mut p.sums);
+        sums.clear();
+        sums.resize(stride * (rows + 1), [0.0f32; 3]);
         for cy in 0..rows {
             let mut row = [0.0f32; 3];
             for cx in 0..cols {
@@ -942,8 +958,10 @@ impl FlashGuard {
                 }
             }
         }
-        let y_now = p.past.back().cloned().unwrap_or_default();
-        let mut contrast = vec![0.0f32; n];
+        let y_now = p.past.back().map(Vec::as_slice).unwrap_or_default();
+        let mut contrast = std::mem::take(&mut p.contrast);
+        contrast.clear();
+        contrast.resize(n, 0.0);
         for cy in 0..rows {
             for cx in 0..cols {
                 let (x0, y0) = (cx.saturating_sub(R), cy.saturating_sub(R));
@@ -986,6 +1004,8 @@ impl FlashGuard {
             most = most.max(p.soft[i]);
         }
         self.pattern_strength = most;
+        p.sums = sums;
+        p.contrast = contrast;
     }
 
     /// The most transitions in a field's last second, raw and shown
@@ -1113,6 +1133,13 @@ struct Pattern {
     mean: Vec<[f32; 3]>,
     marked: Vec<bool>,
     past: std::collections::VecDeque<Vec<f32>>,
+    /// Kept from frame to frame (no allocation a frame): the pictures let
+    /// go of, the sums, the contrast, the marks spread.
+    spare: Vec<Vec<f32>>,
+    sums: Vec<[f32; 3]>,
+    contrast: Vec<f32>,
+    wide: Vec<bool>,
+    src: Vec<bool>,
 }
 
 /// The share of the cells lying in regular stripes (rows and columns),
@@ -1245,9 +1272,10 @@ fn lay_mesh(
     // (the clip takes in the whole picture: no cell need be asked)
     let clip_all = clip.contains_rect(rect);
     // (a mesh of tens of thousands of small pieces - the spirograph's
-    // thousands of segments - spread over the cells around it one piece in
-    // so many, the others each to its own cell: the frame costs about what
-    // 20,000 pieces spread do)
+    // thousands of segments - laid one piece in so many, each counted so
+    // many times: dense lines are evenly covered either way, and the frame
+    // costs what one of 20,000 pieces does; pieces over two cells are
+    // each laid over their box, as they lie)
     let stride = (mesh.indices.len() / 3 / 20_000).max(1);
     for (index, tri) in mesh.indices.as_chunks::<3>().0.iter().enumerate() {
         let sampled = stride > 1 && index % stride != 0;
@@ -1404,11 +1432,6 @@ fn lay_mesh(
         if thumb.is_none() && x1 - x0 <= 3 && y1 - y0 <= 3 {
             let centroid = Pos2::new((p0.x + p1.x + p2.x) / 3.0, (p0.y + p1.y + p2.y) / 3.0);
             let k = SPREAD * area.abs() / (cw * ch);
-            // (in a mesh of very many, the others to their own cell, each
-            // as much as it covers: laid one in so many, each so many times
-            // over, the particles' bands behind their dots lay as bright
-            // rows with dark ones between - a grating the guard then
-            // blurred over the whole face)
             let (bw, bh) = ((max.x - min.x).max(1e-3), (max.y - min.y).max(1e-3));
             if (x1 - x0 >= 2 || y1 - y0 >= 2) && area.abs() >= bw * bh * 0.3 {
                 // (over three cells or four, filling its box - a rectangle's
@@ -1428,11 +1451,10 @@ fn lay_mesh(
                         }
                     }
                 }
-            } else if sampled {
-                let (cx, cy) = cell_of(centroid);
-                blend(acc, cx, cy, k);
-            } else {
-                splat(acc, centroid, k);
+            } else if !sampled {
+                // (in a mesh of very many, one in so many, so many times
+                // over: spread round its centre, they are even enough)
+                splat(acc, centroid, k * stride as f32);
             }
             continue;
         }

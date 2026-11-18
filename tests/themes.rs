@@ -10,6 +10,7 @@
 #[path = "support/player.rs"]
 mod player;
 
+#[cfg(target_os = "linux")]
 #[path = "support/bluez.rs"]
 mod bluez;
 
@@ -196,8 +197,15 @@ fn right_click(h: &mut Harness<'static, App>, at: Pos2) {
     settle(h, 2);
 }
 
+/// Elsewhere than on Linux: no BlueZ, no fakes.
+#[cfg(not(target_os = "linux"))]
+fn fakes(_dir: &Path) -> Option<()> {
+    None
+}
+
 /// The fake sound server and BlueZ, when axross's fakes are given: the
 /// Mixer and Bluetooth tabs have something to show.
+#[cfg(target_os = "linux")]
 fn fakes(dir: &Path) -> Option<bluez::Bus> {
     let pactl = std::env::var_os("AMP_FAKE_PACTL").map(PathBuf::from)?;
     let mut bus = bluez::Bus::start()?;

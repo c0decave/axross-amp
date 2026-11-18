@@ -1267,7 +1267,10 @@ pub fn draw(f: &Frame<'_>, key: &str, state: &mut VizState) {
         state.fading = None;
     }
     if let Some((old, t)) = state.fading {
-        one(f, old, state, 1.0 - t, true);
+        // (the old one whole, the new one over it ever more: a blend of
+        // the two - the old one fading as well let the ground through, a
+        // dip to dark halfway)
+        one(f, old, state, 1.0, true);
         one(f, face.key, state, t, false);
         // (at the frame rate's cap, as the faces themselves)
         f.painter
