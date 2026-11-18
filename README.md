@@ -63,7 +63,8 @@ picture is made by `AMP_DEMO_TRACK=… cargo test --test ui -- --ignored`.</sub>
   as a short playlist leaves room for - and below it the playlist (two lines a track,
   the playing one with its cover and bars that move with the sound) or the equalizer
   (a dB scale, each band filled from its 0 dB line). The card's cover is 120 to 200
-  px as the window allows; the cover (kept up to 1024 px) is made the size it is
+  px as the window allows (wider than 900 points, a hero of up to 320 px on a
+  soft shadow, what comes next beside it); the cover (kept up to 1024 px) is made the size it is
   shown at, in pixels, on a thread of its own by a Lanczos filter and cropped to a
   square (egui's renderer makes no mipmaps: made smaller by the GPU it aliased).
   The "Cover" face makes the cover the picture, glowing with the bass (without a
@@ -97,8 +98,9 @@ picture is made by `AMP_DEMO_TRACK=… cargo test --test ui -- --ignored`.</sub>
   - *Generative* - the cover, liquid (domain-warped noise), fire, metaballs, aurora,
     flow field, synthwave, a tunnel of glowing lines, galaxy, Julia set (smooth escape
     colours, orbit traps), reaction-diffusion, a feedback face in MilkDrop's manner
-    (its last frame warped under a new layer; five looks of its own, a new one each
-    phrase of 16 beats - it reads no MilkDrop presets), a flyover of a raymarched night landscape the bass lifts, crystals
+    (its last frame warped under a new layer; eight looks of its own - rings, a
+    scope's line, spiral arms, orbits, a rose, spokes, mirrored in two or four -
+    a new one each phrase of 16 beats; it reads no MilkDrop presets), a flyover of a raymarched night landscape the bass lifts, crystals
     (Voronoi cells), a skyline (searchlights, traffic, roofs lit by their bands),
     isometric bars, DNA helix, spirograph, polygon morph, moiré (antialiased), beat
     rings, smoke and the title's words on the beat.
@@ -124,6 +126,24 @@ picture is made by `AMP_DEMO_TRACK=… cargo test --test ui -- --ignored`.</sub>
   Escape closes only the innermost thing, one at a time: a track's details,
   the URL field, the warning or a field being typed in before the large view
   or full screen.
+- **Themes** for the window (⚙ → Theme), twelve, each a set of design tokens
+  (grounds, cards, text, secondary text, the accent with its hover and pressed
+  shades, borders, the focus ring, good / warning / error, a slider's rail,
+  selection, shadow, corners): *Midnight* (the default), *Paper* (warm white,
+  ink-blue), *Frost*, *Dusk* (Solarized at sundown), *Night drive* (violet,
+  magenta, a little cyan), *Forest*, *Espresso*, *Ocean*, *Sakura* (light pink,
+  plum), *Studio* (greyscale, one orange signal), *Daylight* (light) and *High
+  contrast* (black and white, yellow for what is chosen, a 3 px focus ring, 7 : 1
+  text). The pointer on one in the menu shows it at once; a click keeps it (in
+  axross-amp's own file). Optionally the desktop's light or dark decides, between
+  a light and a dark theme of one's choice. The accent comes from the cover (made
+  to read in the theme: lightened or darkened until it does) or is the theme's
+  own. A test checks every theme's text, secondary, disabled and selected text,
+  accent, good / warning / error, the focus ring and the slider against every
+  ground they lie on (WCAG AA, 4.5 : 1 and 3 : 1; AAA, 7 : 1, in high contrast).
+  A theme changes the window, never the pictures: the faces keep their own
+  colour schemes (a theme only suggests one) and so every limit on flashes.
+  Switching costs one frame; nothing a frame.
 - **The window**: wider than 1240 points the player is a centred column
   1180 wide. Text on the cover's colour (the chosen row, the buttons) is light
   or dark, whichever reads at 4.5 : 1 or more (WCAG 1.4.3) - tested over 144
@@ -138,7 +158,9 @@ picture is made by `AMP_DEMO_TRACK=… cargo test --test ui -- --ignored`.</sub>
   the background; a file already in the list is not added twice), saving as M3U8. Titles,
   lengths, artists and albums are read in the background; a track that cannot be
   played is marked red with why; the details of a track (tags, format, ReplayGain) in
-  a window of their own. At most 10,000 tracks - axross's player reads no more.
+  a window of their own. Two or more tracks of one album in a row (one folder) come
+  under a header with the album's cover, artist ("Various artists" where they
+  differ), its tracks and length. At most 10,000 tracks - axross's player reads no more.
 - **Sleep timer** (15 to 90 minutes with a fade, or at the end of the track).
 - **The desktop** (Linux): MPRIS 2 on the session bus - media keys, a headset's
   buttons, the desktop's sound menu and lock screen show and control it, also while
@@ -150,10 +172,13 @@ picture is made by `AMP_DEMO_TRACK=… cargo test --test ui -- --ignored`.</sub>
   default), the applications playing and recording (volume, mute, which device) and
   the cards' profiles (a Bluetooth headset: A2DP or headset) - through `pactl` of
   PulseAudio or PipeWire, live as they change elsewhere; volumes follow a slider
-  while it is dragged.
+  while it is dragged. Laid out as cards in sections (this player, outputs,
+  inputs, applications, sound cards; two columns in a wide window), the
+  player's card and the default device in the cover's accent.
 - **Bluetooth** (Bluetooth tab, Linux): the adapter (power, scan for Classic and / or
   BLE devices), the devices with kind, battery, signal and state; Pair, Trust,
-  Connect, Disconnect, Forget - through BlueZ on the system D-Bus
+  Connect, Disconnect, Forget - grouped as connected, paired and nearby, each with
+  its kind's sign - through BlueZ on the system D-Bus
   ([zbus](https://github.com/dbus2/zbus)). A pairing that asks (confirm a passkey,
   type a PIN) asks in a dialog; nothing is accepted without an answer. **Use as audio
   output** connects a speaker or headset and makes its output this player's.
@@ -179,6 +204,11 @@ picture is made by `AMP_DEMO_TRACK=… cargo test --test ui -- --ignored`.</sub>
 
 <p><img src="docs/bluetooth.png" alt="The Bluetooth tab" width="45%"></p>
 
+![The themes](docs/themes.png)
+
+<sub>Every theme, playing (`cargo test --test themes -- --ignored`, which also
+renders each in the window's other states into a contact sheet).</sub>
+
 ## Photosensitivity
 
 **Warning.** The pictures move with the music, and moving, flashing pictures
@@ -189,96 +219,127 @@ in the faces' menu) or choose the cover.
 
 What axross-amp does about it:
 
-- **Calm faces.** Each face is meant to stay within the rules by itself,
-  without the guard below. What drives the pictures' brightness (the bars,
-  the beat's pulse, the VU meter, the oscilloscope's height, every band of
-  the spectrograms) turns no faster than every quarter of a second in
-  *Calm*. Pictures with seconds of history (the waterfall, the mel and the
-  fine spectrograms, the piano roll) show each band as its slow mean and
-  half its change from it, eased - a rhythm scrolled past is no flicker and
-  no grating; the overview's scrolling span is held and falls slowly.
-  Between bars and cells (spectrum, mirror, LED, particles, 3D ring,
+- **Two readings; the stricter is enforced.** Every rendered frame is read
+  as WCAG 2.3.1 / 2.3.2 have it - a field changing over a quarter of its
+  area the same way within 34 ms is a transition, a flash a pair of
+  opposing ones - and by a stricter reading an independent review applies:
+  within 100 ms, and every change counted, each rise and each fall, paired
+  or not. A face passes only where both readings count at most six
+  transitions in every second (saturated red too) and no pattern hazard;
+  `tests/flash.rs` fails otherwise.
+- **Calm faces.** Each face is meant to stay within both readings by
+  itself, without the guard below. What drives the pictures' brightness
+  (the bars, the beat's pulse, the bass, the energy, the middle, the
+  treble, the VU meter, the oscilloscope's height, every band of the
+  spectrograms) turns no faster than every quarter of a second - in
+  *Intense* too, which is livelier by its quicker easing and pace. In the
+  starkest schemes (white or pure red on black: measured by their colours'
+  contrast with the ground and their share of saturated red) it turns up to
+  1.6 times slower still, the LED and particle columns fall slower, and
+  the flow field's lines are a shade under full. Pictures with seconds of
+  history (the waterfall, the mel and the fine spectrograms, the piano
+  roll) show each band as its slow mean and half its change from it,
+  eased. Between bars and cells (spectrum, mirror, LED, particles, 3D ring,
   chromagram) lies a shade of their colour 0.075 dimmer, not the dark
   ground: no grating. Dense lines that would form one are faint (the
   polygon morph's outer copies, the helix's rungs, synthwave's fan and far
   rows, a noise-dense oscilloscope trace); the moiré's rings interfere at
-  most 0.09 above the ground; crystals are lit evenly; the beat rings are
-  never saturated red; the onsets turn the kaleidoscope no faster than a
-  petal in a third of a second and twist the ribbon over a third of a
-  second (a small ribbon has fewer lines); the spirograph fades in a new
-  wheel. The Cover face's cover is at most 30 % of the picture (a cover of
-  checks or stripes, standing, stays under 40 %), its backdrop blurred.
-- **A flash guard at the output**, for what the faces do not foresee. After
-  a face has drawn a frame, the guard estimates the picture on a grid of
-  cells (128 across): the shapes laid on in the order they are painted, a
-  shader face by its own function evaluated on the CPU, the cover from its
-  pixels. It follows each cell's relative luminance and saturated red (R,
-  G and B linear), and each *field* - a third of the **screen** each way
-  (the monitor's size; WCAG's 10° view), slid over the face - in which a
-  quarter of that field's area changes the same way at once (34 ms; a cell
-  changed only by small shapes counts as much as they cover). A flash is a
-  pair of opposing changes; where a field has changed five times in a
-  second (a 120 BPM pulse, four, is left alone) it lays a veil over it:
-  the cells blended towards a slow average of themselves, up to 85 - 95 %,
-  staying on while the face goes on near the limit and a second and a half
-  after (no pumping). The veil is visible, a smeared ghost of the picture;
-  on ordinary music - pop, house, drum and bass - it does not come (a
-  test). It costs about 1.5 - 2.5 ms of the CPU a frame (`--release`,
-  `tests/frame_cost.rs`; 5 - 6 ms for the spirograph, and for the
-  particles at 3840 x 2160); the frame rate's cap on a software renderer
-  counts it in.
+  most 0.09 above the ground; crystals are lit evenly; the fire, the smoke,
+  the beat rings, the helix, the polygon morph, the terrain and the
+  starfield's trails are never saturated red; the onsets
+  turn the kaleidoscope no faster than a petal in a third of a second; the
+  tunnel's near rings (which sweep past fastest) are faint and the onsets
+  twist it slowly; a new word of the typography comes at most every 0.75
+  s; the beat zooms and turns the Julia set only a little; the terrain's
+  dots lie on every other row, as loud as it is. The Cover face's cover is
+  at most 30 % of the picture, its backdrop blurred.
+- **A flash guard at the output**, as a backstop. After a face has drawn a
+  frame, the guard estimates the picture on a grid of cells (128 across):
+  the shapes laid on in the order they are painted (pieces side by side
+  adding up to what they cover), a shader face by its own function
+  evaluated on the CPU, the cover from its pixels. It follows each cell's
+  relative luminance and saturated red (R, G and B linear), and each
+  *field* - a third of the **screen** each way (the monitor's size; WCAG's
+  10° view), slid over the face - in which a quarter of that field's area
+  changes the same way within 100 ms, every change counted, as the strict
+  reading does. Where a field has changed seven times in a second it lays
+  a veil over the whole face - a slow, blurred average of the picture, 95
+  % - staying on while the face goes on near the limit and a second and a
+  half after. Seven, not six: the veil's own coming is a change too, and
+  at six it would make the seventh. So the guard does not by itself hold a
+  face to six; it caps what the faces do not foresee. On ordinary music - pop,
+  house, drum and bass - it does not come (a test). It costs about 1.5 - 5.5
+  ms of the CPU a frame (`--release`, `tests/frame_cost.rs`, the faces with
+  and without it); more for the faces of thousands of pieces: the
+  spirograph 7 - 10 ms, the particles 11 - 12.5 ms at 1920 x 1080 and 3840
+  x 2160, the skyline 9 ms at 3840 x 2160. The frame rate's cap on a
+  software renderer counts it in.
+- **A pattern stage in the guard** (ITU-R BT.1702), for stripes no face
+  foresaw - a cover of checks, a striped custom scheme: regular stripes
+  in the estimate (five light-dark pairs or more in a row or column of
+  cells, full periods alike, each step 0.1 of luminance) over a quarter of
+  the picture while they move, or 35 % standing, are softened in place
+  towards the mean of the cells round them (21 each way), by 95 - 98 %,
+  until they no longer are. Stripes finer than two cells (about 1 % of
+  the picture's width) are not seen by it. `tests/pattern_stage.rs`: a
+  drifting checkerboard cover and black-and-white stripes of 6 px are a
+  hazard in 120 of 120 frames without it, in 10 and 5 with it (the first
+  tenth of a second, before it has seen them move).
 - **Calm by default.** *Intense* (Options) is livelier and only chosen after
   a photosensitivity warning; where the desktop asks for reduced motion
   (GNOME, KDE, GTK's settings, macOS, Windows) it cannot be chosen and the
   pictures are calmer still.
-- **Measured.** `tests/support/flashmeter.rs` measures rendered frames as
-  WCAG 2.3.1 / 2.3.2 and ITU-R BT.1702 describe: per pixel (relative
-  luminance; saturated red with R, G and B linear), any field a third of
-  the picture each way (the picture taken as the whole screen: the
-  strictest case) with a quarter of it changing the same way within 34 ms;
-  a flash a pair of opposing changes; more than six transitions in any
-  second fails, and so does saturated red flashing so; regular stripes -
-  five light-dark pairs or more, full periods alike, uneven gratings too -
+- **Measured.** `tests/support/flashmeter.rs` measures rendered frames:
+  per pixel (relative luminance; saturated red with R, G and B linear),
+  any field a third of the picture each way (the picture taken as the
+  whole screen: the strictest case), both readings above; regular stripes
+  (five light-dark pairs or more, full periods alike, uneven gratings too)
   over a quarter of the picture while they move or drift (within a tenth
   of a second), or 40 % standing. `tests/flash.rs` renders every face and
   its options through music made to provoke them - kicks at 120 and 240
   BPM, gated noise, bass and treble in turn, fast sweeps, left and right
   in turn, bursts, silence and full scale - at 60, 30 and 12 frames a
-  second (384 x 216); the faces with history through ten seconds each of
-  steady music (bass and treble in turn, a chirp, a click train); the
-  default faces through pop, house and drum and bass (the veil must stay
-  off). Every face passes all of it with the guard on and in Calm; the
-  faces at 60 frames a second pass without the guard too (at most 4
-  transitions a second). With `--ignored`, every scheme (Classic, Neon,
-  Mono, Fire) and both motions at 320 x 180 (416 cases): 414 pass; in
-  *Intense* the LED equalizer (Classic) and the plasma (Neon) lie in moving
-  stripes for two or three frames (26 - 38 % of the picture, over the 25 %
-  allowed). At most 6 transitions a second anywhere (the plasma and the
-  beat rings in Intense), red at most 5.
+  second; the faces with history through ten seconds each of steady music;
+  the default faces through pop, house and drum and bass (the veil must
+  stay off); the feedback face's every look, Intense, white on black and
+  pure red; the moiré at its most (Intense, white on black); every case an
+  earlier sweep found. With `--ignored`, the whole sweep: every face and
+  option, Calm and Intense, in Classic, Neon, Mono, Fire and two extreme
+  custom schemes - white on black, and pure red (#ff0000, peak #ff3030) on
+  black - at 320 x 180: 624 cases, **all pass both readings** (each face last
+  measured after its last change). The most by the normal reading: 4
+  transitions a second, red 4; by the strict reading: 6, red 6 (12 cases at
+  the limit, 11 of them in *Intense*: synthwave, the line spectrum, the bell
+  curves, the crystals, the aurora; and the ribbon in pure red, Calm); moving
+  stripes in no frame; standing stripes at most 39 % (40 % allowed). The
+  faces that run faster as the music gets louder move as fast after 25
+  minutes of it as at its start (a test: their clock times the energy had
+  leapt further the longer they played).
 
-Before and after, as an independent review measured 0.11.0 and its own
-test crate measures 0.12.0 (Calm, Classic, 480 x 270, the guard on;
-transitions a second by this meter, and by the reviewer's meter in
-brackets):
+Before and after, by the strict reading (the independent review's
+numbers for 0.12.0; 0.13.0 from the sweep above, 320 x 180, worst music;
+transitions a second, normal reading in brackets):
 
-| | 0.11.0 | 0.12.0 |
+| | 0.12.0 | 0.13.0 |
 |---|---|---|
-| mel spectrogram, bass and treble in turn, 10 s | 6 (15), stripes 85 % | 0 (0), none |
-| mel spectrogram, a chirp, 10 s | 9 (18), stripes 81 % | 0 (0), none |
-| waterfall (bars), clicks 9 and 13 a second | 25 - 27 | 0 (0) |
-| the same at 960 x 540 / 1920 x 1080 | 25 / 28 | 0 (0) / 0 |
-| Cover face over a checkerboard cover | stripes 40 %, a hazard | 36 - 37 %, none |
-| spectrum, line spectrum on house, drum and bass (30 fps) | veiled 13 - 89 % | veiled 0 % |
-| #ff4000 flashing five times a second (this meter) | no red | 10 red |
+| plasma, Intense, white on black | 9 - 17 | 1 (0) |
+| kaleidoscope, Intense, white on black | 7 | 0 (0) |
+| fire, Intense, pure red | 8 - 9 red | red 0 (0); 1 (0) |
+| LED equalizer, Intense, Classic | moving stripes, 2 - 3 frames | none; 3 (1) |
+| plasma, Intense, Neon | moving stripes, 2 - 3 frames | none; 0 (0) |
+| moiré at its most (Intense, white on black) | - | 0 (0), no stripes |
+| the whole sweep | 414 of 416 pass (normal reading, 4 schemes) | 624 of 624 (both readings, 6 schemes) |
+| a drifting checkerboard cover, 6 px stripes (no stage / stage) | no pattern stage | hazard in 120 / 10 and 120 / 5 frames of 120 |
 
-**Not yet met.** The two Intense pattern cases above. An independent meter that takes "at once" as 100 ms and
-counts every rise (not only pairs) still counts more than six in
-*Intense* with extreme schemes: the plasma (9 - 17) and the kaleidoscope
-(7) in pure black and white, the fire in pure red (8 - 9 red); the meter
-here counts 1 - 4 for them. The guard has no stage of its own for
-patterns (the faces avoid them; a cover or a scheme it does not foresee
-could make one). Measured only on test pictures up to 1920 x 1080 and on
-lavapipe, not a real GPU.
+**What does not hold, or is not claimed.** The guard by itself does not
+hold a face to six transitions a second by the strict reading: it veils at
+seven (at six its own veil would be the seventh); the faces pass by
+themselves, the guard is the backstop. Twelve cases sit at six, the limit.
+The pattern stage acts after a tenth of a second (up to 10 frames of a
+pattern first) and does not see stripes finer than about 1 % of the
+picture's width. Measured on our music at 320 x 180 (the sweep), 384 x 216
+(the suite) and up to 1920 x 1080 (some faces), on Mesa's lavapipe, not a
+real GPU.
 
 What is not claimed: the guard estimates the picture; the test's music and
 sizes are ours, not every song or screen. It is a strong precaution, not a
