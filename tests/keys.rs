@@ -202,3 +202,36 @@ fn the_playlist_is_ordered_by_keys() {
     // the playing track stays the playing one
     assert_eq!(h.state().snapshot().current, 1);
 }
+
+/// A focused volume control owns the arrow keys: one step of volume, no
+/// seek, no second step from the window's own ↑/↓ (the slider of the
+/// modern design, the rack's knob).
+#[test]
+fn a_focused_volume_owns_the_arrows() {
+    for design in ["modern", "rack"] {
+        let dir = folder(&format!("keys-volume-{design}"));
+        let files = tracks(&dir, &["a.wav"], 20.0);
+        let mut h = harness(&dir, files);
+        assert!(until(&mut h, 5.0, |a| a.is_loaded()));
+        h.state_mut().set_design(design);
+        settle(&mut h, 3);
+        h.get_by_label("Volume").focus();
+        settle(&mut h, 2);
+        let before = h.state().snapshot().volume;
+        let pos = h.state_mut().shown_position();
+        h.key_press(Key::ArrowRight);
+        settle(&mut h, 2);
+        let right = h.state().snapshot().volume;
+        let moved = h.state_mut().shown_position() - pos;
+        h.key_press(Key::ArrowUp);
+        settle(&mut h, 2);
+        let up = h.state().snapshot().volume;
+        assert!(right > before, "{design}: → did not raise the volume");
+        assert!(moved < 2.0, "{design}: → also seeked {moved:.1} s");
+        assert!(
+            up - right <= 5,
+            "{design}: ↑ stepped {} at once (twice?)",
+            up - right
+        );
+    }
+}

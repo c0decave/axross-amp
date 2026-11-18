@@ -303,3 +303,26 @@ fn a_picture_of_the_row_of_buttons() {
         "the row runs off the window"
     );
 }
+
+/// Paused, L past the end goes on to the next track - and stays paused.
+#[test]
+fn paused_past_the_end_stays_paused() {
+    let home = Scratch::new("seek15-paused-end");
+    let mut h = window(&home, two_tracks(&home));
+    assert!(until(&mut h, 5.0, |a| a.is_loaded()));
+    let mut out = RenderState::default();
+    play(&mut h, &mut out, 0.3);
+    h.state_mut().wind(30.0);
+    play(&mut h, &mut out, 0.3);
+    h.key_press(egui::Key::Space);
+    play(&mut h, &mut out, 0.3);
+    assert!(!h.state().playing());
+    h.key_press(egui::Key::L);
+    play(&mut h, &mut out, 1.0);
+    assert!(until(&mut h, 3.0, |a| a.snapshot().current == 1));
+    play(&mut h, &mut out, 0.5);
+    assert!(
+        !h.state().playing(),
+        "L past the end started it while paused"
+    );
+}

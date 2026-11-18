@@ -1209,7 +1209,9 @@ impl App {
         if let Some(duration) = self.duration
             && secs >= duration
         {
-            return self.next(true);
+            // (as at its end; paused, the next one waits paused)
+            let play = self.playing();
+            return self.next_as(true, play);
         }
         self.engine.send(Command::Seek(secs));
         self.seek_asked = Some((secs, Instant::now()));
@@ -1586,9 +1588,15 @@ impl App {
     }
 
     fn next(&mut self, ended: bool) {
+        self.next_as(ended, true)
+    }
+
+    /// The next track, played or (`play` false: paused, as MPRIS asks of
+    /// Next and of a seek past the end while paused) only loaded.
+    fn next_as(&mut self, ended: bool, play: bool) {
         match self.playlist.next(ended) {
             Some(i) => {
-                self.play_index(i, 0, true);
+                self.play_index(i, 0, play);
                 self.automatic = ended;
             }
             None => {
@@ -1599,13 +1607,19 @@ impl App {
     }
 
     fn previous(&mut self) {
+        self.previous_as(true)
+    }
+
+    /// The track before (or this one from its start), played or only
+    /// loaded (`play` false: paused stays paused).
+    fn previous_as(&mut self, play: bool) {
         // within the first seconds: the track before; later: this one from
         // its start (a stream cannot go back: the track before)
         let seekable = self.info.seekable && self.loaded == Some(self.generation);
         if seekable && self.engine.shared.position() > 3.0 {
             self.seek(0.0);
         } else if let Some(i) = self.playlist.previous() {
-            self.play_index(i, 0, true);
+            self.play_index(i, 0, play);
         }
     }
 
@@ -1922,8 +1936,13 @@ impl App {
         if pressed(Key::Space) && self.gate.activation {
             self.toggle_play();
         }
+        // (the arrows alone belong to a focused widget - a slider, the
+        // knob, a row: it moves itself, or the focus; with Ctrl or Alt
+        // they are the window's)
+        let free = self.gate.activation;
+        let arrows = |m: egui::Modifiers| free || m.command || m.alt;
         for (key, sign) in [(Key::ArrowLeft, -1.0), (Key::ArrowRight, 1.0)] {
-            if !pressed(key) {
+            if !pressed(key) || !arrows(modifiers) {
                 continue;
             }
             if modifiers.command {
@@ -1971,7 +1990,7 @@ impl App {
             self.wind(15.0);
         }
         for (key, up) in [(Key::ArrowUp, true), (Key::ArrowDown, false)] {
-            if !pressed(key) {
+            if !pressed(key) || !arrows(modifiers) {
                 continue;
             }
             if modifiers.alt {
@@ -3397,10 +3416,19 @@ impl App {
                 }
                 Request::PlayPause => self.toggle_play(),
                 Request::Stop => self.stop(),
-                Request::Next => self.next(false),
-                Request::Previous => self.previous(),
+                // (paused or stopped, it stays so - MPRIS)
+                Request::Next => {
+                    let play = self.playing();
+                    self.next_as(false, play)
+                }
+                Request::Previous => {
+                    let play = self.playing();
+                    self.previous_as(play)
+                }
+                // (from where the last seek asked, not from what is heard
+                // yet: two quick ones add up)
                 Request::Seek(us) => {
-                    let pos = self.engine.shared.position();
+                    let pos = self.shown_position();
                     self.seek(pos + us as f64 / 1e6);
                 }
                 Request::SetPosition(id, us) => {

@@ -258,3 +258,54 @@ fn starts_at_the_same_moment_make_one_player() {
         .collect();
     assert_eq!(opened.len(), 2, "{opened:?}");
 }
+
+/// Paused, the desktop's Next, Previous and a Seek past the end change the
+/// track and leave it paused (MPRIS: "if playback is paused or stopped, it
+/// remains that way"); two quick Seek(+15 s) add up - each from where the
+/// one before asked, not from what is heard yet.
+#[test]
+fn paused_stays_paused_and_seeks_add_up() {
+    let dir = folder("mpris-paused");
+    let Some(bus) = daemon(&dir) else {
+        eprintln!("no dbus-daemon: the MPRIS test is skipped");
+        return;
+    };
+    let files = tracks(&dir, &["first.wav", "second.wav"], 40.0);
+    let mut h = app_on(&dir, &bus.1, files);
+    let client = zbus::blocking::connection::Builder::address(bus.1.as_str())
+        .unwrap()
+        .build()
+        .unwrap();
+    let dbus = zbus::blocking::fdo::DBusProxy::new(&client).unwrap();
+    let name = "org.mpris.MediaPlayer2.axross_amp";
+    assert!(until(&mut h, 5.0, |_| dbus
+        .name_has_owner(name.try_into().unwrap())
+        .unwrap_or(false)));
+    assert!(until(&mut h, 5.0, |a| a.is_loaded() && a.playing()));
+    let p = player(&client, name);
+    let call = |h: &mut Harness<'static, App>, method: &str| {
+        let _: () = p.call(method, &()).unwrap();
+        settle(h, 6);
+        assert!(until(h, 3.0, |a| a.is_loaded()));
+        settle(h, 3);
+    };
+    call(&mut h, "Pause");
+    assert!(!h.state().playing());
+    call(&mut h, "Next");
+    assert_eq!(h.state().snapshot().current, 1);
+    assert!(!h.state().playing(), "Next started it while paused");
+    call(&mut h, "Previous");
+    assert_eq!(h.state().snapshot().current, 0);
+    assert!(!h.state().playing(), "Previous started it while paused");
+    let _: () = p.call("Seek", &(60_000_000i64,)).unwrap();
+    settle(&mut h, 6);
+    assert!(until(&mut h, 3.0, |a| a.is_loaded() && a.snapshot().current == 1));
+    settle(&mut h, 3);
+    assert!(!h.state().playing(), "a Seek past the end started it");
+    // two quick Seek(+15 s) from 0:00: at 0:30
+    let _: () = p.call("Seek", &(15_000_000i64,)).unwrap();
+    let _: () = p.call("Seek", &(15_000_000i64,)).unwrap();
+    settle(&mut h, 6);
+    let at = h.state_mut().shown_position();
+    assert!((at - 30.0).abs() < 1.0, "two Seek(+15 s) came to {at:.1}");
+}
