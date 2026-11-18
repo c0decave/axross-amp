@@ -98,6 +98,9 @@ pub struct App {
     /// and whether the desktop asks for reduced motion (None: not known).
     intense_asked: bool,
     reduced_motion: Arc<Mutex<Option<bool>>>,
+    /// The desktop's light or dark, asked (winit says nothing on Linux);
+    /// None where the window does not belong to a desktop (tests).
+    desktop_shade: Option<crate::desktop_theme::Shade>,
     /// The height of what lies between the picture and the playlist (the
     /// position, the transport, the switch), as last laid out.
     controls_height: f32,
@@ -573,6 +576,12 @@ impl App {
             big_list: false,
             intense_asked: false,
             reduced_motion: desktop_reduced_motion(),
+            desktop_shade: setup.desktop.then(|| {
+                let ctx = cc.egui_ctx.clone();
+                crate::desktop_theme::watch(setup.desktop_bus.clone(), move || {
+                    ctx.request_repaint()
+                })
+            }),
             controls_height: 110.0,
             overview: None,
             pending_click: None,
@@ -2085,6 +2094,12 @@ impl App {
         self.amp_dirty = true;
     }
 
+    /// Follows the desktop's light or dark (as the picker's box does).
+    pub fn follow_desktop(&mut self, on: bool) {
+        self.amp.follow_system = on;
+        self.amp_dirty = true;
+    }
+
     /// The theme the window shows.
     pub fn theme_shown(&self) -> &'static str {
         self.theme_shown.0
@@ -2096,7 +2111,20 @@ impl App {
     /// when it changes.
     fn update_theme(&mut self, ctx: &egui::Context) {
         let chosen = if self.amp.follow_system {
-            match ctx.system_theme() {
+            // (the desktop asked first - on Linux winit knows nothing -
+            // then winit's word, else dark)
+            let asked = self
+                .desktop_shade
+                .as_ref()
+                .and_then(|s| s.lock().ok().and_then(|s| *s))
+                .map(|dark| {
+                    if dark {
+                        egui::Theme::Dark
+                    } else {
+                        egui::Theme::Light
+                    }
+                });
+            match asked.or(ctx.system_theme()) {
                 Some(egui::Theme::Light) => &self.amp.light_theme,
                 _ => &self.amp.dark_theme,
             }

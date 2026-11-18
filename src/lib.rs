@@ -8,6 +8,7 @@ pub mod bluetooth;
 #[cfg(target_os = "linux")]
 pub mod bluetooth_ui;
 pub mod cover;
+pub mod desktop_theme;
 pub mod engine;
 pub mod eq;
 pub mod fspath;
