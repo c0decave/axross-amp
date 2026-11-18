@@ -802,6 +802,36 @@ fn the_options_at_their_extremes_keep_the_faces_calm() {
             failures.push(line);
         }
     }
+    // (the sweep at the extremes found these over six by the strict
+    // reading: the terrain's fine mesh 8 to 11, the beat rings' spokes 7,
+    // the starfield's trails 7)
+    for (key, trails, motion, scheme) in [
+        ("terrain", false, Motion::Intense, "bw"),
+        ("terrain", false, Motion::Calm, "classic"),
+        ("beatrings", false, Motion::Intense, "classic"),
+        ("beatrings", false, Motion::Intense, "bw"),
+        ("starfield", true, Motion::Intense, "wb"),
+        ("starfield", true, Motion::Intense, "neon"),
+    ] {
+        let r = run(key, motion, scheme, (320.0, 180.0), 1.2, FPS, |s| {
+            s.classic_plus = trails
+        });
+        let line = format!(
+            "{motion:?} {scheme} {key}: transitions/s {} ({})  red {} ({})  area {} ({})  stripes {:.2} ({} frames)",
+            r.transitions,
+            r.strict,
+            r.red,
+            r.strict_red,
+            r.area,
+            r.area_red,
+            r.stripes,
+            r.pattern_frames
+        );
+        println!("{line}");
+        if r.fails() {
+            failures.push(line);
+        }
+    }
     assert!(failures.is_empty(), "{failures:#?}");
 }
 

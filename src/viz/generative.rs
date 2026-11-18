@@ -58,6 +58,8 @@ pub struct State {
     clock: f32,
     flow: Vec<Particle>,
     stars: Vec<[f32; 4]>,
+    /// The beat rings' spokes, eased (48 at most).
+    spokes: Vec<f32>,
     galaxy_turn: f32,
     /// The helix's turn.
     helix_spin: f32,
@@ -97,6 +99,7 @@ impl Default for State {
             clock: 0.0,
             flow: Vec::new(),
             stars: Vec::new(),
+            spokes: Vec::new(),
             galaxy_turn: 0.0,
             helix_spin: 0.0,
             synth_scroll: 0.0,
@@ -1560,10 +1563,31 @@ fn beatrings(f: &Frame<'_>, pen: &mut Pen<'_>, st: &mut State, dt: f32) {
         let u = Vec2::angled(k as f32 / 24.0 * TAU + t * 0.05);
         pen.segment(c + u * base * 0.9, c + u * reach, 1.0, grid);
     }
-    // the spectrum round the middle, mirrored left and right
-    let n = a.bars.len().max(1);
+    // the spectrum round the middle, mirrored left and right - at most 48
+    // spokes a side, each the mean of its bars (128 bars' spokes lay over
+    // each other as a disc, its edge each bar's jitter: in black and white
+    // at the Options' extremes 7 transitions a second by the strict
+    // reading)
+    let bars = a.bars.len().max(1);
+    let n = bars.min(48);
     for i in 0..n {
-        let v = a.bars[i];
+        let (from, to) = (i * bars / n, ((i + 1) * bars / n).max(i * bars / n + 1));
+        let to = to.min(a.bars.len());
+        let raw = if from < to {
+            a.bars[from..to].iter().sum::<f32>() / (to - from) as f32
+        } else {
+            0.0
+        };
+        // (eased: their tips' jitter, the band of the disc's edge flickering
+        // as a whole, was 7 by the strict reading with the Options at their
+        // extremes, Intense)
+        if st.spokes.len() != n {
+            st.spokes.clear();
+            st.spokes.resize(n, raw);
+        }
+        let ease = 1.0 - (-dt / (0.12 * a.motion.turn() / 0.25)).exp();
+        st.spokes[i] += (raw - st.spokes[i]) * ease;
+        let v = st.spokes[i];
         for side in [1.0f32, -1.0] {
             let angle = -PI / 2.0 + side * (i as f32 + 0.5) / n as f32 * PI;
             let u = Vec2::angled(angle);
@@ -1573,7 +1597,7 @@ fn beatrings(f: &Frame<'_>, pen: &mut Pen<'_>, st: &mut State, dt: f32) {
                 c + u * (base + v * base * 1.8),
                 2.5,
                 mix(s.background, s.low, 0.35),
-                mix(s.background, s.at(v), 0.9),
+                mix(s.background, s.at(v), 0.55),
             );
         }
     }

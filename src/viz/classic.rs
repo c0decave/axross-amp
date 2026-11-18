@@ -62,6 +62,9 @@ const TRACE: f32 = 1.2;
 pub struct State {
     /// x, y (-1..1) and depth of each star.
     stars: Vec<[f32; 3]>,
+    /// The stars' speed with trails, eased (their trails' length follows
+    /// it: all of them at once).
+    star_speed: f32,
     /// bar, height 0..1, age (s), rise a second.
     sparks: Vec<[f32; 4]>,
     /// The ring's bars, far ones first, for its bar count.
@@ -845,7 +848,16 @@ fn terrain(f: &Frame<'_>, g: Area, cv: &mut Canvas) {
     // scheme, flashed red seven times a second in Intense)
     let unred = f.s.unred();
     let (a, s) = (f.a, &unred);
-    let n = a.bars.len().max(1);
+    // (at most 48 columns, each the mean of its bars: with 128 bars the
+    // mesh was so fine that its scrolling, black on white or not, was 8 to
+    // 10 transitions a second by the strict reading)
+    let bars = a.bars.len().max(1);
+    let n = bars.min(48);
+    let span = |i: usize| (i * bars / n, ((i + 1) * bars / n).max(i * bars / n + 1));
+    let level = |row: &[f32], i: usize| {
+        let (from, to) = span(i);
+        row[from..to.min(row.len())].iter().sum::<f32>() / (to - from) as f32
+    };
     let (w, h) = (g.w, g.h);
     let rows = TERRAIN_ROWS;
     let horizon = h * 0.3;
@@ -860,7 +872,7 @@ fn terrain(f: &Frame<'_>, g: Area, cv: &mut Canvas) {
     let point = |age: usize, i: usize| {
         let k = place(age).max(0.0);
         let u = (i as f32 + 0.5) / n as f32 - 0.5;
-        let v = a.history_row(age)[i];
+        let v = level(a.history_row(age), i);
         g.p(
             w / 2.0 + u * w * 1.15 / depth(k),
             base(k) - v * h * 0.5 / depth(k),
@@ -898,7 +910,8 @@ fn terrain(f: &Frame<'_>, g: Area, cv: &mut Canvas) {
         let head = a.history_index() + crate::analyzer::HISTORY;
         for age in (0..rows / 2).filter(|age| (head - age).is_multiple_of(2)) {
             let row = a.history_row(age);
-            for (i, v) in row.iter().enumerate().take(n) {
+            for i in 0..n {
+                let v = &level(row, i);
                 if *v < 0.45 {
                     continue;
                 }
@@ -910,7 +923,12 @@ fn terrain(f: &Frame<'_>, g: Area, cv: &mut Canvas) {
                 );
             }
         }
-        for (i, peak) in a.peaks.iter().enumerate() {
+        for i in 0..n {
+            let (from, to) = span(i);
+            let peak = a.peaks[from..to.min(a.peaks.len())]
+                .iter()
+                .cloned()
+                .fold(0.0f32, f32::max);
             let p = point(0, i);
             disc(
                 pen,
@@ -1574,7 +1592,19 @@ fn starfield(f: &Frame<'_>, g: Area, cv: &mut Canvas, st: &mut State, trails: bo
         st.reset_stars_n(1, count);
     }
     // nearer, faster with the bass; one that leaves the picture starts afar
-    let speed = STAR_DRIFT + STAR_BOOST * a.bass;
+    // (with trails eased - a third of a second: every trail grows and
+    // shrinks with it, a corner full of them darkening and lightening
+    // together with each kick, 7 times a second by the strict reading in
+    // black on white)
+    let mut speed = STAR_DRIFT + STAR_BOOST * a.bass;
+    if trails {
+        let ease = 1.0 - (-f.dt / (0.35 * a.motion.turn() / 0.25)).exp();
+        if st.star_speed <= 0.0 {
+            st.star_speed = speed;
+        }
+        st.star_speed += (speed - st.star_speed) * ease;
+        speed = st.star_speed;
+    }
     for k in 0..count {
         let [x, y, z] = st.stars[k];
         let z = z - speed * f.dt;
@@ -1636,7 +1666,13 @@ fn starfield(f: &Frame<'_>, g: Area, cv: &mut Canvas, st: &mut State, trails: bo
             // its trail: where it was a moment ago, fading
             let back = z + trail;
             let q = g.p(cx + x / back * cx, cy + y / back * cy);
-            if (p - q).length() > 1.0 {
+            let length = (p - q).length();
+            if length > 1.0 {
+                // (a long trail fainter, as a photograph's blur: the star's
+                // light spread over it - the near, fast ones' long streaks
+                // swept a corner dark and light again, 7 to 8 times a second
+                // by the strict reading in black on white)
+                let head = colour.gamma_multiply((24.0 / length).min(1.0));
                 pen.quad(
                     [
                         q,
@@ -1644,7 +1680,7 @@ fn starfield(f: &Frame<'_>, g: Area, cv: &mut Canvas, st: &mut State, trails: bo
                         p + (p - q).normalized().rot90() * size * 0.5,
                         p - (p - q).normalized().rot90() * size * 0.5,
                     ],
-                    [Color32::TRANSPARENT, Color32::TRANSPARENT, colour, colour],
+                    [Color32::TRANSPARENT, Color32::TRANSPARENT, head, head],
                 );
             }
             if size > 2.0 {
