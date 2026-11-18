@@ -1451,6 +1451,22 @@ fn moire(u: &Uniforms, p: [f32; 2], pixel: f32) -> V3 {
     }
 }
 
+/// A colour no longer saturated red (R over R + G + B, linear, under 0.75):
+/// towards a warm white until it is not (cells that change with the music
+/// in a red scheme were red flashes).
+fn no_red(c: V3) -> V3 {
+    let mut out = c;
+    for _ in 0..8 {
+        let l = [out[0].powf(2.2), out[1].powf(2.2), out[2].powf(2.2)];
+        let sum = l[0] + l[1] + l[2];
+        if sum <= 0.0 || l[0] / sum < 0.75 {
+            break;
+        }
+        out = mix3(out, [1.0, 0.93, 0.84], 0.12);
+    }
+    out
+}
+
 /// Relative luminance of an sRGB colour (approximately: power 2.2).
 fn luma(c: V3) -> f32 {
     0.2126 * c[0].max(0.0).powf(2.2)
@@ -1566,7 +1582,7 @@ fn flyover(u: &Uniforms, uv: [f32; 2], aspect: f32, steps: usize) -> V3 {
 }
 
 fn crystals(u: &Uniforms, p: [f32; 2]) -> V3 {
-    let t = u.time() * 0.35;
+    let t = u.time() * 0.7;
     let q = [p[0] * 3.2, p[1] * 3.2];
     let cell = [q[0].floor(), q[1].floor()];
     let (mut f1, mut f2) = (9.0f32, 9.0f32);
@@ -1594,17 +1610,23 @@ fn crystals(u: &Uniforms, p: [f32; 2]) -> V3 {
     let edge = 1.0 - smoothstep(0.0, 0.08 + 0.05 * u.pulse(), f2 - f1);
     // (each cell lit evenly, its edges softer: cells of a size, each light
     // in the middle and dark at the rim, lay in a grating over 47 %)
-    let face = scale(
-        mix3(palette(u, 0.55), palette(u, 0.2 + 0.75 * level), 0.35),
-        0.93 + 0.07 * (1.0 - f1),
-    );
+    // (each cell its own colour, all of one luminance: colourful, moving,
+    // and no grating of light and dark)
+    let raw = palette(u, 0.2 + 0.75 * level);
+    let k = (luma(palette(u, 0.55)).max(0.02) / luma(raw).max(1e-4)).powf(1.0 / 2.2);
+    let even = [
+        (raw[0] * k).min(1.0),
+        (raw[1] * k).min(1.0),
+        (raw[2] * k).min(1.0),
+    ];
+    let face = scale(no_red(even), 0.93 + 0.07 * (1.0 - f1));
     let dx = q[0] - id[0] - 0.5 + 1e-4;
     let dy = q[1] - id[1] - 0.5 + 1e-4;
     let l = len2(dx, dy);
     let facet = 0.5 + 0.5 * (dx / l * 0.6 - dy / l * 0.8);
     add(
         scale(face, 0.96 + 0.04 * facet),
-        scale(u.colour(4), edge * (0.04 + 0.08 * level)),
+        scale(u.colour(4), edge * (0.02 + 0.04 * level)),
     )
 }
 

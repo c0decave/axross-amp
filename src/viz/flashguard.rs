@@ -976,7 +976,15 @@ fn lay_mesh(
     if clip.width() <= 0.0 || clip.height() <= 0.0 {
         return;
     }
-    for tri in mesh.indices.as_chunks::<3>().0 {
+    // (the clip takes in the whole picture: no cell need be asked)
+    let clip_all = clip.contains_rect(rect);
+    // (a mesh of tens of thousands of small pieces - the spirograph's
+    // thousands of segments - laid one piece in so many, each counted so
+    // many times: dense lines are evenly covered either way, and the frame
+    // costs what one of 20,000 pieces does)
+    let stride = (mesh.indices.len() / 3 / 20_000).max(1);
+    for (index, tri) in mesh.indices.as_chunks::<3>().0.iter().enumerate() {
+        let sampled = stride > 1 && index % stride != 0;
         let v = [
             &mesh.vertices[tri[0] as usize],
             &mesh.vertices[tri[1] as usize],
@@ -1025,12 +1033,14 @@ fn lay_mesh(
             if cx < 0 || cy < 0 || cx >= cols as i64 || cy >= rows as i64 {
                 return;
             }
-            let centre = Pos2::new(
-                rect.left() + (cx as f32 + 0.5) * cw,
-                rect.top() + (cy as f32 + 0.5) * ch,
-            );
-            if !clip.contains(centre) {
-                return;
+            if !clip_all {
+                let centre = Pos2::new(
+                    rect.left() + (cx as f32 + 0.5) * cw,
+                    rect.top() + (cy as f32 + 0.5) * ch,
+                );
+                if !clip.contains(centre) {
+                    return;
+                }
             }
             let at = cy as usize * cols + cx as usize;
             let a = (mean[3] * k).min(1.0);
@@ -1053,6 +1063,14 @@ fn lay_mesh(
         // cell to cell - quantised to one cell, it jumped, and a twinkling
         // galaxy read as a strobe)
         let splat = |acc: &mut Onto<'_>, p: Pos2, k: f32| {
+            // (a sliver - a piece of a line's tessellation, many to a cell -
+            // to its own cell: spread, thousands of them cost four times as
+            // much, and together they move smoothly anyway)
+            if k < 0.12 {
+                let (cx, cy) = cell_of(p);
+                blend(acc, cx, cy, k);
+                return;
+            }
             let fx = (p.x - rect.left()) / cw - 0.5;
             let fy = (p.y - rect.top()) / ch - 0.5;
             let (x0, y0) = (fx.floor(), fy.floor());
@@ -1064,7 +1082,7 @@ fn lay_mesh(
                 (0, 1, (1.0 - tx) * ty),
                 (1, 1, tx * ty),
             ] {
-                if w > 0.01 {
+                if w > 0.04 {
                     blend(acc, x0 + dx, y0 + dy, (k * w).min(1.0));
                 }
             }
@@ -1092,14 +1110,24 @@ fn lay_mesh(
         // (a known picture is sampled cell by cell, however its triangles
         // lie)
         if thumb.is_none() && x1 - x0 <= 3 && y1 - y0 <= 3 {
+            if sampled {
+                continue;
+            }
             let centroid = Pos2::new((p0.x + p1.x + p2.x) / 3.0, (p0.y + p1.y + p2.y) / 3.0);
-            splat(acc, centroid, SPREAD * area.abs() / (cw * ch));
+            splat(
+                acc,
+                centroid,
+                SPREAD * area.abs() * stride as f32 / (cw * ch),
+            );
             continue;
         }
         // (thin - a line's long piece: its area along its length, half a
         // cell at a time, not every cell of its box sampled)
         let bbox = (max.x - min.x).max(1e-3) * (max.y - min.y).max(1e-3);
         if thumb.is_none() && area.abs() < bbox * 0.25 {
+            if sampled {
+                continue;
+            }
             let edges = [(p0, p1, p2), (p1, p2, p0), (p2, p0, p1)];
             let (a, b, c) = edges
                 .into_iter()
@@ -1108,7 +1136,7 @@ fn lay_mesh(
             let length = (b - a).length();
             let n = ((length / (cw.min(ch) * 0.5)).ceil() as usize).max(1);
             let towards = (c - Pos2::new((a.x + b.x) / 2.0, (a.y + b.y) / 2.0)) / 3.0;
-            let share = SPREAD * area.abs() / n as f32 / (cw * ch);
+            let share = SPREAD * area.abs() * stride as f32 / n as f32 / (cw * ch);
             for k in 0..n {
                 let p = a + (b - a) * ((k as f32 + 0.5) / n as f32) + towards;
                 splat(acc, p, share);

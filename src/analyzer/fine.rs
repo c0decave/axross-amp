@@ -71,6 +71,8 @@ pub struct Fine {
     hd_mean: Vec<f32>,
     key_guards: Vec<Guard>,
     key_mean: Vec<f32>,
+    chroma_guards: Vec<Guard>,
+    chroma_mean: Vec<f32>,
     hd_guards: Vec<Guard>,
     fft: Arc<dyn Fft<f32>>,
     window: Vec<f32>,
@@ -161,6 +163,8 @@ impl Fine {
             hd_mean: vec![0.0; HD],
             key_guards: vec![Guard::default(); KEYS],
             key_mean: vec![0.0; KEYS],
+            chroma_guards: vec![Guard::default(); 12],
+            chroma_mean: vec![0.0; 12],
             hd_guards: vec![Guard::default(); HD],
             head: 0,
             clock: 0.0,
@@ -424,7 +428,22 @@ impl Fine {
                 *v = b + (shown - b) * MEL_EASE;
             }
             self.mel_history[self.head] = row;
-            self.chroma_history[self.head] = self.chroma;
+            // (the chromagram's too: in a red scheme its cells, each step
+            // anew, were red flashes)
+            let before = self.chroma_history[(self.head + STEPS - 1) % STEPS];
+            let mut row = self.chroma;
+            for (((v, b), g), m) in row
+                .iter_mut()
+                .zip(before)
+                .zip(&mut self.chroma_guards)
+                .zip(&mut self.chroma_mean)
+            {
+                let guarded = g.step(*v, 1.0 / STEP_HZ, self.motion);
+                *m += (guarded - *m) * slow;
+                let shown = *m + (guarded - *m) * 0.5;
+                *v = b + (shown - b) * MEL_EASE;
+            }
+            self.chroma_history[self.head] = row;
             // (the piano roll's keys too: a chirp's run up and down the
             // keys, three times a second, lay in a grating)
             let before = self.key_history[(self.head + STEPS - 1) % STEPS];

@@ -1294,14 +1294,16 @@ fn spirograph(f: &Frame<'_>, pen: &mut Pen<'_>, st: &mut State, dt: f32) {
             let turn = st.spiro_turn
                 * (1.0 + 0.3 * inner as f32)
                 * if layer % 2 == 0 { 1.0 } else { -1.0 };
-            const STEPS: usize = 1400;
+            // (while two wheels show, each with half the points: the
+            // frame costs what one did)
+            let steps: usize = if fade < 1.0 { 490 } else { 980 };
             let laps = 14.0;
             let chunks = 28;
             let faint = if layer < 2 { 0.35 } else { 1.0 } * weight;
             for chunk in 0..chunks {
                 pen.points.clear();
-                for i in chunk * STEPS / chunks..=((chunk + 1) * STEPS / chunks).min(STEPS - 1) {
-                    let t = i as f32 / STEPS as f32 * TAU * laps;
+                for i in chunk * steps / chunks..=((chunk + 1) * steps / chunks).min(steps - 1) {
+                    let t = i as f32 / steps as f32 * TAU * laps;
                     let k = (1.0 - ratio) / ratio;
                     let x = (1.0 - ratio) * t.cos() + d * (k * t).cos();
                     let y = (1.0 - ratio) * t.sin() - d * (k * t).sin();

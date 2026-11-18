@@ -106,6 +106,17 @@ fn the_playlist_stays_in_sight_at_every_size() {
                 if picture.width() > 1190.0 || (picture.center().x - w / 2.0).abs() > 4.0 {
                     failures.push(format!("{name}: the picture {picture:?} not in a column"));
                 }
+                // (and the toolbar over the column, not across the screen)
+                let left = win
+                    .query_all_by_label_contains("Files")
+                    .map(|n| n.rect().left())
+                    .fold(f32::MAX, f32::min);
+                if left == f32::MAX || left < picture.left() - 8.0 {
+                    failures.push(format!(
+                        "{name}: the toolbar's Files at {left:.0}, the column at {:.0}",
+                        picture.left()
+                    ));
+                }
             }
             win.render()
                 .unwrap()

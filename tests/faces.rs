@@ -479,16 +479,21 @@ fn a_new_face_fades_in_over_the_one_before() {
         viz::CROSSFADE
     );
     let after = mean(&h.render().unwrap());
-    // halfway the picture is between the two (every channel)
+    // halfway the picture is between the two: no channel outside them
+    // (give or take the faces' own motion over the frames between), and
+    // the whole of it neither the one nor the other
+    let far = |a: [f32; 3], b: [f32; 3]| (0..3).map(|c| (a[c] - b[c]).abs()).sum::<f32>();
     for c in 0..3 {
         let (lo, hi) = (before[c].min(after[c]), before[c].max(after[c]));
         assert!(
-            during[c] > lo - 2.0
-                && during[c] < hi + 2.0
-                && (hi - lo < 4.0 || (during[c] - lo) > 1.0 && (hi - during[c]) > 1.0),
+            during[c] > lo - 4.0 && during[c] < hi + 4.0,
             "channel {c}: {before:?} -> {during:?} -> {after:?}"
         );
     }
+    assert!(
+        far(during, before) > 3.0 && far(during, after) > 3.0,
+        "not between: {before:?} -> {during:?} -> {after:?}"
+    );
 }
 
 #[test]

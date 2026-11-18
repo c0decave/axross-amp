@@ -945,7 +945,7 @@ fn bells(f: &Frame<'_>, g: Area, cv: &mut Canvas) {
     order[..groups].sort_unstable_by(|x, y| loudest[*x].total_cmp(&loudest[*y]).then(x.cmp(y)));
     cv.draw(f.painter, |pen| {
         pen.rect(g.r(0.0, base, w, 1.0), s.grid());
-        for &gi in &order[..groups] {
+        for (rank, &gi) in order[..groups].iter().enumerate() {
             let centre = (gi as f32 + 0.5) / groups as f32 * w;
             pen.points.clear();
             for p in 0..BELL_POINTS {
@@ -956,7 +956,11 @@ fn bells(f: &Frame<'_>, g: Area, cv: &mut Canvas) {
                 ));
             }
             gradient_under(pen, s, g.y0 + base, g.y0 + h, g.y0);
-            pen.line(1.0, s.at(loudest[gi]));
+            // (the outline of the four loudest only: every bell's, side by
+            // side in a bright scheme, lay in moving stripes)
+            if rank + 4 >= groups {
+                pen.line(1.0, s.at(loudest[gi]));
+            }
         }
         for gi in 0..groups {
             let centre = (gi as f32 + 0.5) / groups as f32 * w;

@@ -189,94 +189,100 @@ in the faces' menu) or choose the cover.
 
 What axross-amp does about it:
 
-- **A flash guard at the output.** After a face has drawn a frame, the guard
-  estimates the picture on a grid of cells (128 across): the frame's shapes,
-  tessellated and laid onto the cells in the order they are painted, a
-  shader face by its own function evaluated on the CPU (48 across,
-  bilinear) where it is painted - over the ground drawn before it. It
-  follows each cell's relative luminance and saturated red, and each
-  *field* - a third of the picture each way, a 10° view when the face fills
-  the screen - in which a quarter of the area changes the same way at once
-  (a cell whose large content changes counts whole; one changed only by
-  small shapes - stars, thin lines - as much as they cover, as WCAG counts
-  the pixels that change; each cell taken with its neighbours, so that a
-  thin line's estimate moving from cell to cell is not a flash). Where a
-  field has changed so five times in the last second (a beat's pulse at
-  120 BPM, four, is within the rule and left alone), it lays a veil over
-  it - before the sixth and seventh, which would break the rule: the cells
-  blended towards a slow average of themselves (more persistence), up to
-  85 - 95 %, easing off a second after the danger is gone. The veil is
-  visible: a smeared ghost of the picture. It works the same whatever a face draws, on the
-  GPU and on the CPU's fallback. It costs about 1 - 4 ms of the CPU a
-  frame (`--release`, `tests/frame_cost.rs`; 7 - 9 ms for the spirograph's
-  thousands of segments, and for the particles and the skyline at 3840 x
-  2160), the faces themselves 0.1 - 2 ms; the frame rate's cap on a
-  software renderer counts it in.
-- **Calmer faces.** What drives the pictures' brightness (the bars, the
-  beat's pulse, the VU meter, the oscilloscope's height) turns no faster
-  than every quarter of a second in *Calm*; the fire is orange and slow;
-  the moiré has few, broad, soft, slow rings; the tunnel fewer rings, slower;
-  the waterfall's, the mel spectrogram's and the fine waterfall's rows are
-  eased in time (each keeps most of the one before); the onsets' twist of
-  the ribbon is spread over a third of a second, and the kaleidoscope turns
-  no faster than a petal in a third of a second; a small ribbon has fewer
-  lines;
-  regular stripes are drawn with less contrast or closed (a noise-dense
-  oscilloscope trace dimmed, the particle columns on a band of their own
-  colour, the 3D ring's bars touching); the spirograph's new wheel fades in
-  over the old instead of the curve following its size (every lap moved,
-  25 transitions a second).
+- **Calm faces.** Each face is meant to stay within the rules by itself,
+  without the guard below. What drives the pictures' brightness (the bars,
+  the beat's pulse, the VU meter, the oscilloscope's height, every band of
+  the spectrograms) turns no faster than every quarter of a second in
+  *Calm*. Pictures with seconds of history (the waterfall, the mel and the
+  fine spectrograms, the piano roll) show each band as its slow mean and
+  half its change from it, eased - a rhythm scrolled past is no flicker and
+  no grating; the overview's scrolling span is held and falls slowly.
+  Between bars and cells (spectrum, mirror, LED, particles, 3D ring,
+  chromagram) lies a shade of their colour 0.075 dimmer, not the dark
+  ground: no grating. Dense lines that would form one are faint (the
+  polygon morph's outer copies, the helix's rungs, synthwave's fan and far
+  rows, a noise-dense oscilloscope trace); the moiré's rings interfere at
+  most 0.09 above the ground; crystals are lit evenly; the beat rings are
+  never saturated red; the onsets turn the kaleidoscope no faster than a
+  petal in a third of a second and twist the ribbon over a third of a
+  second (a small ribbon has fewer lines); the spirograph fades in a new
+  wheel. The Cover face's cover is at most 30 % of the picture (a cover of
+  checks or stripes, standing, stays under 40 %), its backdrop blurred.
+- **A flash guard at the output**, for what the faces do not foresee. After
+  a face has drawn a frame, the guard estimates the picture on a grid of
+  cells (128 across): the shapes laid on in the order they are painted, a
+  shader face by its own function evaluated on the CPU, the cover from its
+  pixels. It follows each cell's relative luminance and saturated red (R,
+  G and B linear), and each *field* - a third of the **screen** each way
+  (the monitor's size; WCAG's 10° view), slid over the face - in which a
+  quarter of that field's area changes the same way at once (34 ms; a cell
+  changed only by small shapes counts as much as they cover). A flash is a
+  pair of opposing changes; where a field has changed five times in a
+  second (a 120 BPM pulse, four, is left alone) it lays a veil over it:
+  the cells blended towards a slow average of themselves, up to 85 - 95 %,
+  staying on while the face goes on near the limit and a second and a half
+  after (no pumping). The veil is visible, a smeared ghost of the picture;
+  on ordinary music - pop, house, drum and bass - it does not come (a
+  test). It costs about 1.5 - 2.5 ms of the CPU a frame (`--release`,
+  `tests/frame_cost.rs`; 5 - 6 ms for the spirograph, and for the
+  particles at 3840 x 2160); the frame rate's cap on a software renderer
+  counts it in.
 - **Calm by default.** *Intense* (Options) is livelier and only chosen after
   a photosensitivity warning; where the desktop asks for reduced motion
   (GNOME, KDE, GTK's settings, macOS, Windows) it cannot be chosen and the
   pictures are calmer still.
-- **Measured.** `tests/flash.rs` renders every face and its options at 60
-  frames a second (384 x 216; every scheme and both motions at 320 x 180
-  with `--ignored`) through music made to provoke them - kicks at 120 and
-  240 BPM, gated noise, bass and treble in turn at steady loudness, fast
-  sweeps, left and right in turn, noise bursts, silence and full scale - and
-  measures each frame as WCAG 2.3.1 / 2.3.2 and ITU-R BT.1702 describe:
-  per pixel, any field a third of the picture each way (the picture taken as
-  the whole screen: the strictest case) with a quarter of it changing the
-  same way at once; more than six transitions in any second fails, and so
-  do saturated-red flashes and regular stripes covering a quarter of the
-  picture while they move (or 40 % standing). Measured so (Calm, Classic,
-  384 x 216, 52 faces and options), 0.10.0's faces failed in 9 cases: the
-  mel spectrogram (37 transitions a second, and its stripes), the
-  waterfall's bars and the spirograph (18), the oscilloscope (16, and its
-  stripes), the kaleidoscope (15), the tunnel (10), the moiré (7), the
-  particles and the polygon morph (their stripes). 0.11.0's faces pass
-  *this suite's* music without the guard, and its sweep of every scheme
-  and both motions at 320 x 180 with it.
+- **Measured.** `tests/support/flashmeter.rs` measures rendered frames as
+  WCAG 2.3.1 / 2.3.2 and ITU-R BT.1702 describe: per pixel (relative
+  luminance; saturated red with R, G and B linear), any field a third of
+  the picture each way (the picture taken as the whole screen: the
+  strictest case) with a quarter of it changing the same way within 34 ms;
+  a flash a pair of opposing changes; more than six transitions in any
+  second fails, and so does saturated red flashing so; regular stripes -
+  five light-dark pairs or more, full periods alike, uneven gratings too -
+  over a quarter of the picture while they move or drift (within a tenth
+  of a second), or 40 % standing. `tests/flash.rs` renders every face and
+  its options through music made to provoke them - kicks at 120 and 240
+  BPM, gated noise, bass and treble in turn, fast sweeps, left and right
+  in turn, bursts, silence and full scale - at 60, 30 and 12 frames a
+  second (384 x 216); the faces with history through ten seconds each of
+  steady music (bass and treble in turn, a chirp, a click train); the
+  default faces through pop, house and drum and bass (the veil must stay
+  off). Every face passes all of it with the guard on and in Calm; the
+  faces at 60 frames a second pass without the guard too (at most 4
+  transitions a second). With `--ignored`, every scheme (Classic, Neon,
+  Mono, Fire) and both motions at 320 x 180 (416 cases): 414 pass; in
+  *Intense* the LED equalizer (Classic) and the plasma (Neon) lie in moving
+  stripes for two or three frames (26 - 38 % of the picture, over the 25 %
+  allowed). At most 6 transitions a second anywhere (the plasma and the
+  beat rings in Intense), red at most 5.
 
-**Known failures (0.11.0, found by an independent review).** The suite's
-music changes every 1.2 s; steadier and finer music breaks the promise:
+Before and after, as an independent review measured 0.11.0 and its own
+test crate measures 0.12.0 (Calm, Classic, 480 x 270, the guard on;
+transitions a second by this meter, and by the reviewer's meter in
+brackets):
 
-- The mel spectrogram, with steady rhythmic music (bass and treble in turn
-  three times a second, a chirp, plain 120 BPM pop), is a moving regular
-  grating over 40 - 85 % of the picture (Calm, Classic, the guard on; it
-  never engages) - a pattern hazard.
-- The waterfall with bars, under a click train of 9 or 13 a second, flashes
-  25 - 28 times a second at 480 x 270 to 1920 x 1080 with the guard on: the
-  guard's estimate (128 cells, smoothed) does not see stripes that fine.
-- The Cover face over a checkerboard cover lies in stripes over 40 % of the
-  picture: the guard takes any picture but text as a flat grey.
-- Red flashes are reckoned on gamma-encoded values, not linear ones as WCAG
-  defines them: an orange-red such as #ff4000 flashing is not seen as red.
-- The guard fires where nothing flashes: the spectrum (the default face)
-  is veiled 40 - 85 % of the time on house and drum and bass, the line
-  spectrum 89 %; on a steady loop the veil pumps on and off. Its fields
-  are a third of the face, not of the screen - far stricter than WCAG in a
-  small window.
-- Tested only at 60 frames a second; the player draws its faces at 30, and
-  at 3 - 12 on a software renderer.
+| | 0.11.0 | 0.12.0 |
+|---|---|---|
+| mel spectrogram, bass and treble in turn, 10 s | 6 (15), stripes 85 % | 0 (0), none |
+| mel spectrogram, a chirp, 10 s | 9 (18), stripes 81 % | 0 (0), none |
+| waterfall (bars), clicks 9 and 13 a second | 25 - 27 | 0 (0) |
+| the same at 960 x 540 / 1920 x 1080 | 25 / 28 | 0 (0) / 0 |
+| Cover face over a checkerboard cover | stripes 40 %, a hazard | 36 - 37 %, none |
+| spectrum, line spectrum on house, drum and bass (30 fps) | veiled 13 - 89 % | veiled 0 % |
+| #ff4000 flashing five times a second (this meter) | no red | 10 red |
 
-These are being fixed; until they are, treat the photosensitivity guard as
-reducing the risk, not removing it.
+**Not yet met.** The two Intense pattern cases above. An independent meter that takes "at once" as 100 ms and
+counts every rise (not only pairs) still counts more than six in
+*Intense* with extreme schemes: the plasma (9 - 17) and the kaleidoscope
+(7) in pure black and white, the fire in pure red (8 - 9 red); the meter
+here counts 1 - 4 for them. The guard has no stage of its own for
+patterns (the faces avoid them; a cover or a scheme it does not foresee
+could make one). Measured only on test pictures up to 1920 x 1080 and on
+lavapipe, not a real GPU.
 
-What is not claimed: the guard estimates the picture (text and covers
-roughly); the test's music and sizes are ours, not every song or screen. It
-is a strong precaution, not a medical guarantee.
+What is not claimed: the guard estimates the picture; the test's music and
+sizes are ours, not every song or screen. It is a strong precaution, not a
+medical guarantee.
 
 ## Use
 

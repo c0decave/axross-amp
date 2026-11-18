@@ -311,6 +311,19 @@ fn moire(p: vec2<f32>, pixel: f32) -> vec3<f32> {
     return c;
 }
 
+fn no_red(c: vec3<f32>) -> vec3<f32> {
+    var out = c;
+    for (var i = 0; i < 8; i++) {
+        let l = pow(max(out, vec3<f32>(0.0)), vec3<f32>(2.2));
+        let sum = l.x + l.y + l.z;
+        if sum <= 0.0 || l.x / sum < 0.75 {
+            break;
+        }
+        out = mix(out, vec3<f32>(1.0, 0.93, 0.84), 0.12);
+    }
+    return out;
+}
+
 fn luma(c: vec3<f32>) -> f32 {
     let l = pow(max(c, vec3<f32>(0.0)), vec3<f32>(2.2));
     return 0.2126 * l.x + 0.7152 * l.y + 0.0722 * l.z;
@@ -442,7 +455,7 @@ fn flyover(uv: vec2<f32>, aspect: f32, steps: i32) -> vec3<f32> {
 // Crystals: cells of a moving Voronoi pattern, each lit by its band, their
 // edges glowing on the beat.
 fn crystals(p: vec2<f32>) -> vec3<f32> {
-    let t = u.t.x * 0.35;
+    let t = u.t.x * 0.7;
     let q = p * 3.2;
     let cell = floor(q);
     var f1 = 9.0;
@@ -468,9 +481,11 @@ fn crystals(p: vec2<f32>) -> vec3<f32> {
     let edge = 1.0 - smoothstep(0.0, 0.08 + 0.05 * u.t.y, f2 - f1);
     // (each cell lit evenly, its edges softer: cells of a size, each light
     // in the middle and dark at the rim, lay in a grating over 47 %)
-    let face = mix(palette(0.55), palette(0.2 + 0.75 * level), 0.35) * (0.93 + 0.07 * (1.0 - f1));
+    let raw = palette(0.2 + 0.75 * level);
+    let k = pow(max(luma(palette(0.55)), 0.02) / max(luma(raw), 1e-4), 1.0 / 2.2);
+    let face = no_red(min(raw * k, vec3<f32>(1.0))) * (0.93 + 0.07 * (1.0 - f1));
     let facet = 0.5 + 0.5 * dot(normalize(q - id - 0.5 + 1e-4), vec2<f32>(0.6, -0.8));
-    return face * (0.96 + 0.04 * facet) + colour(4) * edge * (0.04 + 0.08 * level);
+    return face * (0.96 + 0.04 * facet) + colour(4) * edge * (0.02 + 0.04 * level);
 }
 
 fn to_linear(c: vec3<f32>) -> vec3<f32> {

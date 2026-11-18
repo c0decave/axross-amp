@@ -1092,7 +1092,9 @@ fn chroma(f: &Frame<'_>, cv: &mut Canvas, st: &mut State, dt: f32) {
     let inner = outer * 0.55;
     cv.draw(p, |pen| {
         for (slot, class) in FIFTHS.iter().enumerate() {
-            let v = fine.chroma[*class];
+            // (the history's newest, eased value: the live one, each step
+            // anew, flashed red in a red scheme)
+            let v = fine.chroma_row(0)[*class];
             let a0 = -PI / 2.0 + (slot as f32 - 0.5) / 12.0 * TAU + 0.02;
             let a1 = -PI / 2.0 + (slot as f32 + 0.5) / 12.0 * TAU - 0.02;
             let colour = mix(s.track(), s.at(v), v);
