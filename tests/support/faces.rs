@@ -62,6 +62,23 @@ pub struct FaceApp {
 
 /// A made-up cover: a dusk sky, a sun, hills (256 x 256 RGBA).
 pub fn demo_cover() -> egui::ColorImage {
+    // (AMP_FLASH_COVER=checker | fine | stripes: a patterned cover)
+    if let Ok(kind) = std::env::var("AMP_FLASH_COVER") {
+        let n = 512usize;
+        let mut px = Vec::with_capacity(n * n);
+        for y in 0..n {
+            for x in 0..n {
+                let on = match kind.as_str() {
+                    "checker" => ((x / 32) + (y / 32)) % 2 == 0,
+                    "fine" => ((x / 8) + (y / 8)) % 2 == 0,
+                    _ => (y / 24) % 2 == 0,
+                };
+                let v = if on { 255 } else { 0 };
+                px.push(egui::Color32::from_rgb(v, v, v));
+            }
+        }
+        return egui::ColorImage::new([n, n], px);
+    }
     let n = 256usize;
     let mut px = Vec::with_capacity(n * n);
     for y in 0..n {
@@ -125,11 +142,17 @@ impl FaceApp {
     pub fn paint(&mut self, ui: &mut egui::Ui) {
         let rect = ui.max_rect();
         if self.cover.is_none() && !self.without_cover {
-            self.cover = Some(ui.ctx().load_texture(
-                "cover",
-                demo_cover(),
-                egui::TextureOptions::LINEAR,
-            ));
+            let image = demo_cover();
+            let rgba: Vec<u8> = image.pixels.iter().flat_map(|c| c.to_array()).collect();
+            self.state.cover_thumb = Some(std::sync::Arc::new(viz::Thumb::from_rgba(
+                image.size[0],
+                image.size[1],
+                &rgba,
+            )));
+            self.cover = Some(
+                ui.ctx()
+                    .load_texture("cover", image, egui::TextureOptions::LINEAR),
+            );
         }
         let cover = self.cover.as_ref().map(|t| (t.id(), t.size_vec2()));
         let scheme = viz::scheme(&self.scheme, &Default::default());
@@ -182,6 +205,9 @@ pub fn harness(
         app.state.set_gpu(gpu);
         app.state.gpu.sync = true;
         app.state.gpu.cpu_scale = Some(0.5);
+        // (the picture taken as the whole screen, as the flash meter takes
+        // it: the guard's fields a third of it - the strictest case)
+        app.state.flash.screen_is = Some(size);
         app
     })
 }

@@ -293,16 +293,27 @@ fn moire(p: vec2<f32>, pixel: f32) -> vec3<f32> {
     let t = u.t.x * 0.4;
     let a = vec2<f32>(0.35 * sin(t), 0.25 * cos(t * 0.8));
     let b = vec2<f32>(0.35 * sin(t * 0.7 + 2.0), 0.25 * cos(t * 1.1 + 1.0));
-    // (few, broad, slow and soft rings: fine high-contrast stripes that
-    // move are a known trigger of seizures - this is the gentle kind)
-    let f1 = 9.0 + 4.0 * u.t.w;
-    let f2 = 10.0 + 4.0 * u.m.y;
-    let f3 = 7.0 + 3.0 * u.m.z;
-    let r1 = wave(length(p - a) * f1 - u.t.x * 0.5, f1 * pixel);
-    let r2 = wave(length(p - b) * f2 + u.t.x * 0.4, f2 * pixel);
+    // (dense rings, interfering - slower than they were, and no brighter
+    // than 0.09 above the ground: no pattern hazard)
+    let f1 = 26.0 + 10.0 * u.t.w;
+    let f2 = 28.0 + 10.0 * u.m.y;
+    let f3 = 18.0 + 8.0 * u.m.z;
+    let r1 = wave(length(p - a) * f1 - u.t.x * 0.9, f1 * pixel);
+    let r2 = wave(length(p - b) * f2 + u.t.x * 0.7, f2 * pixel);
     let lines = wave((p.x * cos(t * 0.3) + p.y * sin(t * 0.3)) * f3, f3 * pixel);
     let v = r1 * r2 + 0.35 * lines * r1;
-    return mix(colour(0), cycle(v * 0.4 + t * 0.1), smoothstep(0.15, 0.9, v) * 0.45);
+    let ground = colour(0);
+    let c = mix(ground, cycle(v * 0.4 + t * 0.1), smoothstep(0.15, 0.9, v));
+    let over = luma(c) - luma(ground);
+    if over > 0.09 {
+        return mix(ground, c, 0.09 / over);
+    }
+    return c;
+}
+
+fn luma(c: vec3<f32>) -> f32 {
+    let l = pow(max(c, vec3<f32>(0.0)), vec3<f32>(2.2));
+    return 0.2126 * l.x + 0.7152 * l.y + 0.0722 * l.z;
 }
 
 fn smoke(uv: vec2<f32>, aspect: f32) -> vec3<f32> {
@@ -455,9 +466,11 @@ fn crystals(p: vec2<f32>) -> vec3<f32> {
     let which = hash(id + 3.1);
     let level = band(which);
     let edge = 1.0 - smoothstep(0.0, 0.08 + 0.05 * u.t.y, f2 - f1);
-    let face = palette(0.2 + 0.75 * level) * (0.35 + 0.65 * (1.0 - f1));
+    // (each cell lit evenly, its edges softer: cells of a size, each light
+    // in the middle and dark at the rim, lay in a grating over 47 %)
+    let face = mix(palette(0.55), palette(0.2 + 0.75 * level), 0.35) * (0.93 + 0.07 * (1.0 - f1));
     let facet = 0.5 + 0.5 * dot(normalize(q - id - 0.5 + 1e-4), vec2<f32>(0.6, -0.8));
-    return face * (0.7 + 0.3 * facet) + colour(4) * edge * (0.35 + 0.65 * level);
+    return face * (0.96 + 0.04 * facet) + colour(4) * edge * (0.04 + 0.08 * level);
 }
 
 fn to_linear(c: vec3<f32>) -> vec3<f32> {
@@ -518,6 +531,11 @@ fn smooth_sample(uv: vec2<f32>) -> vec4<f32> {
 fn fs_main(in: Out) -> @location(0) vec4<f32> {
     let px = in.position.xy;
     let uv = (px - u.rect.xy) / u.rect.zw;
+    // (nothing outside the face's own rectangle: the mel spectrogram's
+    // left edge, stretched over its labels' margin, lay under them)
+    if uv.x < 0.0 || uv.y < 0.0 || uv.x > 1.0 || uv.y > 1.0 {
+        return vec4<f32>(0.0);
+    }
     let aspect = u.rect.z / u.rect.w;
     let face = i32(u.face.x + 0.5);
     // the colour (premultiplied by `a`, how much of it there is)

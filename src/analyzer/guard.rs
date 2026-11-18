@@ -7,8 +7,9 @@
 //! and it moves smoothly (no jump within a frame). A face's brightness
 //! that follows these values follows that limit.
 
-/// How the pictures move: calm (the default: slower, at most two flashes a
-/// second) or intense (livelier, still under three).
+/// How the pictures move: calm (the default: slower - what drives them
+/// turns at most every quarter of a second), intense (livelier) or reduced
+/// (the desktop asks for less motion).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum Motion {
     #[default]
@@ -46,16 +47,6 @@ impl Motion {
             Motion::Calm => 3.0,
             Motion::Intense => 18.0,
             Motion::Reduced => 2.0,
-        }
-    }
-
-    /// How much of the row before a scrolling picture's new row keeps
-    /// (the waterfall's: less, and a kick's rows lay in stripes over half
-    /// of it in the bright schemes, a pattern hazard).
-    pub fn row_keep(self) -> f32 {
-        match self {
-            Motion::Calm | Motion::Intense => 0.8,
-            Motion::Reduced => 0.88,
         }
     }
 

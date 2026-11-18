@@ -76,6 +76,11 @@ pub struct Analyzer {
     /// ridges and the terrain): a ring of HISTORY rows of MAX_BARS.
     raw_history: Vec<f32>,
     history: Vec<f32>,
+    /// The waterfall's rows: each bar's slow mean (two seconds) and half
+    /// its change from it, eased (a chirp's sweeps, scrolled, were a
+    /// grating over 70 % of the picture), and those means.
+    waterfall: Vec<f32>,
+    waterfall_mean: Vec<f32>,
     head: usize,
     filled: usize,
     clock: f32,
@@ -160,6 +165,8 @@ impl Analyzer {
             peaks: Vec::with_capacity(MAX_BARS),
             raw_history: vec![0.0; HISTORY * MAX_BARS],
             history: vec![0.0; HISTORY * MAX_BARS],
+            waterfall: vec![0.0; HISTORY * MAX_BARS],
+            waterfall_mean: vec![0.0; MAX_BARS],
             head: 0,
             filled: 0,
             clock: 0.0,
@@ -242,6 +249,8 @@ impl Analyzer {
             }
             self.raw_history.fill(0.0);
             self.history.fill(0.0);
+            self.waterfall.fill(0.0);
+            self.waterfall_mean.fill(0.0);
             self.filled = 0;
         }
     }
@@ -340,6 +349,7 @@ impl Analyzer {
         self.raw_pulse = self.beat.pulse;
         self.beat.pulse = self.pulse_guard.step(self.raw_pulse, dt, self.motion);
         self.fine.external = self.external.map(|r| (r.keys, r.chroma));
+        self.fine.motion = self.motion;
         if needs.fine && live {
             self.fine.update(tap, rate, dt);
         } else if needs.fine {
@@ -364,19 +374,26 @@ impl Analyzer {
             self.phase_target -= 4.0 * std::f32::consts::PI;
             self.phase -= 4.0 * std::f32::consts::PI;
         }
-        // (the waterfall's rows eased in time - each keeps much of the one
-        // before: rows of a gated noise, bright and dark in turn, scrolled
-        // as stripes, 28 transitions a second)
-        let before = self.head * MAX_BARS;
         self.head = (self.head + 1) % HISTORY;
         let row = self.head * MAX_BARS;
-        let keep = self.motion.row_keep();
-        for i in 0..n {
-            let b = self.raw_history[before + i];
-            self.raw_history[row + i] = b + (self.raw[i] - b) * (1.0 - keep);
-        }
+        self.raw_history[row..row + n].copy_from_slice(&self.raw);
         self.history[row..row + n].copy_from_slice(&self.bars);
+        let before = (self.head + HISTORY - 1) % HISTORY * MAX_BARS;
+        let slow = 1.0 - (-1.0 / (TICK_HZ * 2.0)).exp();
+        for i in 0..n {
+            let m = &mut self.waterfall_mean[i];
+            *m += (self.bars[i] - *m) * slow;
+            let shown = *m + (self.bars[i] - *m) * 0.5;
+            let b = self.waterfall[before + i];
+            self.waterfall[row + i] = b + (shown - b) * 0.25;
+        }
         self.filled = (self.filled + 1).min(HISTORY);
+    }
+
+    /// The waterfall's row `age` steps back (calmer than the history).
+    pub fn waterfall_row(&self, age: usize) -> &[f32] {
+        let at = (self.head + HISTORY - age % HISTORY) % HISTORY * MAX_BARS;
+        &self.waterfall[at..at + self.bars.len()]
     }
 
     /// The history row `age` steps back (0: the newest), `bars` long.

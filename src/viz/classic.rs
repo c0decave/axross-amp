@@ -5,7 +5,7 @@
 // (bars, peaks and their places go in step: an index reads best)
 #![allow(clippy::needless_range_loop)]
 
-use super::{Canvas, Frame, Pen, Scheme, VizState, glow, mix, readable_on};
+use super::{Canvas, Frame, Pen, Scheme, VizState, between, glow, mix, readable_on};
 use crate::analyzer::Analyzer;
 use egui::{Align2, Color32, FontId, Pos2, Rect, pos2, vec2};
 use std::f32::consts::{PI, TAU};
@@ -186,7 +186,34 @@ fn spectrum(painter: &egui::Painter, g: Area, a: &Analyzer, s: &Scheme, cv: &mut
     let bottom = g.h;
     let height = bottom - 4.0;
     let bar_width = (width - 2.0).max(1.0);
+    let ground = s.background;
     cv.draw(painter, |pen| {
+        // (behind the bars, between them, their colours a shade dimmer:
+        // bars on a dark ground are a regular grating - a pattern hazard -
+        // where they stand side by side; the shorter of two neighbours'
+        // heights is shared)
+        for i in 0..n {
+            let x = i as f32 * width;
+            let next = a.bars.get(i + 1).copied().unwrap_or(0.0);
+            let shared = (a.bars[i].min(next) * height).max(0.0);
+            let own = (a.bars[i] * height).max(2.0);
+            pen.gradient_as(
+                g.r(x, bottom - own, 1.0, own),
+                s,
+                g.y0 + bottom,
+                g.y0,
+                |c| between(c, ground),
+            );
+            if shared > 0.0 {
+                pen.gradient_as(
+                    g.r(x + width - 1.0, bottom - shared, 1.0, shared),
+                    s,
+                    g.y0 + bottom,
+                    g.y0,
+                    |c| between(c, ground),
+                );
+            }
+        }
         for i in 0..n {
             let x = i as f32 * width + 1.0;
             let bar = (a.bars[i] * height).max(2.0);
@@ -209,7 +236,23 @@ fn mirror(f: &Frame<'_>, g: Area, cv: &mut Canvas) {
     let mid = g.h / 2.0;
     let reach = mid - 3.0;
     let bar_width = (width - 2.0).max(1.0);
+    let ground = s.background;
     cv.draw(f.painter, |pen| {
+        // (between the bars, a shade dimmer: see the spectrum)
+        for i in 0..n {
+            let x = i as f32 * width;
+            let next = a.bars.get(i + 1).copied().unwrap_or(0.0);
+            for (len, at) in [
+                ((a.bars[i] * reach).max(1.0), x),
+                ((a.bars[i].min(next) * reach).max(0.0), x + width - 1.0),
+            ] {
+                if len > 0.0 {
+                    let dim = |c| between(c, ground);
+                    pen.gradient_as(g.r(at, mid - len, 1.0, len), s, g.y0 + mid, g.y0, dim);
+                    pen.gradient_as(g.r(at, mid, 1.0, len), s, g.y0 + mid, g.y0 + g.h, dim);
+                }
+            }
+        }
         for i in 0..n {
             let x = i as f32 * width + 1.0;
             let bar = (a.bars[i] * reach).max(1.0);
@@ -350,7 +393,34 @@ fn led(f: &Frame<'_>, g: Area, cv: &mut Canvas) {
     let gap = (pitch * LED_GAP).round().max(1.0);
     let step = w / n as f32;
     let column = (step * 0.76).round().max(1.0);
+    let ground = s.background;
+    let lit_top = |on: usize| h - 1.0 - on as f32 * pitch;
     cv.draw(f.painter, |pen| {
+        // (behind the lit segments - between them and between lit columns
+        // - their colours a shade dimmer: lit cells on a dark ground are a
+        // regular grating both ways, a pattern hazard)
+        for i in 0..n {
+            let left = (i as f32 * step + step * 0.12).round();
+            let on = ((a.bars[i] * segments as f32 + 0.5) as usize).min(segments);
+            let next = a
+                .bars
+                .get(i + 1)
+                .map_or(0, |b| ((b * segments as f32 + 0.5) as usize).min(segments));
+            let next_left = ((i + 1) as f32 * step + step * 0.12).round();
+            for (from, to, k) in [
+                (left, left + column, on),
+                (left + column, next_left, on.min(next)),
+            ] {
+                if k > 0 && to > from {
+                    let top = lit_top(k).round();
+                    pen.vertical(
+                        g.r(from, top, to - from, h - 1.0 - top),
+                        between(s.at((k as f32 - 0.5) / segments as f32), ground),
+                        between(s.at(0.5 / segments as f32), ground),
+                    );
+                }
+            }
+        }
         for i in 0..n {
             let left = (i as f32 * step + step * 0.12).round();
             let on = ((a.bars[i] * segments as f32 + 0.5) as usize).min(segments);
@@ -450,17 +520,19 @@ fn particles(f: &Frame<'_>, g: Area, cv: &mut Canvas, st: &mut State) {
             // (behind a lit column, a soft band of its colours: the dots on
             // it, not a grid of bright dots on black - a regular pattern of
             // high contrast is what a photosensitive eye cannot bear)
-            // (the columns touch, and the band is nearly the dots' own
-            // colour: at 320 x 180 a band of 75 % between gaps still made
-            // stripes over 40 % of the picture)
+            // (the columns touch, on a band a shade dimmer than the dots -
+            // the most contrast that is no grating: at 320 x 180 a band of
+            // 75 % between gaps made stripes over 40 % of the picture)
             if on > 0 {
-                let top = h - 2.0 - on as f32 * pitch;
                 let wide = step.max(size);
-                pen.vertical(
-                    g.r(x - wide / 2.0, top, wide, on as f32 * pitch),
-                    mix(s.background, s.at(on as f32 / rows as f32), 0.92),
-                    mix(s.background, s.at(0.0), 0.92),
-                );
+                for r in 0..on {
+                    let y = h - 2.0 - (r + 1) as f32 * pitch;
+                    let level = s.at((r as f32 + 0.5) / rows as f32);
+                    pen.rect(
+                        g.r(x - wide / 2.0, y, wide, pitch + 0.3),
+                        between(level, s.background),
+                    );
+                }
             }
             for r in 0..rows {
                 let level = s.at((r as f32 + 0.5) / rows as f32);
@@ -586,7 +658,11 @@ fn waterfall(f: &Frame<'_>, g: Area, cv: &mut Canvas) {
             if y + rh < 0.0 {
                 break;
             }
-            let row = a.raw_row(age);
+            // (the bars as guarded - turning no faster than the motion
+            // allows - not as worked out: scrolled past a pixel, a row a
+            // tick, a click nine times a second flickered nine times; and
+            // their change from their slow mean halved, eased)
+            let row = a.waterfall_row(age);
             for (i, v) in row.iter().enumerate() {
                 if *v < 0.004 {
                     continue; // (the background)
@@ -769,10 +845,10 @@ fn ring(f: &Frame<'_>, g: Area, cv: &mut Canvas, st: &mut State) {
             .sort_by(|x, y| foot(*x).0.y.total_cmp(&foot(*y).0.y).then(x.cmp(y)));
     }
     let order = &st.ring_order;
-    // (the bars touch: half as wide as their spacing, they made regular
-    // stripes over 40 % of a small picture - a pattern hazard; told apart
-    // by every other one a little darker instead)
-    let bar = TAU * rx / n as f32;
+    // (axross's bars, half as wide as their spacing; what lies between
+    // them a shade dimmer than they - on the dark ground they made regular
+    // stripes over 40 % of a small picture, a pattern hazard)
+    let bar = TAU * rx / n as f32 * 0.5;
     let c = g.p(cx, cy);
     cv.draw(f.painter, |pen| {
         ellipse(pen, c, vec2(rx, ry), s.track());
@@ -791,10 +867,17 @@ fn ring(f: &Frame<'_>, g: Area, cv: &mut Canvas, st: &mut State) {
                     3.0,
                 ),
                 s.background,
-                (1.0 - scale) / (1.0 - RING_FAR) / 3.0 + if i % 2 == 1 { 0.06 } else { 0.0 },
+                (1.0 - scale) / (1.0 - RING_FAR) / 3.0,
             );
             let rise = a.bars[i] * reach * scale;
             if rise >= 1.0 {
+                pen.rect(
+                    Rect::from_min_max(
+                        pos2(p.x - thick * 1.1, p.y - rise),
+                        pos2(p.x + thick * 1.1, p.y),
+                    ),
+                    between(colour, s.track()),
+                );
                 pen.rect(
                     Rect::from_min_max(
                         pos2(p.x - thick / 2.0, p.y - rise),
@@ -1149,7 +1232,9 @@ fn scope(f: &Frame<'_>, g: Area, cv: &mut Canvas, st: &mut State) {
         .filter(|w| (w[0] <= 0.0) != (w[1] <= 0.0))
         .count() as f32
         / points.min(shown_wave.len()).max(1) as f32;
-    let want = (1.3 - crossings * 2.5).clamp(0.25, 1.0);
+    // (a crossing every ten pixels or more often is a grating: a pure tone
+    // drawn so, zigzag, lay in stripes over 46 % of a small picture)
+    let want = (1.25 - crossings * 5.0).clamp(0.25, 1.0);
     // (dimmer at once, brighter again slowly)
     if st.scope_bright <= 0.0 || want < st.scope_bright {
         st.scope_bright = want;
@@ -1157,6 +1242,13 @@ fn scope(f: &Frame<'_>, g: Area, cv: &mut Canvas, st: &mut State) {
         st.scope_bright += (want - st.scope_bright) * (1.0 - (-f.dt / 0.5).exp());
     }
     let trace = mix(s.background, s.trace(), st.scope_bright);
+    // (a wave as dense as noise: faint - in a bright scheme a quarter of
+    // its colour still lay in stripes over 46 % of a small picture)
+    let trace = if st.scope_bright < 0.45 || want < 0.45 {
+        super::faint(trace, s.background)
+    } else {
+        trace
+    };
     let kept = &st.scope_last;
     let kept_height = st.scope_last_height;
     cv.draw(f.painter, |pen| {

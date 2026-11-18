@@ -514,6 +514,80 @@ pub(crate) fn glow(c: Color32, k: f32) -> Color32 {
     )
 }
 
+/// Relative luminance (WCAG) of a colour.
+pub fn luminance(c: Color32) -> f32 {
+    let lin = |v: u8| {
+        let v = v as f32 / 255.0;
+        if v <= 0.04045 {
+            v / 12.92
+        } else {
+            ((v + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    0.2126 * lin(c.r()) + 0.7152 * lin(c.g()) + 0.0722 * lin(c.b())
+}
+
+/// What lies between bars of `c` on `ground`: the colour towards the
+/// ground just dim enough to be seen and no dimmer - its luminance less
+/// than 0.08 below the bar's (bars with dark gaps between them are a
+/// regular grating, ITU-R BT.1702's pattern hazard, where their light
+/// and dark differ by 0.1 or more).
+pub fn between(c: Color32, ground: Color32) -> Color32 {
+    let want = (luminance(c) - 0.075).max(luminance(ground));
+    let (mut lo, mut hi) = (0.0f32, 1.0f32);
+    for _ in 0..10 {
+        let t = (lo + hi) / 2.0;
+        if luminance(mix(ground, c, t)) < want {
+            lo = t;
+        } else {
+            hi = t;
+        }
+    }
+    mix(ground, c, hi)
+}
+
+/// A colour towards `ground` until its luminance is no more than 0.08
+/// above the ground's: lines so faint form no grating (their light and
+/// dark differ by less than 0.1).
+pub fn faint(c: Color32, ground: Color32) -> Color32 {
+    let want = luminance(ground) + 0.08;
+    if luminance(c) <= want {
+        return c;
+    }
+    let (mut lo, mut hi) = (0.0f32, 1.0f32);
+    for _ in 0..10 {
+        let t = (lo + hi) / 2.0;
+        if luminance(mix(ground, c, t)) > want {
+            hi = t;
+        } else {
+            lo = t;
+        }
+    }
+    mix(ground, c, lo)
+}
+
+/// A colour no longer saturated red (WCAG: R / (R + G + B) of 0.8 or more,
+/// linear): towards white until it is not - for what comes and goes on
+/// the beat, a red flash being stricter than any other.
+pub fn unred(c: Color32) -> Color32 {
+    let lin = |v: u8| LINEAR[v as usize];
+    let red = |c: Color32| {
+        let (r, g, b) = (lin(c.r()), lin(c.g()), lin(c.b()));
+        r + g + b > 0.0 && r / (r + g + b) >= 0.75
+    };
+    let mut out = c;
+    let mut t = 0.0;
+    while red(out) && t < 1.0 {
+        t += 0.1;
+        out = mix(
+            c,
+            Color32::from_rgb(255, 236, 214).gamma_multiply(c.a() as f32 / 255.0),
+            t,
+        );
+    }
+    out
+}
+
 pub fn mix(a: Color32, b: Color32, t: f32) -> Color32 {
     let t = t.clamp(0.0, 1.0);
     let m = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t).round() as u8;
@@ -678,9 +752,22 @@ impl Pen<'_> {
     /// A rect in the scheme's bar gradient: quiet at `quiet_y`, loud at
     /// `loud_y` (axross's _gradient: stops at 0, 0.6 and 1).
     pub fn gradient(&mut self, rect: Rect, s: &Scheme, quiet_y: f32, loud_y: f32) {
+        self.gradient_as(rect, s, quiet_y, loud_y, |c| c);
+    }
+
+    /// As [`Pen::gradient`], each colour made so first (`between`: what
+    /// lies between bars).
+    pub fn gradient_as(
+        &mut self,
+        rect: Rect,
+        s: &Scheme,
+        quiet_y: f32,
+        loud_y: f32,
+        f: impl Fn(Color32) -> Color32,
+    ) {
         let span = loud_y - quiet_y;
         if span.abs() < 1e-3 {
-            return self.rect(rect, s.low);
+            return self.rect(rect, f(s.low));
         }
         let t = |y: f32| ((y - quiet_y) / span).clamp(0.0, 1.0);
         let stop = quiet_y + 0.6 * span;
@@ -688,16 +775,16 @@ impl Pen<'_> {
         if (top - stop) * (bottom - stop) < 0.0 {
             self.vertical(
                 Rect::from_x_y_ranges(rect.x_range(), top..=stop),
-                s.at(t(top)),
-                s.mid,
+                f(s.at(t(top))),
+                f(s.mid),
             );
             self.vertical(
                 Rect::from_x_y_ranges(rect.x_range(), stop..=bottom),
-                s.mid,
-                s.at(t(bottom)),
+                f(s.mid),
+                f(s.at(t(bottom))),
             );
         } else {
-            self.vertical(rect, s.at(t(top)), s.at(t(bottom)));
+            self.vertical(rect, f(s.at(t(top))), f(s.at(t(bottom))));
         }
     }
 
@@ -915,6 +1002,114 @@ fn clip_band(shape: &[Pos2; 4], ya: f32, yb: f32, out: &mut [Pos2; 8]) -> usize 
     clip(&a[..n], &|p: Pos2| p.y <= yb, yb, out)
 }
 
+/// A picture made small (16 x 16, in linear light): what a texture shows,
+/// as the flash guard estimates it, and a blurred backdrop.
+pub struct Thumb {
+    pub n: usize,
+    pub rgb: Vec<[f32; 3]>,
+}
+
+/// sRGB bytes in linear light.
+static LINEAR: std::sync::LazyLock<[f32; 256]> = std::sync::LazyLock::new(|| {
+    std::array::from_fn(|i| {
+        let v = i as f32 / 255.0;
+        if v <= 0.04045 {
+            v / 12.92
+        } else {
+            ((v + 0.055) / 1.055).powf(2.4)
+        }
+    })
+});
+
+impl Thumb {
+    pub const N: usize = 16;
+
+    /// From an RGBA picture (unmultiplied), each cell its block's mean.
+    pub fn from_rgba(width: usize, height: usize, rgba: &[u8]) -> Thumb {
+        let n = Thumb::N;
+        let mut sum = vec![[0.0f32; 4]; n * n];
+        for y in 0..height {
+            for x in 0..width {
+                let i = (y * width + x) * 4;
+                let Some(p) = rgba.get(i..i + 4) else {
+                    continue;
+                };
+                let a = p[3] as f32 / 255.0;
+                let cell = &mut sum[(y * n / height.max(1)) * n + x * n / width.max(1)];
+                for k in 0..3 {
+                    cell[k] += LINEAR[p[k] as usize] * a;
+                }
+                cell[3] += 1.0;
+            }
+        }
+        // (the mean in linear light: a black and white check is a light
+        // grey, not a mid one)
+        Thumb {
+            n,
+            rgb: sum
+                .iter()
+                .map(|c| {
+                    let k = c[3].max(1.0);
+                    [c[0] / k, c[1] / k, c[2] / k]
+                })
+                .collect(),
+        }
+    }
+
+    /// Made smaller still: `m` x `m` cells, each the mean of its block.
+    pub fn smaller(&self, m: usize) -> Thumb {
+        let n = self.n;
+        let mut rgb = vec![[0.0f32; 3]; m * m];
+        for y in 0..n {
+            for x in 0..n {
+                let cell = &mut rgb[(y * m / n) * m + x * m / n];
+                for k in 0..3 {
+                    cell[k] += self.rgb[y * n + x][k];
+                }
+            }
+        }
+        let block = ((n * n) / (m * m)).max(1) as f32;
+        for c in &mut rgb {
+            for v in c.iter_mut() {
+                *v /= block;
+            }
+        }
+        Thumb { n: m, rgb }
+    }
+
+    /// As [`Thumb::at`], in sRGB (0..1).
+    pub fn at_srgb(&self, u: f32, v: f32) -> [f32; 3] {
+        let srgb = |v: f32| {
+            let v = v.clamp(0.0, 1.0);
+            if v <= 0.003_130_8 {
+                v * 12.92
+            } else {
+                1.055 * v.powf(1.0 / 2.4) - 0.055
+            }
+        };
+        let c = self.at(u, v);
+        [srgb(c[0]), srgb(c[1]), srgb(c[2])]
+    }
+
+    /// At (u, v) in 0..1, between the cells (linear).
+    pub fn at(&self, u: f32, v: f32) -> [f32; 3] {
+        let n = self.n;
+        let fx = (u * n as f32 - 0.5).clamp(0.0, (n - 1) as f32);
+        let fy = (v * n as f32 - 0.5).clamp(0.0, (n - 1) as f32);
+        let (x0, y0) = (fx as usize, fy as usize);
+        let (x1, y1) = ((x0 + 1).min(n - 1), (y0 + 1).min(n - 1));
+        let (tx, ty) = (fx - x0 as f32, fy - y0 as f32);
+        let c = |x: usize, y: usize| self.rgb[y * n + x];
+        let mut out = [0.0; 3];
+        for (k, o) in out.iter_mut().enumerate() {
+            let top = c(x0, y0)[k] + (c(x1, y0)[k] - c(x0, y0)[k]) * tx;
+            let bottom = c(x0, y1)[k] + (c(x1, y1)[k] - c(x0, y1)[k]) * tx;
+            *o = top + (bottom - top) * ty;
+        }
+        out
+    }
+}
+
 /// What a face keeps between frames.
 #[derive(Default)]
 pub struct VizState {
@@ -937,6 +1132,9 @@ pub struct VizState {
     pub flash: flashguard::FlashGuard,
     #[doc(hidden)]
     pub flash_off: bool,
+    /// The cover, small (the flash guard's estimate of it; the cover face's
+    /// backdrop, blurred).
+    pub cover_thumb: Option<std::sync::Arc<Thumb>>,
 }
 
 /// Seconds a face takes to fade into the next.
@@ -1037,9 +1235,15 @@ pub fn draw(f: &Frame<'_>, key: &str, state: &mut VizState) {
     // the flash guard: a veil over whatever would flash too fast
     if face.key != "off" && !state.flash_off {
         let drawn = std::mem::take(&mut state.gpu.drawn);
-        state
-            .flash
-            .guard(f.painter, first, f.rect.shrink(4.0), &drawn, f.dt);
+        let texture = f.cover.map(|c| c.0).zip(state.cover_thumb.clone());
+        state.flash.guard(
+            f.painter,
+            first,
+            f.rect.shrink(4.0),
+            &drawn,
+            texture.as_ref().map(|(id, t)| (*id, &**t)),
+            f.dt,
+        );
         state.gpu.drawn = drawn;
     }
 }

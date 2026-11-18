@@ -27,8 +27,16 @@ const COLS: usize = 128;
 /// Shader faces are evaluated on this coarser grid (cells take the
 /// nearest).
 const SHADE_COLS: usize = 48;
-/// How long a transition stays "at once" with others (two frames at 60 fps).
+/// How long a transition stays "at once" with others: 34 ms - two frames at
+/// 60 a second, one at 30 or fewer (counted in frames, not compared in
+/// seconds: 0.034 against a frame of 0.0333 s was a coin toss).
 const AT_ONCE: f32 = 0.034;
+/// The screen the fields are a third of, each way, when the monitor's size
+/// is not known (points).
+const SCREEN: egui::Vec2 = egui::vec2(1920.0, 1080.0);
+/// A shape's coverage taken a little larger than its geometry (a line a
+/// pixel wide is drawn feathered, over more).
+const SPREAD: f32 = 1.25;
 /// A transition in a cell's relative luminance (WCAG's 0.1).
 const STEP: f32 = 0.1;
 /// Transitions in a field's last second from which the veil comes (five:
@@ -79,9 +87,9 @@ impl Track {
 struct Watch {
     lum: Vec<Track>,
     red: Vec<Track>,
-    /// When each cell last transited (s), and which way.
-    lum_at: Vec<f32>,
-    red_at: Vec<f32>,
+    /// When each cell last transited (the frame), and which way.
+    lum_at: Vec<u64>,
+    red_at: Vec<u64>,
     lum_dir: Vec<i8>,
     red_dir: Vec<i8>,
     /// The same of the cells' large content alone (see `step`), and how
@@ -91,9 +99,13 @@ struct Watch {
     lum_w: Vec<u8>,
     red_w: Vec<u8>,
     /// Each field: whether it was over the quarter (luminance up, down; red
-    /// up, down), its transitions (s).
+    /// up, down); its transitions of luminance and of red (s) and the way
+    /// the last of each went (a transition is a change the other way from
+    /// the one before: two the same way are one, as WCAG counts flashes -
+    /// pairs of opposing changes).
     over: Vec<[bool; 4]>,
-    events: Vec<Vec<f32>>,
+    events: Vec<[Vec<f32>; 2]>,
+    last: Vec<[i8; 2]>,
     /// Counts of this frame's changes, summed (four kinds a cell).
     integral: Vec<u32>,
 }
@@ -102,8 +114,8 @@ impl Watch {
     fn reset(&mut self, cells: usize, fields: usize) {
         self.lum = vec![Track::default(); cells];
         self.red = vec![Track::default(); cells];
-        self.lum_at = vec![f32::NEG_INFINITY; cells];
-        self.red_at = vec![f32::NEG_INFINITY; cells];
+        self.lum_at = vec![u64::MAX; cells];
+        self.red_at = vec![u64::MAX; cells];
         self.lum_dir = vec![0; cells];
         self.red_dir = vec![0; cells];
         self.lum_big = vec![Track::default(); cells];
@@ -111,7 +123,28 @@ impl Watch {
         self.lum_w = vec![0; cells];
         self.red_w = vec![0; cells];
         self.over = vec![[false; 4]; fields];
-        self.events = (0..fields).map(|_| Vec::with_capacity(16)).collect();
+        self.events = (0..fields)
+            .map(|_| [Vec::with_capacity(16), Vec::with_capacity(16)])
+            .collect();
+        self.last = vec![[0; 2]; fields];
+    }
+
+    /// The same cells and fields on a new grid (each new one as the nearest
+    /// old one): the history kept over a change of size.
+    fn remap(&mut self, map: &Remap) {
+        self.lum = map.cells(&self.lum);
+        self.red = map.cells(&self.red);
+        self.lum_at = map.cells(&self.lum_at);
+        self.red_at = map.cells(&self.red_at);
+        self.lum_dir = map.cells(&self.lum_dir);
+        self.red_dir = map.cells(&self.red_dir);
+        self.lum_big = map.cells(&self.lum_big);
+        self.red_big = map.cells(&self.red_big);
+        self.lum_w = map.cells(&self.lum_w);
+        self.red_w = map.cells(&self.red_w);
+        self.over = map.fields(&self.over);
+        self.events = map.fields(&self.events);
+        self.last = map.fields(&self.last);
     }
 
     /// The picture now (linear RGB a cell), the same of its large content
@@ -124,6 +157,7 @@ impl Watch {
     /// changed all over. A transition of the large content counts the whole
     /// cell; one only of the whole picture counts as much of the cell as
     /// small shapes cover - else a starry sky, twinkling, read as a strobe.)
+    #[allow(clippy::too_many_arguments)]
     fn step(
         &mut self,
         cells: &[[f32; 3]],
@@ -131,45 +165,35 @@ impl Watch {
         small: &[f32],
         fields: &[Field],
         cols: usize,
+        frame: u64,
+        at_once: u64,
         now: f32,
+        second: f32,
     ) {
         let luminance = |c: &[f32; 3]| 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
-        let red_of = |c: &[f32; 3]| {
-            // (saturated red in the sRGB values, as WCAG reckons it)
-            // (no red unless red outweighs the rest: most cells, no powers)
-            if c[0] > 0.0005 && c[0] > (c[1] + c[2]) * 2.0 {
-                let (r, g, b) = (to_srgb(c[0]), to_srgb(c[1]), to_srgb(c[2]));
-                let sum = r + g + b;
-                if sum > 0.0 && r / sum >= 0.8 {
-                    ((r - g - b) * 320.0).max(0.0)
-                } else {
-                    0.0
-                }
-            } else {
-                0.0
-            }
-        };
+        let red_of = |c: &[f32; 3]| red(c[0], c[1], c[2]);
         for (i, c) in cells.iter().enumerate() {
             let part = (small[i].min(1.0) * 16.0).ceil() as u8;
             let all = self.lum[i].step(luminance(c), STEP, Some(0.8));
             let large = self.lum_big[i].step(luminance(&big[i]), STEP, Some(0.8));
             if large != 0 {
-                self.lum_at[i] = now;
+                self.lum_at[i] = frame;
                 self.lum_dir[i] = large;
                 self.lum_w[i] = 16;
             } else if all != 0 && part > 0 {
-                self.lum_at[i] = now;
+                self.lum_at[i] = frame;
                 self.lum_dir[i] = all;
                 self.lum_w[i] = part;
             }
-            let all = self.red[i].step(red_of(c), 14.0, None);
-            let large = self.red_big[i].step(red_of(&big[i]), 14.0, None);
+            // (WCAG's step of 20, a little less: the estimate is coarse)
+            let all = self.red[i].step(red_of(c), 16.0, None);
+            let large = self.red_big[i].step(red_of(&big[i]), 16.0, None);
             if large != 0 {
-                self.red_at[i] = now;
+                self.red_at[i] = frame;
                 self.red_dir[i] = large;
                 self.red_w[i] = 16;
             } else if all != 0 && part > 0 {
-                self.red_at[i] = now;
+                self.red_at[i] = frame;
                 self.red_dir[i] = all;
                 self.red_w[i] = part;
             }
@@ -184,10 +208,10 @@ impl Watch {
             let mut row = [0u32; 4];
             for x in 0..cols {
                 let i = y * cols + x;
-                if now - self.lum_at[i] < AT_ONCE {
+                if frame.wrapping_sub(self.lum_at[i]) < at_once {
                     row[usize::from(self.lum_dir[i] > 0)] += u32::from(self.lum_w[i]);
                 }
-                if now - self.red_at[i] < AT_ONCE {
+                if frame.wrapping_sub(self.red_at[i]) < at_once {
                     row[2 + usize::from(self.red_dir[i] > 0)] += u32::from(self.red_w[i]);
                 }
                 for (k, r) in row.iter().enumerate() {
@@ -204,9 +228,9 @@ impl Watch {
         for (k, field) in fields.iter().enumerate() {
             let lum = [sum(field.at, 0), sum(field.at, 1)];
             let red = [sum(field.at, 2), sum(field.at, 3)];
-            // (each way on its own: brightening, then darkening, is two)
-            // (in sixteenths of a cell)
-            let quarter = field.cells.len() * 4;
+            // (each way on its own: brightening, then darkening, is two;
+            // the quarter of a field's area in sixteenths of a cell)
+            let quarter = field.quarter as usize;
             let is = [
                 lum[1] >= quarter,
                 lum[0] >= quarter,
@@ -214,26 +238,61 @@ impl Watch {
                 red[0] >= quarter,
             ];
             for (j, now_over) in is.iter().enumerate() {
-                if *now_over && !self.over[k][j] {
-                    self.events[k].push(now);
+                let (kind, way) = (j / 2, if j % 2 == 0 { 1 } else { -1 });
+                if *now_over && !self.over[k][j] && self.last[k][kind] != way {
+                    self.events[k][kind].push(now);
+                    self.last[k][kind] = way;
                 }
             }
             self.over[k] = is;
-            // (a second: less than one, as frames count it - 59 apart at
-            // 60 a second is the most in a second)
-            self.events[k].retain(|t| now - t < 0.99);
+            // (a second as frames count it: up to half a frame short of one)
+            for e in &mut self.events[k] {
+                e.retain(|t| now - t < second);
+            }
         }
     }
 
     fn recent(&self, field: usize) -> usize {
-        self.events[field].len()
+        self.events[field][0].len().max(self.events[field][1].len())
     }
 }
 
-/// A field: its cells, and its rectangle of them (x, y, w, h).
+/// A field: its rectangle of cells (x, y, w, h), and a quarter of its
+/// area as it would be on the screen (in sixteenths of a cell): a field is
+/// a third of the screen each way - WCAG's 10° view, 341 x 256 at 1024 x
+/// 768 - however small the face; where the face is smaller, its flashes
+/// must still cover a quarter of the whole field.
 struct Field {
-    cells: Vec<usize>,
     at: (usize, usize, usize, usize),
+    quarter: u32,
+}
+
+/// Where each cell and field of a new grid was on the old one.
+struct Remap {
+    cells: Vec<usize>,
+    fields: Vec<usize>,
+}
+
+impl Remap {
+    fn cells<T: Clone>(&self, old: &[T]) -> Vec<T> {
+        self.cells.iter().map(|&i| old[i].clone()).collect()
+    }
+    fn fields<T: Clone>(&self, old: &[T]) -> Vec<T> {
+        self.fields.iter().map(|&i| old[i].clone()).collect()
+    }
+}
+
+/// Saturated red as WCAG 2.0 reckons it - with R, G and B linear, as in
+/// relative luminance: R / (R + G + B) at least 0.8, the change of
+/// (R - G - B) x 320 (was: gamma-encoded values, which took an orange red
+/// such as #ff4000 for no red at all).
+pub fn red(r: f32, g: f32, b: f32) -> f32 {
+    let sum = r + g + b;
+    if sum > 0.0 && r / sum >= 0.8 {
+        ((r - g - b) * 320.0).max(0.0)
+    } else {
+        0.0
+    }
 }
 
 /// The guard's state (one for the picture shown).
@@ -241,6 +300,12 @@ pub struct FlashGuard {
     cols: usize,
     rows: usize,
     rect: Rect,
+    /// The screen the fields are a third of (points): the monitor's, or
+    /// `screen_is` where a test takes its picture for the whole screen.
+    screen: egui::Vec2,
+    pub screen_is: Option<egui::Vec2>,
+    /// Frames estimated.
+    frame: u64,
     fields: Vec<Field>,
     /// The raw estimate and the shown one (linear RGB a cell).
     raw: Vec<[f32; 3]>,
@@ -270,9 +335,6 @@ pub struct FlashGuard {
     /// The estimate as laid on (sRGB values), kept for the next frame.
     acc: Vec<[f32; 3]>,
     acc_big: Vec<[f32; 3]>,
-    /// Room for smoothing.
-    blur: Vec<[f32; 3]>,
-    blur_one: Vec<f32>,
 }
 
 impl Default for FlashGuard {
@@ -281,6 +343,9 @@ impl Default for FlashGuard {
             cols: 0,
             rows: 0,
             rect: Rect::NOTHING,
+            screen: SCREEN,
+            screen_is: None,
+            frame: 0,
             fields: Vec::new(),
             raw: Vec::new(),
             shown: Vec::new(),
@@ -301,8 +366,6 @@ impl Default for FlashGuard {
             target: Vec::new(),
             acc: Vec::new(),
             acc_big: Vec::new(),
-            blur: Vec::new(),
-            blur_one: Vec::new(),
         }
     }
 }
@@ -335,49 +398,115 @@ fn to_srgb(v: f32) -> f32 {
 }
 
 impl FlashGuard {
-    fn layout(&mut self, rect: Rect) {
+    fn layout(&mut self, rect: Rect, screen: egui::Vec2) {
         let rows =
             ((COLS as f32 * rect.height() / rect.width().max(1.0)).round() as usize).clamp(6, 128);
-        if self.cols == COLS && self.rows == rows && self.rect.size() == rect.size() {
-            self.rect = rect;
+        let same_grid = self.cols == COLS && self.rows == rows;
+        let same = same_grid && self.rect.size() == rect.size() && self.screen == screen;
+        self.rect = rect;
+        if same {
             return;
         }
+        let (old_cols, old_rows) = (self.cols, self.rows);
+        let old_centres: Vec<(f32, f32)> = self
+            .fields
+            .iter()
+            .map(|f| {
+                (
+                    (f.at.0 as f32 + f.at.2 as f32 / 2.0) / old_cols.max(1) as f32,
+                    (f.at.1 as f32 + f.at.3 as f32 / 2.0) / old_rows.max(1) as f32,
+                )
+            })
+            .collect();
         self.cols = COLS;
         self.rows = rows;
-        self.rect = rect;
+        self.screen = screen;
         let n = COLS * rows;
-        // the fields: a third each way, slid in twelfths
-        let (fw, fh) = ((COLS / 3).max(1), (rows / 3).max(1));
-        let (sx, sy) = ((COLS / 12).max(1), (rows / 12).max(1));
-        self.fields.clear();
-        let mut y = 0;
-        while y + fh <= rows {
-            let mut x = 0;
-            while x + fw <= COLS {
-                let cells = (y..y + fh)
-                    .flat_map(|cy| (x..x + fw).map(move |cx| cy * COLS + cx))
-                    .collect();
-                self.fields.push(Field {
-                    cells,
-                    at: (x, y, fw, fh),
-                });
-                x += sx;
+        // the fields: a third of the screen each way (in cells, at most the
+        // face), slid a quarter of themselves at a time, the last to the
+        // edge
+        let cw = rect.width() / COLS as f32;
+        let ch = rect.height() / rows as f32;
+        let (fw_pt, fh_pt) = (screen.x / 3.0, screen.y / 3.0);
+        let fw = ((fw_pt / cw).round() as usize).clamp(1, COLS);
+        let fh = ((fh_pt / ch).round() as usize).clamp(1, rows);
+        let quarter = (fw_pt * fh_pt / 4.0 / (cw * ch) * 16.0).round().max(1.0) as u32;
+        let starts = |len: usize, total: usize| {
+            let step = (len / 4).max(1);
+            let mut at: Vec<usize> = (0..=total - len).step_by(step).collect();
+            if at.last() != Some(&(total - len)) {
+                at.push(total - len);
             }
-            y += sy;
+            at
+        };
+        self.fields.clear();
+        for &y in &starts(fh, rows) {
+            for &x in &starts(fw, COLS) {
+                self.fields.push(Field {
+                    at: (x, y, fw, fh),
+                    quarter,
+                });
+            }
         }
         let f = self.fields.len();
-        self.raw = vec![[0.0; 3]; n];
-        self.shown = vec![[0.0; 3]; n];
-        self.raw_big = vec![[0.0; 3]; n];
-        self.shown_big = vec![[0.0; 3]; n];
-        self.small = vec![0.0; n];
-        self.small_before = vec![0.0; n];
-        self.small_most = vec![0.0; n];
-        self.slow = vec![[0.0; 3]; n];
-        self.veil = vec![0.0; n];
-        self.hold = vec![(0.0, 0.0); f];
-        self.raw_watch.reset(n, f);
-        self.shown_watch.reset(n, f);
+        if old_cols == 0 || old_centres.is_empty() {
+            self.raw = vec![[0.0; 3]; n];
+            self.shown = vec![[0.0; 3]; n];
+            self.raw_big = vec![[0.0; 3]; n];
+            self.shown_big = vec![[0.0; 3]; n];
+            self.small = vec![0.0; n];
+            self.small_before = vec![0.0; n];
+            self.small_most = vec![0.0; n];
+            self.slow = vec![[0.0; 3]; n];
+            self.veil = vec![0.0; n];
+            self.hold = vec![(0.0, 0.0); f];
+            self.raw_watch.reset(n, f);
+            self.shown_watch.reset(n, f);
+            self.feedback.clear();
+            return;
+        }
+        // (a new size - a resize, the large view: the history kept, each
+        // new cell and field as the nearest old one)
+        let map = Remap {
+            cells: (0..n)
+                .map(|i| {
+                    let (x, y) = (i % COLS, i / COLS);
+                    let ox = ((x as f32 + 0.5) / COLS as f32 * old_cols as f32) as usize;
+                    let oy = ((y as f32 + 0.5) / rows as f32 * old_rows as f32) as usize;
+                    oy.min(old_rows - 1) * old_cols + ox.min(old_cols - 1)
+                })
+                .collect(),
+            fields: self
+                .fields
+                .iter()
+                .map(|fd| {
+                    let c = (
+                        (fd.at.0 as f32 + fd.at.2 as f32 / 2.0) / COLS as f32,
+                        (fd.at.1 as f32 + fd.at.3 as f32 / 2.0) / rows as f32,
+                    );
+                    (0..old_centres.len())
+                        .min_by(|a, b| {
+                            let d = |k: usize| {
+                                (old_centres[k].0 - c.0).powi(2) + (old_centres[k].1 - c.1).powi(2)
+                            };
+                            d(*a).total_cmp(&d(*b))
+                        })
+                        .unwrap_or(0)
+                })
+                .collect(),
+        };
+        self.raw = map.cells(&self.raw);
+        self.shown = map.cells(&self.shown);
+        self.raw_big = map.cells(&self.raw_big);
+        self.shown_big = map.cells(&self.shown_big);
+        self.small = map.cells(&self.small);
+        self.small_before = map.cells(&self.small_before);
+        self.small_most = map.cells(&self.small_most);
+        self.slow = map.cells(&self.slow);
+        self.veil = map.cells(&self.veil);
+        self.hold = map.fields(&self.hold);
+        self.raw_watch.remap(&map);
+        self.shown_watch.remap(&map);
         self.feedback.clear();
     }
 
@@ -390,22 +519,37 @@ impl FlashGuard {
         first: usize,
         rect: Rect,
         drawn: &[gpu::Drawn],
+        texture: Option<(egui::TextureId, &super::Thumb)>,
         dt: f32,
     ) {
         if rect.width() < 8.0 || rect.height() < 8.0 {
             return;
         }
-        self.layout(rect);
+        let screen = self.screen_is.unwrap_or_else(|| {
+            painter
+                .ctx()
+                .input(|i| i.viewport().monitor_size)
+                .filter(|s| s.x > 100.0 && s.y > 100.0)
+                .unwrap_or(SCREEN)
+        });
+        self.layout(rect, screen);
         if dt > 0.0 {
             self.time += dt;
-            self.estimate(painter, first, drawn);
+            self.frame += 1;
+            self.estimate(painter, first, drawn, texture);
             self.follow(dt);
         }
         self.draw(painter);
     }
 
     /// The picture as the faces drew it, on the cells.
-    fn estimate(&mut self, painter: &egui::Painter, first: usize, drawn: &[gpu::Drawn]) {
+    fn estimate(
+        &mut self,
+        painter: &egui::Painter,
+        first: usize,
+        drawn: &[gpu::Drawn],
+        texture: Option<(egui::TextureId, &super::Thumb)>,
+    ) {
         let (cols, rows, rect) = (self.cols, self.rows, self.rect);
         // (in sRGB values while laying on, as egui blends; made linear after)
         let mut acc = std::mem::take(&mut self.acc);
@@ -455,7 +599,20 @@ impl FlashGuard {
                             big: &mut big,
                             small: &mut self.small,
                         };
-                        lay_mesh(&mut onto, mesh, rect, cols, rows, cw, ch, p.clip_rect);
+                        let thumb = texture
+                            .filter(|(id, _)| *id == mesh.texture_id)
+                            .map(|(_, t)| t);
+                        lay_mesh(
+                            &mut onto,
+                            mesh,
+                            thumb,
+                            rect,
+                            cols,
+                            rows,
+                            cw,
+                            ch,
+                            p.clip_rect,
+                        );
                     }
                 }
                 _ => {}
@@ -577,14 +734,6 @@ impl FlashGuard {
         for i in 0..self.raw.len() {
             self.small_most[i] = self.small[i].max(self.small_before[i]);
         }
-        // (each cell with its neighbours: the estimate of thin and small
-        // shapes jitters from cell to cell as they move - quantised where
-        // they lie - which is not the picture flashing; a flash's area,
-        // a quarter of a field, is hundreds of cells and stays)
-        let (cols, rows) = (self.cols, self.rows);
-        smooth(&mut self.raw, &mut self.blur, cols, rows);
-        smooth(&mut self.raw_big, &mut self.blur, cols, rows);
-        smooth_one(&mut self.small_most, &mut self.blur_one, cols, rows);
         for i in 0..self.raw.len() {
             let a = self.veil[i];
             for k in 0..3 {
@@ -592,13 +741,20 @@ impl FlashGuard {
                 self.shown_big[i][k] = self.raw_big[i][k] * (1.0 - a) + self.slow[i][k] * a;
             }
         }
+        // (34 ms in frames: two at 60 a second, one at 30 and fewer; a
+        // second, up to half a frame short of one)
+        let at_once = ((AT_ONCE / dt).round() as u64).max(1);
+        let second = 1.0 - dt * 0.5;
         self.raw_watch.step(
             &self.raw,
             &self.raw_big,
             &self.small_most,
             &self.fields,
             self.cols,
+            self.frame,
+            at_once,
             now,
+            second,
         );
         self.shown_watch.step(
             &self.shown,
@@ -606,27 +762,34 @@ impl FlashGuard {
             &self.small_most,
             &self.fields,
             self.cols,
+            self.frame,
+            at_once,
             now,
+            second,
         );
         // each field's wanted veil: from the fifth raw transition in a
-        // second, held a second after the last; closer where the veiled
-        // picture itself still transits
+        // second (closer where the veiled picture itself still transits);
+        // once on, it stays while the face goes on near the rule - four in
+        // a second - and a second and a half after (no pumping on a loop
+        // that comes and goes)
         for k in 0..self.fields.len() {
             let raw = self.raw_watch.recent(k);
             let shown = self.shown_watch.recent(k);
+            let (level, until) = &mut self.hold[k];
             let want = if shown >= SHOWN_BUDGET {
                 0.95
             } else if raw >= RAW_BUDGET {
                 0.85
+            } else if *level > 0.0 && raw >= RAW_BUDGET - 1 {
+                *level
             } else {
                 0.0
             };
-            let (level, until) = &mut self.hold[k];
+            if want > 0.0 {
+                *until = now + 1.5;
+            }
             if want >= *level || now > *until {
-                if want > 0.0 {
-                    *until = now + 1.0;
-                }
-                *level = want.max(if now > *until { 0.0 } else { *level });
+                *level = want;
             }
         }
         // each cell: the strongest of its fields, eased (on fast, off slow)
@@ -636,16 +799,21 @@ impl FlashGuard {
         for (k, field) in self.fields.iter().enumerate() {
             let level = self.hold[k].0;
             if level > 0.0 {
-                for &i in &field.cells {
-                    target[i] = target[i].max(level);
+                let (x, y, w, h) = field.at;
+                for cy in y..y + h {
+                    for t in &mut target[cy * self.cols + x..cy * self.cols + x + w] {
+                        *t = t.max(level);
+                    }
                 }
             }
         }
         // (feathered: the veil falls off over a few cells outside its
         // fields, so that it has no edge to see)
         feather(&mut target, self.cols, self.rows, (self.cols / 24).max(2));
-        let on = 1.0 - (-dt / 0.03).exp();
-        let off = 1.0 - (-dt / 0.6).exp();
+        // (on within a few frames - before the next transition - off over
+        // a second)
+        let on = 1.0 - (-dt / 0.05).exp();
+        let off = 1.0 - (-dt / 0.9).exp();
         let follow = 1.0 - (-dt / 0.5).exp();
         let mut strongest = 0.0f32;
         for i in 0..self.veil.len() {
@@ -757,47 +925,6 @@ impl FlashGuard {
     }
 }
 
-/// Each cell the mean of itself and its neighbours (3 x 3; `room` the
-/// scratch it needs).
-fn smooth(cells: &mut [[f32; 3]], room: &mut Vec<[f32; 3]>, cols: usize, rows: usize) {
-    room.clear();
-    room.extend_from_slice(cells);
-    for y in 0..rows {
-        for x in 0..cols {
-            let mut sum = [0.0f32; 3];
-            let mut n = 0.0;
-            for yy in y.saturating_sub(1)..(y + 2).min(rows) {
-                for xx in x.saturating_sub(1)..(x + 2).min(cols) {
-                    let c = room[yy * cols + xx];
-                    for k in 0..3 {
-                        sum[k] += c[k];
-                    }
-                    n += 1.0;
-                }
-            }
-            cells[y * cols + x] = [sum[0] / n, sum[1] / n, sum[2] / n];
-        }
-    }
-}
-
-fn smooth_one(cells: &mut [f32], room: &mut Vec<f32>, cols: usize, rows: usize) {
-    room.clear();
-    room.extend_from_slice(cells);
-    for y in 0..rows {
-        for x in 0..cols {
-            let mut sum = 0.0;
-            let mut n = 0.0;
-            for yy in y.saturating_sub(1)..(y + 2).min(rows) {
-                for xx in x.saturating_sub(1)..(x + 2).min(cols) {
-                    sum += room[yy * cols + xx];
-                    n += 1.0;
-                }
-            }
-            cells[y * cols + x] = sum / n;
-        }
-    }
-}
-
 /// Spreads each cell's veil to its neighbours, falling off linearly over
 /// `reach` cells (a cone: rows, then columns).
 fn feather(target: &mut [f32], cols: usize, rows: usize, reach: usize) {
@@ -836,6 +963,7 @@ struct Onto<'a> {
 fn lay_mesh(
     acc: &mut Onto<'_>,
     mesh: &Mesh,
+    thumb: Option<&super::Thumb>,
     rect: Rect,
     cols: usize,
     rows: usize,
@@ -917,12 +1045,42 @@ fn lay_mesh(
             if k >= 0.99 {
                 lay(&mut acc.big[at]);
             } else if a > 0.004 || mean[0] + mean[1] + mean[2] > 0.004 {
-                acc.small[at] += k / 1.5;
+                acc.small[at] += k / SPREAD;
+            }
+        };
+        // (a small piece's share spread over the four cells nearest its
+        // centre, as they lie: moving, it moves the estimate smoothly from
+        // cell to cell - quantised to one cell, it jumped, and a twinkling
+        // galaxy read as a strobe)
+        let splat = |acc: &mut Onto<'_>, p: Pos2, k: f32| {
+            let fx = (p.x - rect.left()) / cw - 0.5;
+            let fy = (p.y - rect.top()) / ch - 0.5;
+            let (x0, y0) = (fx.floor(), fy.floor());
+            let (tx, ty) = (fx - x0, fy - y0);
+            let (x0, y0) = (x0 as i64, y0 as i64);
+            for (dx, dy, w) in [
+                (0, 0, (1.0 - tx) * (1.0 - ty)),
+                (1, 0, tx * (1.0 - ty)),
+                (0, 1, (1.0 - tx) * ty),
+                (1, 1, tx * ty),
+            ] {
+                if w > 0.01 {
+                    blend(acc, x0 + dx, y0 + dy, (k * w).min(1.0));
+                }
             }
         };
         // each cell it touches, by how much of it it covers (4 x 4 samples;
         // half as much again: a line drawn a pixel or two wide covers more
         // than its geometry - better too much than too little)
+        let uv_at = |p: Pos2| {
+            let d = (p1.y - p2.y) * (p0.x - p2.x) + (p2.x - p1.x) * (p0.y - p2.y);
+            let l0 = ((p1.y - p2.y) * (p.x - p2.x) + (p2.x - p1.x) * (p.y - p2.y)) / d;
+            let l1 = ((p2.y - p0.y) * (p.x - p2.x) + (p0.x - p2.x) * (p.y - p2.y)) / d;
+            let l2 = 1.0 - l0 - l1;
+            (v[0].uv.to_vec2() * l0 + v[1].uv.to_vec2() * l1 + v[2].uv.to_vec2() * l2)
+                .to_pos2()
+                .clamp(Pos2::ZERO, Pos2::new(1.0, 1.0))
+        };
         let inside = |p: Pos2| {
             let d0 = (p1.x - p0.x) * (p.y - p0.y) - (p1.y - p0.y) * (p.x - p0.x);
             let d1 = (p2.x - p1.x) * (p.y - p1.y) - (p2.y - p1.y) * (p.x - p1.x);
@@ -931,16 +1089,17 @@ fn lay_mesh(
         };
         // (small - within four cells each way: its share where it lies, no
         // samples; most of a line's or a dot's pieces)
-        if x1 - x0 <= 3 && y1 - y0 <= 3 {
+        // (a known picture is sampled cell by cell, however its triangles
+        // lie)
+        if thumb.is_none() && x1 - x0 <= 3 && y1 - y0 <= 3 {
             let centroid = Pos2::new((p0.x + p1.x + p2.x) / 3.0, (p0.y + p1.y + p2.y) / 3.0);
-            let (cx, cy) = cell_of(centroid);
-            blend(acc, cx, cy, (1.5 * area.abs() / (cw * ch)).min(1.0));
+            splat(acc, centroid, SPREAD * area.abs() / (cw * ch));
             continue;
         }
         // (thin - a line's long piece: its area along its length, half a
         // cell at a time, not every cell of its box sampled)
         let bbox = (max.x - min.x).max(1e-3) * (max.y - min.y).max(1e-3);
-        if area.abs() < bbox * 0.25 {
+        if thumb.is_none() && area.abs() < bbox * 0.25 {
             let edges = [(p0, p1, p2), (p1, p2, p0), (p2, p0, p1)];
             let (a, b, c) = edges
                 .into_iter()
@@ -949,11 +1108,10 @@ fn lay_mesh(
             let length = (b - a).length();
             let n = ((length / (cw.min(ch) * 0.5)).ceil() as usize).max(1);
             let towards = (c - Pos2::new((a.x + b.x) / 2.0, (a.y + b.y) / 2.0)) / 3.0;
-            let share = (1.5 * area.abs() / n as f32 / (cw * ch)).min(1.0);
+            let share = SPREAD * area.abs() / n as f32 / (cw * ch);
             for k in 0..n {
                 let p = a + (b - a) * ((k as f32 + 0.5) / n as f32) + towards;
-                let (cx, cy) = cell_of(p);
-                blend(acc, cx, cy, share);
+                splat(acc, p, share);
             }
             continue;
         }
@@ -982,15 +1140,34 @@ fn lay_mesh(
                 }
                 if n > 0 {
                     any = true;
-                    blend(acc, cx, cy, (n as f32 / 16.0 * 1.5).min(1.0));
+                    let k = (n as f32 / 16.0 * SPREAD).min(1.0);
+                    match thumb {
+                        // (a picture whose pixels are known - the cover:
+                        // what it shows there, not a grey)
+                        Some(t) => {
+                            let centre = corner + egui::vec2(cw / 2.0, ch / 2.0);
+                            let uv = uv_at(centre);
+                            let px = t.at_srgb(uv.x, uv.y);
+                            let tint = mean;
+                            let a = (tint[3] / ink * k).min(1.0);
+                            let at = cy as usize * cols + cx as usize;
+                            if clip.contains(centre) {
+                                for cell in [&mut acc.all[at], &mut acc.big[at]] {
+                                    for i in 0..3 {
+                                        cell[i] = px[i] * tint[i] / ink * k + cell[i] * (1.0 - a);
+                                    }
+                                }
+                            }
+                        }
+                        None => blend(acc, cx, cy, k),
+                    }
                 }
             }
         }
         if !any {
             // (thinner than the samples: its share of the cell it lies in)
             let centroid = Pos2::new((p0.x + p1.x + p2.x) / 3.0, (p0.y + p1.y + p2.y) / 3.0);
-            let (cx, cy) = cell_of(centroid);
-            blend(acc, cx, cy, (2.0 * area.abs() / (cw * ch)).min(1.0));
+            splat(acc, centroid, SPREAD * area.abs() / (cw * ch));
         }
     }
 }
@@ -1002,7 +1179,10 @@ mod tests {
     #[test]
     fn a_strobe_in_the_estimate_brings_the_veil() {
         let mut g = FlashGuard::default();
-        g.layout(Rect::from_min_size(Pos2::ZERO, egui::vec2(384.0, 216.0)));
+        g.layout(
+            Rect::from_min_size(Pos2::ZERO, egui::vec2(384.0, 216.0)),
+            egui::vec2(384.0, 216.0),
+        );
         let n = g.raw.len();
         for i in 0..120 {
             let on = (((i as f32 / 60.0) * 10.0) as u32).is_multiple_of(2);
@@ -1010,6 +1190,7 @@ mod tests {
             g.raw = vec![[v, v, v]; n];
             g.raw_big = g.raw.clone();
             g.time += 1.0 / 60.0;
+            g.frame += 1;
             g.follow(1.0 / 60.0);
         }
         let (raw, _) = g.pressure();
@@ -1021,7 +1202,10 @@ mod tests {
     /// flash's transitions), for two seconds.
     fn pulse(per_second: f32) -> FlashGuard {
         let mut g = FlashGuard::default();
-        g.layout(Rect::from_min_size(Pos2::ZERO, egui::vec2(384.0, 216.0)));
+        g.layout(
+            Rect::from_min_size(Pos2::ZERO, egui::vec2(384.0, 216.0)),
+            egui::vec2(384.0, 216.0),
+        );
         let (cols, rows) = (g.cols, g.rows);
         for i in 0..120 {
             let t = i as f32 / 60.0;
@@ -1037,6 +1221,7 @@ mod tests {
                 .collect();
             g.raw_big = g.raw.clone();
             g.time += 1.0 / 60.0;
+            g.frame += 1;
             g.follow(1.0 / 60.0);
         }
         g
@@ -1046,7 +1231,10 @@ mod tests {
     /// darkening at once 3.5 times a second, over a ground that stays.
     fn twinkle(cover: f32) -> FlashGuard {
         let mut g = FlashGuard::default();
-        g.layout(Rect::from_min_size(Pos2::ZERO, egui::vec2(384.0, 216.0)));
+        g.layout(
+            Rect::from_min_size(Pos2::ZERO, egui::vec2(384.0, 216.0)),
+            egui::vec2(384.0, 216.0),
+        );
         let n = g.raw.len();
         for i in 0..120 {
             let on = (i as f32 / 60.0 * 3.5).fract() < 0.5;
@@ -1055,9 +1243,116 @@ mod tests {
             g.raw_big = vec![[0.02; 3]; n];
             g.small = vec![cover; n];
             g.time += 1.0 / 60.0;
+            g.frame += 1;
             g.follow(1.0 / 60.0);
         }
         g
+    }
+
+    /// A strobe over a `w` x `h` corner of a 384 x 216 face on a screen
+    /// of `screen`: the veil's strength after two seconds.
+    fn corner(w: usize, h: usize, screen: egui::Vec2) -> f32 {
+        let mut g = FlashGuard::default();
+        let rect = Rect::from_min_size(Pos2::ZERO, egui::vec2(384.0, 216.0));
+        g.layout(rect, screen);
+        let (cols, rows) = (g.cols, g.rows);
+        let (cw, ch) = (384.0 / cols as f32, 216.0 / rows as f32);
+        for i in 0..120 {
+            let on = (i as f32 / 60.0 * 5.0).fract() < 0.5;
+            g.raw = (0..cols * rows)
+                .map(|k| {
+                    let (x, y) = ((k % cols) as f32 * cw, (k / cols) as f32 * ch);
+                    let v = if on && x < w as f32 && y < h as f32 {
+                        0.6
+                    } else {
+                        0.02
+                    };
+                    [v, v, v]
+                })
+                .collect();
+            g.raw_big = g.raw.clone();
+            g.time += 1.0 / 60.0;
+            g.frame += 1;
+            g.follow(1.0 / 60.0);
+        }
+        g.strength
+    }
+
+    #[test]
+    fn transitions_count_alike_at_30_frames_and_as_pairs() {
+        // a 5 Hz strobe at 30 frames a second: ten transitions in a second
+        // (34 ms "at once" against a frame of 33.3 ms was a coin toss)
+        let mut g = FlashGuard::default();
+        let rect = Rect::from_min_size(Pos2::ZERO, egui::vec2(384.0, 216.0));
+        g.layout(rect, egui::vec2(384.0, 216.0));
+        let n = g.raw.len();
+        for i in 0..60 {
+            let on = (i as f32 / 30.0 * 5.0).fract() < 0.5;
+            let v = if on { 0.6 } else { 0.02 };
+            g.raw = vec![[v, v, v]; n];
+            g.raw_big = g.raw.clone();
+            g.time += 1.0 / 30.0;
+            g.frame += 1;
+            g.follow(1.0 / 30.0);
+        }
+        assert!(
+            (9..=10).contains(&g.raw_watch.events[0][0].len()),
+            "{}",
+            g.raw_watch.recent(0)
+        );
+        // brightening in two steps, the left half then the right, then all
+        // dark: one pair of opposing changes - two transitions, not three
+        let mut g = FlashGuard::default();
+        g.layout(rect, egui::vec2(384.0, 216.0));
+        let cols = g.cols;
+        for step in 0..3 {
+            for _ in 0..10 {
+                g.raw = (0..n)
+                    .map(|k| {
+                        let left = k % cols < cols / 2;
+                        let v = match step {
+                            0 if left => 0.6,
+                            1 => 0.6,
+                            _ => 0.02,
+                        };
+                        [v, v, v]
+                    })
+                    .collect();
+                g.raw_big = g.raw.clone();
+                g.time += 1.0 / 60.0;
+                g.frame += 1;
+                g.follow(1.0 / 60.0);
+            }
+        }
+        assert!(g.pressure().0 <= 2, "{:?}", g.pressure());
+    }
+
+    #[test]
+    fn a_field_is_a_third_of_the_screen() {
+        // a 100 x 100 strobe: over a quarter of a field when the face is
+        // the screen (a field 128 x 72), not on a 1920 x 1080 screen (a
+        // field 640 x 360: its quarter 57,600 px²) - WCAG's area is the
+        // screen's, not the window's (the guard once veiled 12 times too
+        // eagerly in the default window)
+        assert!(corner(100, 100, egui::vec2(384.0, 216.0)) > 0.8);
+        assert!(corner(100, 100, egui::vec2(1920.0, 1080.0)) < 0.01);
+        // the whole face strobing is enough either way
+        assert!(corner(384, 216, egui::vec2(1920.0, 1080.0)) > 0.8);
+    }
+
+    #[test]
+    fn a_new_size_keeps_what_the_guard_has_seen() {
+        // (it once forgot it all on a resize or the large view: a strobe
+        // went on unveiled for another second)
+        let mut g = pulse(3.5);
+        let (raw, _) = g.pressure();
+        assert!(raw >= 6 && g.strength > 0.8);
+        g.layout(
+            Rect::from_min_size(Pos2::ZERO, egui::vec2(640.0, 300.0)),
+            egui::vec2(640.0, 300.0),
+        );
+        assert!(g.pressure().0 >= 6, "forgotten: {:?}", g.pressure());
+        assert!(g.veil.iter().any(|v| *v > 0.8));
     }
 
     #[test]

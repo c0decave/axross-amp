@@ -1415,18 +1415,21 @@ fn wave(phase: f32, per_pixel: f32) -> f32 {
 }
 
 fn moire(u: &Uniforms, p: [f32; 2], pixel: f32) -> V3 {
+    // (dense rings again, interfering as moiré does - slower than they
+    // were, and no brighter than 0.09 above the ground: stripes whose light
+    // and dark differ by less than 0.1 are no pattern hazard)
     let t = u.time() * 0.4;
     let a = [0.35 * t.sin(), 0.25 * (t * 0.8).cos()];
     let b = [0.35 * (t * 0.7 + 2.0).sin(), 0.25 * (t * 1.1 + 1.0).cos()];
-    let f1 = 9.0 + 4.0 * u.bass();
-    let f2 = 10.0 + 4.0 * u.middle();
-    let f3 = 7.0 + 3.0 * u.treble();
+    let f1 = 26.0 + 10.0 * u.bass();
+    let f2 = 28.0 + 10.0 * u.middle();
+    let f3 = 18.0 + 8.0 * u.treble();
     let r1 = wave(
-        len2(p[0] - a[0], p[1] - a[1]) * f1 - u.time() * 0.5,
+        len2(p[0] - a[0], p[1] - a[1]) * f1 - u.time() * 0.9,
         f1 * pixel,
     );
     let r2 = wave(
-        len2(p[0] - b[0], p[1] - b[1]) * f2 + u.time() * 0.4,
+        len2(p[0] - b[0], p[1] - b[1]) * f2 + u.time() * 0.7,
         f2 * pixel,
     );
     let lines = wave(
@@ -1434,11 +1437,25 @@ fn moire(u: &Uniforms, p: [f32; 2], pixel: f32) -> V3 {
         f3 * pixel,
     );
     let v = r1 * r2 + 0.35 * lines * r1;
-    mix3(
-        u.colour(0),
+    let ground = u.colour(0);
+    let c = mix3(
+        ground,
         cycle(u, v * 0.4 + t * 0.1),
-        smoothstep(0.15, 0.9, v) * 0.45,
-    )
+        smoothstep(0.15, 0.9, v),
+    );
+    let over = luma(c) - luma(ground);
+    if over > 0.09 {
+        mix3(ground, c, 0.09 / over)
+    } else {
+        c
+    }
+}
+
+/// Relative luminance of an sRGB colour (approximately: power 2.2).
+fn luma(c: V3) -> f32 {
+    0.2126 * c[0].max(0.0).powf(2.2)
+        + 0.7152 * c[1].max(0.0).powf(2.2)
+        + 0.0722 * c[2].max(0.0).powf(2.2)
 }
 
 fn terrain_height(u: &Uniforms, x: f32, z: f32) -> f32 {
@@ -1575,14 +1592,19 @@ fn crystals(u: &Uniforms, p: [f32; 2]) -> V3 {
     let which = hash([id[0] + 3.1, id[1] + 3.1]);
     let level = u.band(which);
     let edge = 1.0 - smoothstep(0.0, 0.08 + 0.05 * u.pulse(), f2 - f1);
-    let face = scale(palette(u, 0.2 + 0.75 * level), 0.35 + 0.65 * (1.0 - f1));
+    // (each cell lit evenly, its edges softer: cells of a size, each light
+    // in the middle and dark at the rim, lay in a grating over 47 %)
+    let face = scale(
+        mix3(palette(u, 0.55), palette(u, 0.2 + 0.75 * level), 0.35),
+        0.93 + 0.07 * (1.0 - f1),
+    );
     let dx = q[0] - id[0] - 0.5 + 1e-4;
     let dy = q[1] - id[1] - 0.5 + 1e-4;
     let l = len2(dx, dy);
     let facet = 0.5 + 0.5 * (dx / l * 0.6 - dy / l * 0.8);
     add(
-        scale(face, 0.7 + 0.3 * facet),
-        scale(u.colour(4), edge * (0.35 + 0.65 * level)),
+        scale(face, 0.96 + 0.04 * facet),
+        scale(u.colour(4), edge * (0.04 + 0.08 * level)),
     )
 }
 

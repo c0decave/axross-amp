@@ -117,8 +117,15 @@ fn record(a: &Analyzer, st: &mut State, dt: f32) {
     st.waves_clock += dt;
     while st.waves_clock >= 1.0 / 30.0 {
         st.waves_clock -= 1.0 / 30.0;
+        // (each step's span held and let fall slowly from the one before:
+        // a click nine times a second, a step loud and one silent in turn,
+        // scrolled past a pixel was a flicker nine times a second)
+        let [lo, hi] = st.waves[st.waves_at];
         st.waves_at = (st.waves_at + 1) % WAVE_STEPS;
-        st.waves[st.waves_at] = st.wave_span;
+        st.waves[st.waves_at] = [
+            st.wave_span[0].min(lo * 0.85),
+            st.wave_span[1].max(hi * 0.85),
+        ];
         st.wave_span = [0.0; 2];
     }
 }
@@ -1054,8 +1061,10 @@ fn chroma(f: &Frame<'_>, cv: &mut Canvas, st: &mut State, dt: f32) {
                     continue;
                 }
                 let y = grid.bottom() - (k + 1) as f32 * row;
+                // (the rows touch: a pixel's dark gap between each of
+                // twelve was a grating over 40 % of the picture)
                 pen.rect(
-                    Rect::from_min_size(pos2(x, y + 0.5), vec2(cell + 0.4, row - 1.0)),
+                    Rect::from_min_size(pos2(x, y), vec2(cell + 0.4, row + 0.4)),
                     mix(s.background, s.at(*v), *v),
                 );
             }

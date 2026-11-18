@@ -24,15 +24,29 @@ struct Report {
     red: usize,
     pattern_frames: usize,
     stripes: f32,
+    /// The share of frames the guard's veil was on (over 0.3).
+    veiled: f32,
 }
 
-/// A face (and how its options are set) through the worst music.
+/// How a face is measured.
+struct Play<'a> {
+    motion: Motion,
+    scheme: &'a str,
+    size: (f32, f32),
+    fps: f32,
+    music: Vec<f32>,
+}
+
+/// A face (and how its options are set) through the worst music, at 60
+/// frames a second.
+#[allow(clippy::too_many_arguments)]
 fn run(
     key: &'static str,
     motion: Motion,
     scheme: &str,
     size: (f32, f32),
     part: f32,
+    fps: f32,
     setup: impl Fn(&mut axross_amp::viz::VizState),
 ) -> Report {
     // (AMP_FLASH_PLAIN: the plain test music instead, as long)
@@ -41,38 +55,139 @@ fn run(
     } else {
         worst_music(part)
     };
+    measure(
+        key,
+        Play {
+            motion,
+            scheme,
+            size,
+            fps,
+            music,
+        },
+        setup,
+    )
+}
+
+/// A face played so, measured.
+fn measure(
+    key: &'static str,
+    play: Play<'_>,
+    setup: impl Fn(&mut axross_amp::viz::VizState),
+) -> Report {
+    let Play {
+        motion,
+        scheme,
+        size,
+        fps,
+        music,
+    } = play;
     let secs = music.len() as f32 / 2.0 / 48_000.0;
     let mut h = faces::harness(key, vec2(size.0, size.1), true, 1.0);
-    h.state_mut().fps = FPS;
+    h.state_mut().fps = fps;
     h.state_mut().sound = music;
     h.state_mut().analyzer.motion = motion;
     h.state_mut().scheme = scheme.to_owned();
     // (AMP_FLASH_NO_GUARD: the faces as they draw, without the guard - the
     // "before" of the report)
     h.state_mut().state.flash_off = std::env::var_os("AMP_FLASH_NO_GUARD").is_some();
+    // (AMP_FLASH_MONITOR: the guard's fields a third of a 1920 x 1080
+    // screen, as in a window, not of the picture)
+    if std::env::var_os("AMP_FLASH_MONITOR").is_some() {
+        h.state_mut().state.flash.screen_is = Some(vec2(1920.0, 1080.0));
+    }
     setup(&mut h.state_mut().state);
-    let frames = ((secs - 0.3) * FPS) as usize;
-    let mut meter = Meter::new(size.0 as usize, size.1 as usize);
+    let frames = ((secs - 0.3) * fps) as usize;
+    let mut meter = Meter::with_fps(size.0 as usize, size.1 as usize, fps.round() as usize);
     // (AMP_FLASH_DUMP=dir: frames 100 - 160 kept as pictures there)
     let dump = std::env::var("AMP_FLASH_DUMP").ok();
+    let mut veiled = 0usize;
     for f in 0..frames {
         faces::frame(&mut h);
         let img = h.render().unwrap();
-        if let Some(dir) = dump.as_deref().filter(|_| (100..160).contains(&f)) {
+        let dump_from: usize = std::env::var("AMP_FLASH_DUMP_AT")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(100);
+        if let Some(dir) = dump
+            .as_deref()
+            .filter(|_| (dump_from..dump_from + 60).contains(&f))
+        {
             img.save(format!("{dir}/{key}-{f:03}.png")).unwrap();
         }
         meter.push(&img);
+        if h.state().state.flash.strength > 0.3 {
+            veiled += 1;
+        }
     }
     let (transitions, red) = meter.most();
     if std::env::var_os("AMP_FLASH_WHERE").is_some() {
         let (at, field) = meter.worst_field();
         println!("{key}: field {field:?} transits at frames {at:?}");
+        println!("{key}: patterns at frames {:?}", meter.hazard_at);
     }
     Report {
         transitions,
         red,
         pattern_frames: meter.pattern_frames,
         stripes: meter.stripes,
+        veiled: veiled as f32 / frames.max(1) as f32,
+    }
+}
+
+/// A probe (`--ignored`): AMP_PROBE_FACES=a,b AMP_PROBE_MUSIC=pop,alt3,worst
+/// AMP_PROBE_SECS=10 AMP_PROBE_FPS=60 AMP_PROBE_SIZE=480x270
+/// AMP_PROBE_SCHEME=classic AMP_PROBE_MOTION=calm AMP_PROBE_HD=0|1
+/// AMP_PROBE_PLUS=0|1 (with AMP_FLASH_NO_GUARD, AMP_FLASH_MONITOR).
+#[test]
+#[ignore]
+fn probe() {
+    let env = |k: &str, d: &str| std::env::var(k).unwrap_or(d.into());
+    let secs: f32 = env("AMP_PROBE_SECS", "10").parse().unwrap();
+    let fps: f32 = env("AMP_PROBE_FPS", "60").parse().unwrap();
+    let size = env("AMP_PROBE_SIZE", "480x270");
+    let (w, h) = size.split_once('x').unwrap();
+    let size = (w.parse().unwrap(), h.parse().unwrap());
+    let scheme = env("AMP_PROBE_SCHEME", "classic");
+    let motion = if env("AMP_PROBE_MOTION", "calm") == "intense" {
+        Motion::Intense
+    } else {
+        Motion::Calm
+    };
+    let hd = env("AMP_PROBE_HD", "1") == "1";
+    let plus = env("AMP_PROBE_PLUS", "0") == "1";
+    for key in env("AMP_PROBE_FACES", "spectrum").split(',') {
+        let key: &'static str = FACES.iter().find(|f| f.key == key).unwrap().key;
+        for music in env("AMP_PROBE_MUSIC", "pop").split(',') {
+            let sound = if music == "worst" {
+                worst_music(secs / 8.0)
+            } else {
+                flashmeter::music(music, secs)
+            };
+            let r = measure(
+                key,
+                Play {
+                    motion,
+                    scheme: &scheme,
+                    size,
+                    fps,
+                    music: sound,
+                },
+                |s| {
+                    s.waterfall_hd = hd;
+                    s.classic_plus = plus;
+                },
+            );
+            println!(
+                "{key:<13} {music:<7} {motion:?} {scheme} {}x{}@{fps}: transitions/s {:>2}  red {:>2}  stripes {:.2} ({} frames)  veiled {:.0} %",
+                size.0,
+                size.1,
+                r.transitions,
+                r.red,
+                r.stripes,
+                r.pattern_frames,
+                r.veiled * 100.0
+            );
+        }
     }
 }
 
@@ -105,12 +220,13 @@ fn sweep(
     schemes: &[&str],
     size: (f32, f32),
     part: f32,
+    fps: f32,
 ) -> Vec<String> {
     let mut failures = Vec::new();
     for &motion in motions {
         for scheme in schemes {
             for (key, option) in cases(group) {
-                let r = run(key, motion, scheme, size, part, |s| match option {
+                let r = run(key, motion, scheme, size, part, fps, |s| match option {
                     "bars" => s.waterfall_hd = false,
                     "trails" => s.classic_plus = true,
                     _ => s.waterfall_hd = true,
@@ -172,6 +288,68 @@ fn the_meter_counts_flashes_areas_and_patterns_as_the_guidelines_do() {
         ) > 0.8
     );
     assert!(flashmeter::stripes(&lum(&|x, _| x as f32 / w as f32 * 0.7), w, h) < 0.01);
+    // uneven gratings are gratings: 3 on and 9 off, 2 / 10, 10 / 3, 12 / 2
+    // (half-periods compared with the first gap once scored 0.00)
+    for (on, off) in [(3, 9), (2, 10), (10, 3), (12, 2)] {
+        let wide = (0..w * 4 * h)
+            .map(|i| {
+                if (i % (w * 4)) % (on + off) < on {
+                    0.6
+                } else {
+                    0.05
+                }
+            })
+            .collect::<Vec<f32>>();
+        let across = flashmeter::stripes(&wide, w * 4, h);
+        assert!(across > 0.8, "{on} on, {off} off: {across:.2}");
+    }
+    // a grating drifting slowly (a pixel every third frame) moves
+    let mut m = Meter::new(w, h);
+    for i in 0..60 {
+        let shift = i / 3;
+        m.push(&frame(&|x, _| {
+            if ((x + shift) / 4) % 2 == 0 { 200 } else { 20 }
+        }));
+    }
+    // (stripes over the whole picture: a hazard standing or moving; over a
+    // third of it, only moving)
+    let mut third = Meter::new(w, h);
+    for i in 0..60 {
+        let shift = i / 3;
+        third.push(&frame(&|x, y| {
+            if y < h / 3 && ((x + shift) / 4) % 2 == 0 {
+                200
+            } else {
+                20
+            }
+        }));
+    }
+    assert!(
+        m.pattern_frames > 50 && third.pattern_frames > 40,
+        "{}",
+        third.pattern_frames
+    );
+    // an orange red (#ff4000) flashing against black five times a second is
+    // a red flash (linear R, G and B: ten transitions a second)
+    let mut red = Meter::new(w, h);
+    for i in 0..120 {
+        let on = (((i as f32 / FPS) * 10.0) as u32).is_multiple_of(2);
+        red.push(&image::RgbaImage::from_fn(w as u32, h as u32, |_, _| {
+            if on {
+                image::Rgba([255, 0x40, 0, 255])
+            } else {
+                image::Rgba([0, 0, 0, 255])
+            }
+        }));
+    }
+    assert_eq!(red.most().1, 10);
+    // at 30 frames a second, the same strobes count the same
+    let mut slow = Meter::with_fps(w, h, 30);
+    for i in 0..60 {
+        let on = (((i as f32 / 30.0) * 10.0) as u32).is_multiple_of(2);
+        slow.push(&frame(&|_, _| if on { 200 } else { 20 }));
+    }
+    assert_eq!(slow.most().0, 10);
 }
 
 #[test]
@@ -182,6 +360,7 @@ fn no_classic_face_flashes() {
         &["classic"],
         (384.0, 216.0),
         1.2,
+        FPS,
     );
     assert!(f.is_empty(), "{f:#?}");
 }
@@ -194,6 +373,7 @@ fn no_analysis_face_flashes() {
         &["classic"],
         (384.0, 216.0),
         1.2,
+        FPS,
     );
     assert!(f.is_empty(), "{f:#?}");
 }
@@ -206,8 +386,101 @@ fn no_generative_face_flashes() {
         &["classic"],
         (384.0, 216.0),
         1.2,
+        FPS,
     );
     assert!(f.is_empty(), "{f:#?}");
+}
+
+/// Every face as the player draws it - 30 frames a second - and as a
+/// software renderer may - 12 (the meter counts a second as so many
+/// frames, "at once" as 34 ms).
+#[test]
+fn no_face_flashes_at_30_or_12_frames_a_second() {
+    let mut f = Vec::new();
+    for fps in [30.0, 12.0] {
+        f.extend(sweep(
+            None,
+            &[Motion::Calm],
+            &["classic"],
+            (384.0, 216.0),
+            1.2,
+            fps,
+        ));
+    }
+    assert!(f.is_empty(), "{f:#?}");
+}
+
+/// The faces with seconds of history (spectrograms, the waterfall, the
+/// chromagram, the piano roll, the overview) through steady music, ten
+/// seconds of each: a rhythm held for longer than they remember (the worst
+/// music's parts, 1.2 s, never showed the mel spectrogram's grating).
+#[test]
+fn faces_with_history_stay_calm_through_steady_music() {
+    let mut failures = Vec::new();
+    for (key, hd) in [
+        ("mel", true),
+        ("waterfall", true),
+        ("waterfall", false),
+        ("chroma", true),
+        ("pianoroll", true),
+        ("overview", true),
+    ] {
+        for music in ["alt3", "chirp", "click9"] {
+            let r = measure(
+                key,
+                Play {
+                    motion: Motion::Calm,
+                    scheme: "classic",
+                    size: (384.0, 216.0),
+                    fps: FPS,
+                    music: flashmeter::music(music, 10.0),
+                },
+                |s| s.waterfall_hd = hd,
+            );
+            let line = format!(
+                "{key} (hd {hd}) {music}: transitions/s {}  red {}  stripes {:.2} ({} frames)",
+                r.transitions, r.red, r.stripes, r.pattern_frames
+            );
+            println!("{line}");
+            if r.transitions > 6 || r.red > 6 || r.pattern_frames > 0 {
+                failures.push(line);
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{failures:#?}");
+}
+
+/// The guard leaves alone what does not flash: the default faces through
+/// pop, house and drum and bass (once it veiled the spectrum 40 - 85 % of
+/// the time there, pumping on and off, the meter counting 2 - 3).
+#[test]
+fn the_veil_stays_off_where_nothing_flashes() {
+    let mut failures = Vec::new();
+    for key in ["spectrum", "line", "mirror", "led"] {
+        for music in ["pop", "house", "dnb"] {
+            let r = measure(
+                key,
+                Play {
+                    motion: Motion::Calm,
+                    scheme: "classic",
+                    size: (384.0, 216.0),
+                    fps: FPS,
+                    music: flashmeter::music(music, 6.0),
+                },
+                |_| {},
+            );
+            let line = format!(
+                "{key} {music}: transitions/s {}  veiled {:.0} %",
+                r.transitions,
+                r.veiled * 100.0
+            );
+            println!("{line}");
+            if r.transitions <= 4 && r.veiled > 0.05 {
+                failures.push(line);
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{failures:#?}");
 }
 
 /// What the whole sweep (below) found, kept in the suite: each at the
@@ -238,7 +511,7 @@ fn what_the_sweep_found_stays_fixed() {
         // wheel's size followed, every lap of the curve moved)
         ("spirograph", Motion::Calm, "classic", false, false),
     ] {
-        let r = run(key, motion, scheme, (320.0, 180.0), 1.2, |s| {
+        let r = run(key, motion, scheme, (320.0, 180.0), 1.2, FPS, |s| {
             s.waterfall_hd = hd;
             s.flash_off = !guard;
         });
@@ -272,7 +545,18 @@ fn no_face_flashes_in_any_scheme_or_motion() {
             _ => Motion::Calm,
         })
         .collect();
-    let f = sweep(None, &motions, &schemes, (320.0, 180.0), 1.2);
+    // (AMP_FLASH_SIZE=1920x1080, AMP_FLASH_FPS=30: elsewhere)
+    let size = std::env::var("AMP_FLASH_SIZE").unwrap_or("320x180".into());
+    let (w, h) = size.split_once('x').unwrap();
+    let fps = std::env::var("AMP_FLASH_FPS").map_or(FPS, |v| v.parse().unwrap());
+    let f = sweep(
+        None,
+        &motions,
+        &schemes,
+        (w.parse().unwrap(), h.parse().unwrap()),
+        1.2,
+        fps,
+    );
     assert!(f.is_empty(), "{f:#?}");
 }
 
@@ -326,6 +610,8 @@ fn the_guard_sees_the_shader_faces() {
         ("smoke", true),
         ("julia", true),
         ("plasma", false),
+        // (and the cover: its pixels as they are, not a flat grey)
+        ("cover", true),
     ] {
         let (err, shown, estimated) = estimate_error(key, gpu);
         println!("{key} (gpu {gpu}): error {err:.3}, picture {shown:.3}, estimate {estimated:.3}");

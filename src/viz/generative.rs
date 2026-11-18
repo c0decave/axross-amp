@@ -146,11 +146,12 @@ pub fn draw(f: &Frame<'_>, key: &str, state: &mut VizState) {
     if let Some(shader) = Shader::of(key) {
         return shaded(f, shader, state, dt);
     }
+    let thumb = state.cover_thumb.clone();
     let cv = &mut state.canvas;
     let st = &mut state.generative;
     let p = f.painter;
     match key {
-        "cover" => cover(f, cv, st),
+        "cover" => cover(f, cv, st, thumb.as_deref()),
         "flowfield" => cv.draw(p, |pen| flowfield(f, pen, st, dt)),
         "synthwave" => cv.draw(p, |pen| synthwave(f, pen, st, dt)),
         "galaxy" => cv.draw(p, |pen| galaxy(f, pen, st, dt)),
@@ -436,13 +437,35 @@ fn seed(st: &mut State, x: usize, y: usize, r: usize) {
 // -- the cover -----------------------------------------------------------------------
 
 /// The cover's side in the cover face of `r` (its inner rect).
+/// How patterned a cover is (0..1): how much its small picture's
+/// neighbouring cells differ in luminance.
+fn patterned(t: &super::Thumb) -> f32 {
+    let n = t.n;
+    let y = |i: usize| {
+        let c = t.rgb[i];
+        0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]
+    };
+    let mut sum = 0.0;
+    for row in 0..n {
+        for col in 0..n - 1 {
+            sum += (y(row * n + col) - y(row * n + col + 1)).abs();
+            sum += (y(col * n + row) - y((col + 1) * n + row)).abs();
+        }
+    }
+    (sum / (2 * n * (n - 1)) as f32 * 4.0).min(1.0)
+}
+
 pub fn cover_side(r: Rect) -> f32 {
-    (r.height() * 0.84).min(r.width() * 0.62)
+    // (at most 30 % of the picture: a cover of stripes or checks, standing,
+    // stays well under BT.1702's 40 %)
+    (r.height() * 0.84)
+        .min(r.width() * 0.62)
+        .min((r.width() * r.height() * 0.3).sqrt())
 }
 
 /// The cover large, as the picture: dimmed behind it, a glow round it that
 /// swells with the bass, a ring at each beat, the spectrum faint below.
-fn cover(f: &Frame<'_>, cv: &mut super::Canvas, st: &mut State) {
+fn cover(f: &Frame<'_>, cv: &mut super::Canvas, st: &mut State, thumb: Option<&super::Thumb>) {
     let (a, s, r) = (f.a, f.s, f.rect);
     let p = f.painter;
     let side = cover_side(r);
@@ -465,11 +488,45 @@ fn cover(f: &Frame<'_>, cv: &mut super::Canvas, st: &mut State) {
             let k = aspect / wide;
             Rect::from_min_max(pos2(0.0, 0.5 - k / 2.0), pos2(1.0, 0.5 + k / 2.0))
         };
-        p.image(texture, r, uv, Color32::from_gray(64));
+        match thumb {
+            // (blurred: the cover made small, between its cells - a cover
+            // of checks, drawn large under a glow that swells with the
+            // bass, lay in stripes over the whole picture)
+            Some(t) => cv.draw(p, |pen| {
+                const N: usize = 12;
+                let t = t.smaller(4);
+                let i = pen.mesh.vertices.len() as u32;
+                for y in 0..=N {
+                    for x in 0..=N {
+                        let (fx, fy) = (x as f32 / N as f32, y as f32 / N as f32);
+                        let c = t.at_srgb(uv.left() + fx * uv.width(), uv.top() + fy * uv.height());
+                        let k = 64.0 / 255.0;
+                        let byte = |v: f32| (v * k * 255.0).round() as u8;
+                        pen.mesh.colored_vertex(
+                            pos2(r.left() + fx * r.width(), r.top() + fy * r.height()),
+                            Color32::from_rgb(byte(c[0]), byte(c[1]), byte(c[2])),
+                        );
+                    }
+                }
+                for y in 0..N as u32 {
+                    for x in 0..N as u32 {
+                        let a = i + y * (N as u32 + 1) + x;
+                        let b = a + N as u32 + 1;
+                        pen.mesh.add_triangle(a, a + 1, b + 1);
+                        pen.mesh.add_triangle(a, b + 1, b);
+                    }
+                }
+            }),
+            None => {
+                p.image(texture, r, uv, Color32::from_gray(64));
+            }
+        }
     }
     cv.draw(p, |pen| {
         pen.rect(r, Color32::from_rgba_premultiplied(0, 0, 0, 90));
-        let swell = 1.0 + 0.18 * a.bass + 0.12 * a.beat.pulse;
+        // (the glow swells with the bass - less over a patterned cover)
+        let pattern = thumb.map_or(0.0, patterned);
+        let swell = 1.0 + (0.18 * a.bass + 0.12 * a.beat.pulse) * (1.0 - 0.8 * pattern);
         pen.radial(
             c,
             side * 0.78 * swell,
@@ -730,7 +787,9 @@ fn synthwave(f: &Frame<'_>, pen: &mut Pen<'_>, st: &mut State, dt: f32) {
     let floor = Rect::from_min_max(pos2(r.left(), horizon), r.max);
     pen.vertical(floor, mix(s.background, s.mid, 0.12), s.background);
     st.synth_scroll = (st.synth_scroll + dt * (0.5 + 2.5 * a.bass + a.beat.pulse)) % 1.0;
-    let line_colour = mix(s.background, s.mid, 0.85);
+    // (the lines to the vanishing point faint: 29 of them, side by side,
+    // under rows scrolling over them, were a moving grating)
+    let line_colour = super::faint(mix(s.background, s.mid, 0.85), s.background);
     let vanish = pos2(r.center().x, horizon);
     for k in -14..=14 {
         let x = r.center().x + k as f32 * w * 0.16;
@@ -748,6 +807,13 @@ fn synthwave(f: &Frame<'_>, pen: &mut Pen<'_>, st: &mut State, dt: f32) {
         let y = horizon + (r.bottom() - horizon) * (1.0 / z).min(1.0) * 0.98;
         let near = (1.0 / z).sqrt();
         let colour = mix(s.background, s.mid, near * (0.6 + 0.4 * a.beat.pulse));
+        // (the far rows, packed together near the horizon, faint: they lay
+        // in a grating there, scrolling)
+        let colour = if near < 0.7 {
+            super::faint(colour, s.background)
+        } else {
+            colour
+        };
         let (left, right) = (pos2(r.left(), y), pos2(r.right(), y));
         pen.segment(left, right, 4.0 * near, glow(s.mid, 0.12 * near));
         pen.segment(left, right, 0.6 + 1.2 * near, colour);
@@ -1115,7 +1181,12 @@ fn helix(f: &Frame<'_>, pen: &mut Pen<'_>) {
                     let depth = 0.35 + 0.65 * (0.5 + 0.5 * z.abs());
                     let mid = p + (q - p) * 0.5;
                     let w = 2.0 + 4.0 * level;
-                    let (c1, c2) = (s.at(0.3 + 0.7 * level), s.at(1.0 - 0.6 * level));
+                    // (faint: 35 rungs side by side, turning, were a
+                    // moving grating)
+                    let (c1, c2) = (
+                        super::faint(s.at(0.3 + 0.7 * level), s.background),
+                        super::faint(s.at(1.0 - 0.6 * level), s.background),
+                    );
                     pen.segment(p, mid, w * 2.5, glow(c1, 0.12 * depth));
                     pen.segment(mid, q, w * 2.5, glow(c2, 0.12 * depth));
                     pen.segment(p, mid, w, mix(s.background, c1, depth));
@@ -1313,6 +1384,13 @@ fn morph(f: &Frame<'_>, pen: &mut Pen<'_>, st: &mut State, dt: f32) {
             s.at(1.0 - kk),
             (0.25 + 0.75 * (1.0 - k.abs())).clamp(0.1, 1.0),
         );
+        // (four copies as they are, the rest faint: fifteen outlines,
+        // nested, were a grating over half the picture)
+        let colour = if (3..=6).contains(&copy) {
+            colour
+        } else {
+            super::faint(colour, s.background)
+        };
         let width = 1.0 + 1.6 * (1.0 - k.abs()).max(0.0);
         pen.outline(width * 6.0, glow(colour, 0.06));
         pen.outline(width * 2.5, glow(colour, 0.18));
@@ -1396,7 +1474,13 @@ fn beatrings(f: &Frame<'_>, pen: &mut Pen<'_>, st: &mut State, dt: f32) {
         let life = 1.0 - age / 2.2;
         let radius = base + age * reach * speed;
         let width = (1.5 + 8.0 * strength) * life;
-        let colour = mix(s.background, s.at(0.3 + 0.7 * hue), life * life);
+        // (never saturated red: rings that come and go on the beat in a
+        // red scheme's orange were red flashes, seven a second)
+        let colour = mix(
+            s.background,
+            super::unred(s.at(0.3 + 0.7 * hue)),
+            life * life,
+        );
         pen.points.clear();
         for k in 0..120 {
             let angle = k as f32 / 120.0 * TAU;
@@ -1405,7 +1489,10 @@ fn beatrings(f: &Frame<'_>, pen: &mut Pen<'_>, st: &mut State, dt: f32) {
             pen.points
                 .push(c + Vec2::angled(angle - PI / 2.0) * (radius + ripple));
         }
-        pen.outline(width * 3.0, glow(s.at(0.3 + 0.7 * hue), 0.12 * life));
+        pen.outline(
+            width * 3.0,
+            glow(super::unred(s.at(0.3 + 0.7 * hue)), 0.12 * life),
+        );
         pen.outline(width, colour);
     }
     // sparks with their trails

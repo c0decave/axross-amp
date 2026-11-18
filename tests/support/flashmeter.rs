@@ -9,18 +9,22 @@
 //!   the quarter of it 2.8 % of the screen). The picture is taken as the
 //!   whole screen (the face full screen: the strictest case), so a field is
 //!   a third of it each way, slid over it in twelfths; a field *transits*
-//!   when, within three frames (50 ms: at once), the pixels transiting in it
-//!   in the same direction (all brightening, or all darkening: a flash is
-//!   an area changing together) cover a quarter of it - each rise of that
-//!   above the quarter one.
-//! - Red: likewise in (R - G - B) x 320 of saturated red pixels (R / (R + G
-//!   + B) at least 0.8), a change of at least 20.
+//!   when, within 34 ms (at once: two frames at 60 a second, one at 30 or
+//!   fewer), the pixels transiting in it in the same direction (all
+//!   brightening, or all darkening: a flash is an area changing together)
+//!   cover a quarter of it - each rise of that above the quarter one, the
+//!   other way from the one before (a flash is a pair of opposing changes).
+//! - Red: likewise in (R - G - B) x 320 of saturated red pixels (R over
+//!   R + G + B at least 0.8), a change of at least 20, with R, G and B
+//!   linear, as in relative luminance (WCAG 2.0's definition).
 //! - Patterns (BT.1702, the Harding test): regular stripes - at least five
 //!   light-dark pairs in a row or a column, each step at least 0.1 of the
-//!   luminance with the darker below 0.8, periods alike - counted over the
-//!   picture; a hazard where they cover a quarter of it and move or flicker
-//!   (a third of the striped pixels changing by 0.1 from the frame before),
-//!   or where they cover 40 % of it even standing still.
+//!   luminance with the darker below 0.8, full periods alike (a light and
+//!   a dark band together: uneven gratings, 3 on and 9 off, are gratings),
+//!   counted over the picture; a hazard where they cover a quarter of it
+//!   and move or flicker (a third of the striped pixels changed by 0.1
+//!   within a tenth of a second: a slow drift too, not only from one frame
+//!   to the next), or where they cover 40 % of it even standing still.
 //!
 //! WCAG allows three flashes (six transitions) in any second.
 #![allow(dead_code)]
@@ -79,6 +83,9 @@ pub struct Meter {
     w: usize,
     h: usize,
     frame: usize,
+    /// Frames a second, and frames "at once".
+    fps: usize,
+    at_once: usize,
     lum: Vec<Track>,
     red: Vec<Track>,
     /// The frame of each pixel's last transition (luminance, red) and its
@@ -98,14 +105,22 @@ pub struct Meter {
     /// (standing or moving).
     pub pattern_frames: usize,
     pub stripes: f32,
-    last_lum: Vec<f32>,
+    /// The frames with a pattern hazard (the first few).
+    pub hazard_at: Vec<usize>,
+    /// The last frames' luminance (a tenth of a second of them).
+    past: std::collections::VecDeque<Vec<f32>>,
+    /// The last way each field's luminance and red transited.
+    lum_last: Vec<i8>,
+    red_last: Vec<i8>,
 }
-
-/// Frames a transition stays "at once" with others (two at 60 fps).
-const AT_ONCE: usize = 2;
 
 impl Meter {
     pub fn new(w: usize, h: usize) -> Meter {
+        Meter::with_fps(w, h, 60)
+    }
+
+    /// A meter for frames shown `fps` a second.
+    pub fn with_fps(w: usize, h: usize, fps: usize) -> Meter {
         let (fw, fh) = (w / 3, h / 3);
         let mut fields = Vec::new();
         let (sx, sy) = ((w / 12).max(1), (h / 12).max(1));
@@ -123,6 +138,8 @@ impl Meter {
             w,
             h,
             frame: 0,
+            fps,
+            at_once: ((0.034 * fps as f32).round() as usize).max(1),
             lum: vec![Track::default(); w * h],
             red: vec![Track::default(); w * h],
             lum_at: vec![usize::MAX; w * h],
@@ -136,7 +153,10 @@ impl Meter {
             red_over: vec![[false; 2]; n],
             pattern_frames: 0,
             stripes: 0.0,
-            last_lum: Vec::new(),
+            hazard_at: Vec::new(),
+            past: std::collections::VecDeque::new(),
+            lum_last: vec![0; n],
+            red_last: vec![0; n],
         }
     }
 
@@ -156,11 +176,7 @@ impl Meter {
                     self.lum_at[i] = f;
                     self.lum_dir[i] = d;
                 }
-                let (r, g, b) = (
-                    p[0] as f32 / 255.0,
-                    p[1] as f32 / 255.0,
-                    p[2] as f32 / 255.0,
-                );
+                let (r, g, b) = (linear(p[0]), linear(p[1]), linear(p[2]));
                 let sum = r + g + b;
                 let red = if sum > 0.0 && r / sum >= 0.8 {
                     ((r - g - b) * 320.0).max(0.0)
@@ -175,7 +191,8 @@ impl Meter {
             }
         }
         // integral images of "transited at once" (luminance, red)
-        let recent = |at: usize| at != usize::MAX && f - at < AT_ONCE;
+        let at_once = self.at_once;
+        let recent = |at: usize| at != usize::MAX && f - at < at_once;
         let integral = |at: &[usize], dirs: &[i8], dir: i8| {
             let mut s = vec![0u32; (w + 1) * (h + 1)];
             for y in 0..h {
@@ -203,17 +220,22 @@ impl Meter {
         for (k, field) in self.fields.iter().enumerate() {
             let quarter = field.2 * field.3 / 4;
             // (each way on its own: brightening, then darkening, is two)
+            // (a transition the other way from the field's last one)
             let over = [sum(&lu, *field) >= quarter, sum(&ld, *field) >= quarter];
             for j in 0..2 {
-                if over[j] && !self.lum_over[k][j] {
+                let way = if j == 0 { 1 } else { -1 };
+                if over[j] && !self.lum_over[k][j] && self.lum_last[k] != way {
                     self.lum_events[k].push(f);
+                    self.lum_last[k] = way;
                 }
             }
             self.lum_over[k] = over;
             let over = [sum(&ru, *field) >= quarter, sum(&rd, *field) >= quarter];
             for j in 0..2 {
-                if over[j] && !self.red_over[k][j] {
+                let way = if j == 0 { 1 } else { -1 };
+                if over[j] && !self.red_over[k][j] && self.red_last[k] != way {
                     self.red_events[k].push(f);
+                    self.red_last[k] = way;
                 }
             }
             self.red_over[k] = over;
@@ -221,24 +243,31 @@ impl Meter {
         // stripes: a hazard over 40 %, or over 25 % where they move
         let (share, marked) = stripes_marked(&lum_now, w, h);
         self.stripes = self.stripes.max(share);
-        let moving = if self.last_lum.len() == lum_now.len() && share > 0.0 {
-            let (mut n, mut changed) = (0usize, 0usize);
-            for (i, m) in marked.iter().enumerate() {
-                if *m {
-                    n += 1;
-                    if (lum_now[i] - self.last_lum[i]).abs() >= 0.1 {
-                        changed += 1;
+        // (moving: against each of the last tenth of a second's frames - a
+        // slow drift changes little from one frame to the next)
+        let moving = share > 0.0
+            && self.past.iter().any(|before| {
+                let (mut n, mut changed) = (0usize, 0usize);
+                for (i, m) in marked.iter().enumerate() {
+                    if *m {
+                        n += 1;
+                        if (lum_now[i] - before[i]).abs() >= 0.1 {
+                            changed += 1;
+                        }
                     }
                 }
-            }
-            changed as f32 >= n as f32 / 3.0
-        } else {
-            false
-        };
+                changed as f32 >= n as f32 / 3.0
+            });
         if share >= 0.4 || (share >= 0.25 && moving) {
             self.pattern_frames += 1;
+            if self.hazard_at.len() < 8 {
+                self.hazard_at.push(f);
+            }
         }
-        self.last_lum = lum_now;
+        self.past.push_back(lum_now);
+        while self.past.len() > (self.fps / 10).max(1) {
+            self.past.pop_front();
+        }
         self.frame += 1;
     }
 
@@ -257,12 +286,7 @@ impl Meter {
                 .iter()
                 .map(|e| {
                     (0..e.len())
-                        .map(|k| {
-                            e[k..]
-                                .iter()
-                                .take_while(|&&f| f < e[k] + FPS as usize)
-                                .count()
-                        })
+                        .map(|k| e[k..].iter().take_while(|&&f| f < e[k] + self.fps).count())
                         .max()
                         .unwrap_or(0)
                 })
@@ -290,15 +314,16 @@ pub fn stripes_marked(lum: &[f32], w: usize, h: usize) -> (f32, Vec<bool>) {
                 turns.push(i);
             }
         }
-        // runs of at least 10 turns (5 pairs) with alike spacing
+        // runs of at least 10 turns (5 pairs) with alike periods - a light
+        // band and a dark one together, however unlike the two
         let mut start = 0;
         while start + 10 <= turns.len() {
-            let mut end = start + 1;
-            let first = turns[start + 1] - turns[start];
+            let mut end = start + 2;
+            let first = turns[start + 2] - turns[start];
             while end + 1 < turns.len() {
-                let gap = turns[end + 1] - turns[end];
-                if (gap as f32) > first as f32 * 1.6 + 1.0
-                    || (gap as f32) < first as f32 / 1.6 - 1.0
+                let period = turns[end + 1] - turns[end - 1];
+                if (period as f32) > first as f32 * 1.6 + 1.0
+                    || (period as f32) < first as f32 / 1.6 - 1.0
                 {
                     break;
                 }
@@ -403,6 +428,110 @@ pub fn worst_music(part: f32) -> Vec<f32> {
         };
         out.push(l.clamp(-1.0, 1.0));
         out.push(r.clamp(-1.0, 1.0));
+    }
+    out
+}
+
+/// Music of a kind, steady, `secs` long (stereo, interleaved, 48 kHz):
+/// "pop" (120 BPM: a kick on each beat, a snare on 2 and 4, eighth hats, a
+/// pad), "house" (126 BPM, hats on every eighth), "dnb" (174 BPM: kick,
+/// snare, sixteenth hats, a reese bass, stabs), "alt3" (bass and treble in
+/// turn three times a second at steady loudness), "chirp" (30 Hz - 16 kHz
+/// up and down three times a second), "click9" / "click13" (full-scale
+/// clicks so many a second). (After an independent review's signals: what
+/// changes every 1.2 s does not show what a picture with seconds of history
+/// does to a steady rhythm.)
+pub fn music(kind: &str, secs: f32) -> Vec<f32> {
+    const RATE: f32 = 48_000.0;
+    let n = (secs * RATE) as usize;
+    let mut seed = 5u32;
+    let mut noise = move || {
+        seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+        (seed >> 9) as f32 / (1u32 << 23) as f32 - 0.5
+    };
+    let tau = std::f32::consts::TAU;
+    let mut out = Vec::with_capacity(n * 2);
+    let (mut phase, mut last) = (0.0f32, 0.0f32);
+    for i in 0..n {
+        let t = i as f32 / RATE;
+        let v = match kind {
+            "pop" | "house" => {
+                let bpm = if kind == "pop" { 120.0 } else { 126.0 };
+                let beat = t * bpm / 60.0;
+                let b = beat.fract() * 60.0 / bpm;
+                let mut v =
+                    (b * (50.0 + 120.0 * (-b * 35.0).exp()) * tau).sin() * (-b * 14.0).exp() * 0.9;
+                if (beat as u32) % 2 == 1 {
+                    v += noise() * (-b * 16.0).exp();
+                }
+                let e8 = (beat * 2.0).fract() * 30.0 / bpm;
+                if kind == "house" || (beat * 2.0) as u32 % 2 == 1 {
+                    v += noise() * 0.3 * (-e8 * 50.0).exp();
+                }
+                v += [220.0f32, 277.2, 329.6, 440.0]
+                    .iter()
+                    .map(|f| (t * f * tau).sin())
+                    .sum::<f32>()
+                    * 0.07;
+                (v + (t * 55.0 * tau).sin() * 0.2) * 0.9
+            }
+            "dnb" => {
+                let beat = t * 174.0 / 60.0;
+                let bar = (beat / 4.0).fract() * 4.0;
+                let step = (bar * 4.0) as u32;
+                let in16 = (bar * 4.0).fract() * 60.0 / 174.0 / 4.0;
+                let mut v = 0.0;
+                if step == 0 || step == 10 {
+                    v += (in16 * (50.0 + 150.0 * (-in16 * 40.0).exp()) * tau).sin()
+                        * (-in16 * 25.0).exp();
+                }
+                if step == 4 || step == 12 {
+                    v += noise() * 1.4 * (-in16 * 18.0).exp()
+                        + (in16 * 190.0 * tau).sin() * 0.4 * (-in16 * 20.0).exp();
+                }
+                let hiss = noise();
+                v += (hiss - last) * 0.25 * (-in16 * 60.0).exp();
+                last = hiss;
+                v += ((t * 43.65 * tau).sin() + (t * 44.2 * tau).sin()) * 0.18;
+                if step % 4 == 2 {
+                    v += [261.6f32, 311.1, 392.0]
+                        .iter()
+                        .map(|f| (t * f * tau).sin())
+                        .sum::<f32>()
+                        * 0.15
+                        * (-in16 * 10.0).exp();
+                }
+                v.clamp(-1.0, 1.0) * 0.95
+            }
+            "alt3" => {
+                if (t * 3.0).fract() < 0.5 {
+                    (t * 55.0 * tau).sin() * 0.8
+                } else {
+                    noise() * 0.9 + (t * 7000.0 * tau).sin() * 0.3
+                }
+            }
+            "chirp" => {
+                let k = (t * 3.0).fract();
+                let k = if k < 0.5 { k * 2.0 } else { 2.0 - k * 2.0 };
+                phase += 30.0 * 533.0f32.powf(k) * tau / RATE;
+                phase.sin() * 0.95
+            }
+            "click9" | "click13" => {
+                let hz = if kind == "click9" { 9.0 } else { 13.0 };
+                let p = (t * hz).fract();
+                if p < 0.0008 {
+                    1.0
+                } else if p < 0.0016 {
+                    -1.0
+                } else {
+                    0.0
+                }
+            }
+            _ => 0.0,
+        };
+        let v = v.clamp(-1.0, 1.0);
+        out.push(v);
+        out.push(v);
     }
     out
 }

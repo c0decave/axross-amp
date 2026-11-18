@@ -892,6 +892,7 @@ impl App {
         self.select(Some(index));
         self.info = TrackInfo::default();
         self.cover = None;
+        self.viz_state.cover_thumb = None;
         self.sizer.set(None);
         self.cover_scheme = None;
         self.stream_title.clear();
@@ -973,6 +974,13 @@ impl App {
             self.playlist.version += 1;
         }
         self.cover = info.art.as_deref().map(|art| cover_texture(ctx, art));
+        self.viz_state.cover_thumb = info.art.as_deref().map(|art| {
+            std::sync::Arc::new(viz::Thumb::from_rgba(
+                art.width as usize,
+                art.height as usize,
+                &art.rgba,
+            ))
+        });
         self.sizer.set(info.art.clone());
         self.cover_scheme = info
             .art
@@ -2162,9 +2170,27 @@ impl App {
             .inner_margin(10.0)
             .show(ui, |ui| {
                 ui.set_min_width(ui.available_width());
+                // (wide: the cover larger, a hero, and what comes next in a
+                // column of its own at the right - not 900 px of nothing)
+                let wide = ui.available_width() > 900.0;
+                let next = if wide {
+                    self.playlist.peek_next().and_then(|i| {
+                        let track = self.playlist.tracks.get(i)?;
+                        let title = if track.title.is_empty() {
+                            playlist::default_title(&track.path)
+                        } else {
+                            track.title.clone()
+                        };
+                        Some(row_text(track, &title))
+                    })
+                } else {
+                    None
+                };
                 ui.horizontal(|ui| {
-                    // (the cover as large as the window allows: 120..200 px)
-                    let side = (ui.available_width() * 0.22).clamp(120.0, 200.0);
+                    // (the cover as large as the window allows: 120..200 px,
+                    // 260 wide)
+                    let most = if wide { 260.0 } else { 200.0 };
+                    let side = (ui.available_width() * 0.22).clamp(120.0, most);
                     let size = vec2(side, side);
                     let px = side * ui.ctx().pixels_per_point();
                     if let Some(texture) = self.sizer.get(px).or(self.cover.as_ref()) {
@@ -2222,6 +2248,28 @@ impl App {
                             );
                         }
                     });
+                    if let Some((title, by)) = next {
+                        ui.with_layout(Layout::right_to_left(Align::Min), |ui| {
+                            ui.set_max_width(260.0);
+                            ui.vertical(|ui| {
+                                ui.label(RichText::new("Up next").size(11.5).color(MUTED));
+                                ui.add(
+                                    egui::Label::new(
+                                        RichText::new(title)
+                                            .size(15.0)
+                                            .color(Color32::from_rgb(0xe6, 0xea, 0xef)),
+                                    )
+                                    .truncate(),
+                                );
+                                if !by.is_empty() {
+                                    ui.add(
+                                        egui::Label::new(RichText::new(by).size(12.5).color(MUTED))
+                                            .truncate(),
+                                    );
+                                }
+                            });
+                        });
+                    }
                 });
             });
     }
@@ -3845,13 +3893,28 @@ impl eframe::App for App {
         if !dropped.is_empty() {
             self.add(&dropped, Then::PlayIfIdle);
         }
+        // (a wide window: the bars above and below as wide as the player's
+        // column, over and under it - not across the whole screen)
+        let wide = ui.available_width() > 1240.0 && self.tab == Tab::Player && !self.big_visual;
+        let column = move |ui: &mut Ui, inner: &mut dyn FnMut(&mut Ui)| {
+            if wide {
+                let room = ui.available_rect_before_wrap();
+                let rect = egui::Rect::from_min_size(
+                    egui::pos2(room.center().x - 1176.0 / 2.0, room.top()),
+                    vec2(1176.0, room.height()),
+                );
+                ui.scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| inner(ui));
+            } else {
+                inner(ui);
+            }
+        };
         egui::Panel::top("top")
             .frame(
                 egui::Frame::new()
                     .fill(Color32::from_rgb(0x0d, 0x11, 0x17))
                     .inner_margin(8.0),
             )
-            .show(ui, |ui| self.top_bar(ui));
+            .show(ui, |ui| column(ui, &mut |ui| self.top_bar(ui)));
         egui::Panel::bottom("status")
             .frame(
                 egui::Frame::new()
@@ -3859,34 +3922,38 @@ impl eframe::App for App {
                     .inner_margin(egui::Margin::symmetric(8, 3)),
             )
             .show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    let line = if self.notice.is_empty() {
-                        self.status.clone()
-                    } else {
-                        self.notice.clone()
-                    };
-                    // a message says its piece for a while, then goes
-                    if line != self.status_seen.0 {
-                        self.status_seen = (line.clone(), Instant::now());
-                    }
-                    let age = self.status_seen.1.elapsed();
-                    let line = if age < STATUS_FOR || !self.adding.is_empty() {
-                        ui.ctx()
-                            .request_repaint_after(STATUS_FOR.saturating_sub(age));
-                        line
-                    } else {
-                        String::new()
-                    };
-                    ui.add(egui::Label::new(RichText::new(line).small().color(MUTED)).truncate());
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        // (said the same way as the banner says it)
-                        let output = match self.output.strip_prefix("no sound: ") {
-                            Some(why) => format!("No sound – {why}"),
-                            None => self.output.clone(),
+                column(ui, &mut |ui| {
+                    ui.horizontal(|ui| {
+                        let line = if self.notice.is_empty() {
+                            self.status.clone()
+                        } else {
+                            self.notice.clone()
                         };
-                        ui.label(RichText::new(output).small().color(MUTED));
+                        // a message says its piece for a while, then goes
+                        if line != self.status_seen.0 {
+                            self.status_seen = (line.clone(), Instant::now());
+                        }
+                        let age = self.status_seen.1.elapsed();
+                        let line = if age < STATUS_FOR || !self.adding.is_empty() {
+                            ui.ctx()
+                                .request_repaint_after(STATUS_FOR.saturating_sub(age));
+                            line
+                        } else {
+                            String::new()
+                        };
+                        ui.add(
+                            egui::Label::new(RichText::new(line).small().color(MUTED)).truncate(),
+                        );
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            // (said the same way as the banner says it)
+                            let output = match self.output.strip_prefix("no sound: ") {
+                                Some(why) => format!("No sound – {why}"),
+                                None => self.output.clone(),
+                            };
+                            ui.label(RichText::new(output).small().color(MUTED));
+                        });
                     });
-                });
+                })
             });
         egui::CentralPanel::default()
             .frame(

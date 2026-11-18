@@ -89,7 +89,16 @@ def main() -> None:
         rust, out = Path(sys.argv[2]), Path(sys.argv[3])
         keys = sys.argv[4:]
         width = 300
-        cells = [(NAMES.get(key, key), scaled(rust / f"{key}.png", width)) for key in keys]
+        # (every cell the same shape - 16:9, the middle of a taller picture
+        # - so that the rows line up)
+        def fitted(path: Path) -> QImage:
+            image = scaled(path, width)
+            height = width * 9 // 16
+            if image.height() > height:
+                image = image.copy(0, (image.height() - height) // 2, width, height)
+            return image
+
+        cells = [(NAMES.get(key, key), fitted(rust / f"{key}.png")) for key in keys]
         sheet(cells, 4, width, out)
     app.quit()
 

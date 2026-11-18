@@ -9,10 +9,16 @@ use rustfft::num_complex::Complex;
 use rustfft::{Fft, FftPlanner};
 use std::sync::Arc;
 
+use super::guard::{Guard, Motion};
+
 pub const SIZE: usize = 8192;
 pub const BINS: usize = SIZE / 2 + 1;
 pub const KEYS: usize = 88;
 pub const MELS: usize = 64;
+/// How much of a mel band's new value a step of its history takes (a
+/// rhythm's columns, three a second, lay in a grating over most of the
+/// picture with a quarter).
+const MEL_EASE: f32 = 0.1;
 /// Bands of the fine spectrogram (the waterfall's high resolution):
 /// log-spaced, 30 Hz..16 kHz.
 pub const HD: usize = 256;
@@ -54,6 +60,18 @@ struct MelBand {
 }
 
 pub struct Fine {
+    /// How the pictures move (the analyzer's): the spectrograms' bands turn
+    /// no faster than it allows.
+    pub motion: Motion,
+    /// Each mel band's and fine band's guard.
+    mel_guards: Vec<Guard>,
+    /// Each mel band's slow mean (two seconds): the spectrogram shows the
+    /// bands' change from it at half its size.
+    mel_mean: [f32; MELS],
+    hd_mean: Vec<f32>,
+    key_guards: Vec<Guard>,
+    key_mean: Vec<f32>,
+    hd_guards: Vec<Guard>,
     fft: Arc<dyn Fft<f32>>,
     window: Vec<f32>,
     buffer: Vec<Complex<f32>>,
@@ -137,6 +155,13 @@ impl Fine {
             chroma_history: vec![[0.0; 12]; STEPS],
             key_history: vec![[0.0; KEYS]; STEPS],
             hd_history: vec![[0.0; HD]; STEPS],
+            motion: Motion::default(),
+            mel_guards: vec![Guard::default(); MELS],
+            mel_mean: [0.0; MELS],
+            hd_mean: vec![0.0; HD],
+            key_guards: vec![Guard::default(); KEYS],
+            key_mean: vec![0.0; KEYS],
+            hd_guards: vec![Guard::default(); HD],
             head: 0,
             clock: 0.0,
             steps: 0,
@@ -377,20 +402,61 @@ impl Fine {
             // (the spectrogram's rows eased in time: scrolled past a pixel,
             // a step's sharp change made it flicker - each row now keeps
             // most of the one before)
+            // (and each band turns no faster than the motion allows - a
+            // spectrogram scrolled past a pixel flickers as its band does:
+            // a click nine times a second was nine flickers a second)
             let before = self.mel_history[(self.head + STEPS - 1) % STEPS];
             let mut row = self.mel;
-            for (v, b) in row.iter_mut().zip(before) {
-                *v = b + (*v - b) * 0.25;
+            // (and drawn as the band's slow mean and half its change from
+            // it: a chirp lights each band for a moment three times a
+            // second - its columns, eased, still lay in a grating over
+            // more than half the picture)
+            let slow = 1.0 - (-1.0 / (STEP_HZ * 2.0)).exp();
+            for (((v, b), g), m) in row
+                .iter_mut()
+                .zip(before)
+                .zip(&mut self.mel_guards)
+                .zip(&mut self.mel_mean)
+            {
+                let guarded = g.step(*v, 1.0 / STEP_HZ, self.motion);
+                *m += (guarded - *m) * slow;
+                let shown = *m + (guarded - *m) * 0.5;
+                *v = b + (shown - b) * MEL_EASE;
             }
             self.mel_history[self.head] = row;
             self.chroma_history[self.head] = self.chroma;
-            self.key_history[self.head] = self.keys;
+            // (the piano roll's keys too: a chirp's run up and down the
+            // keys, three times a second, lay in a grating)
+            let before = self.key_history[(self.head + STEPS - 1) % STEPS];
+            let mut row = self.keys;
+            for (((v, b), g), m) in row
+                .iter_mut()
+                .zip(before)
+                .zip(&mut self.key_guards)
+                .zip(&mut self.key_mean)
+            {
+                let guarded = g.step(*v, 1.0 / STEP_HZ, self.motion);
+                *m += (guarded - *m) * slow;
+                let shown = *m + (guarded - *m) * 0.5;
+                *v = b + (shown - b) * MEL_EASE;
+            }
+            self.key_history[self.head] = row;
             // (the fine waterfall's the same way: in bright schemes its
             // scrolling rows flickered at up to 37 transitions a second)
             let before = self.hd_history[(self.head + STEPS - 1) % STEPS];
             let mut row = self.hd;
-            for (v, b) in row.iter_mut().zip(before) {
-                *v = b + (*v - b) * 0.25;
+            // (as the mel spectrogram's: a chirp's sweeps lay in a grating
+            // over half of it)
+            for (((v, b), g), m) in row
+                .iter_mut()
+                .zip(before)
+                .zip(&mut self.hd_guards)
+                .zip(&mut self.hd_mean)
+            {
+                let guarded = g.step(*v, 1.0 / STEP_HZ, self.motion);
+                *m += (guarded - *m) * slow;
+                let shown = *m + (guarded - *m) * 0.5;
+                *v = b + (shown - b) * MEL_EASE;
             }
             self.hd_history[self.head] = row;
         }
