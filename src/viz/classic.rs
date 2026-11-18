@@ -495,7 +495,9 @@ fn led(f: &Frame<'_>, g: Area, cv: &mut Canvas, st: &mut State) {
                 } else if k < on {
                     lit
                 } else {
-                    mix(s.background, lit, 0.18)
+                    // (faint either way: unlit segments a fifth of the way
+                    // to black on a white ground were a grating)
+                    super::faint(mix(s.background, lit, 0.18), s.background)
                 };
                 pen.rect(g.r(left, top, column, height), colour);
             }
@@ -609,7 +611,7 @@ fn particles(f: &Frame<'_>, g: Area, cv: &mut Canvas, st: &mut State) {
                 } else if r < on {
                     level
                 } else {
-                    mix(s.background, level, 0.16)
+                    super::faint(mix(s.background, level, 0.16), s.background)
                 };
                 let y = h - 2.0 - (r as f32 + 0.5) * pitch;
                 disc(pen, g.p(x, y), size / 2.0, colour);
@@ -802,6 +804,10 @@ fn ridges(f: &Frame<'_>, g: Area, cv: &mut Canvas) {
         }
     });
     // the ridges, back to front: each hides what is behind it
+    // (in the starkest schemes a shade into the ground: thirty ridges of
+    // white on black, or black on white, moving on a row at each step,
+    // were a grating, and by area a change at each step)
+    let soft = ((super::scheme_calm(s) - 1.0) / 0.6).clamp(0.0, 1.0) * 0.85;
     let rows = RIDGE_ROWS;
     let top = h * 0.32;
     let bottom = h - 3.0;
@@ -829,7 +835,7 @@ fn ridges(f: &Frame<'_>, g: Area, cv: &mut Canvas) {
             pen.points.push(g.p(w - margin, base));
             let background = s.background;
             pen.under(g.y0 + base, background, |_| background);
-            pen.line(1.0, depth_colour(s, k, rows));
+            pen.line(1.0, mix(depth_colour(s, k, rows), s.background, soft));
         }
     });
 }
@@ -843,31 +849,46 @@ fn terrain(f: &Frame<'_>, g: Area, cv: &mut Canvas) {
     let (w, h) = (g.w, g.h);
     let rows = TERRAIN_ROWS;
     let horizon = h * 0.3;
-    // row k (0: the farthest) as far away as `depth`
-    let depth = |k: usize| TERRAIN_FAR + (1.0 - TERRAIN_FAR) * k as f32 / (rows - 1) as f32;
-    let base = |k: usize| horizon + (h - 4.0 - horizon) / depth(k);
-    let point = |k: usize, i: usize| {
+    // row k (0: the farthest; a fraction between rows) as far away as
+    // `depth`
+    let depth = |k: f32| TERRAIN_FAR + (1.0 - TERRAIN_FAR) * k / (rows - 1) as f32;
+    let base = |k: f32| horizon + (h - 4.0 - horizon) / depth(k);
+    // (a row at each step: scrolled smoothly by the step's fraction, the
+    // whole mesh moved every frame - by area, a change every frame)
+    let frac = 0.0;
+    let place = |age: usize| (rows - 1) as f32 - age as f32 - frac;
+    let point = |age: usize, i: usize| {
+        let k = place(age).max(0.0);
         let u = (i as f32 + 0.5) / n as f32 - 0.5;
-        let v = a.history_row(rows - 1 - k)[i];
+        let v = a.history_row(age)[i];
         g.p(
             w / 2.0 + u * w * 1.15 / depth(k),
             base(k) - v * h * 0.5 / depth(k),
         )
     };
+    // (in the starkest schemes - black on white - its lines a shade into
+    // the ground: the whole mesh moves on a row at each step, and black
+    // lines on white jumping together were, by area, a transition at
+    // every step)
+    let soft = ((super::scheme_calm(s) - 1.0) / 0.6).clamp(0.0, 1.0) * 0.85;
+    let soften = |c: Color32| mix(c, s.background, soft);
     cv.draw(f.painter, |pen| {
         for i in (0..n).step_by((n / 24).max(1)) {
             pen.points.clear();
-            for k in 0..rows {
-                pen.points.push(point(k, i));
+            for age in (0..rows).rev() {
+                pen.points.push(point(age, i));
             }
-            pen.line(1.0, s.grid());
+            pen.line(1.0, soften(s.grid()));
         }
-        for k in 0..rows {
+        for age in (0..rows).rev() {
+            if place(age) < 0.0 {
+                continue;
+            }
             pen.points.clear();
             for i in 0..n {
-                pen.points.push(point(k, i));
+                pen.points.push(point(age, i));
             }
-            pen.line(1.0, depth_colour(s, k, rows));
+            pen.line(1.0, soften(depth_colour(s, rows - 1 - age, rows)));
         }
         // dots on the front half where it is loud - on every other row,
         // their colour as loud as it is, a shade into the ground (bright
@@ -875,22 +896,25 @@ fn terrain(f: &Frame<'_>, g: Area, cv: &mut Canvas) {
         // kept a quarter of the middle of the picture changing at once)
         // (every other row of the history, as it scrolls: the same rows)
         let head = a.history_index() + crate::analyzer::HISTORY;
-        for k in (rows / 2..rows).filter(|k| (head - (rows - 1 - k)).is_multiple_of(2)) {
-            let row = a.history_row(rows - 1 - k);
+        for age in (0..rows / 2).filter(|age| (head - age).is_multiple_of(2)) {
+            let row = a.history_row(age);
             for (i, v) in row.iter().enumerate().take(n) {
                 if *v < 0.45 {
                     continue;
                 }
                 let loud = ((v - 0.45) / 0.4).clamp(0.0, 1.0);
                 let colour = mix(s.background, mix(s.mid, s.high, loud), 0.4 + 0.3 * loud);
-                pen.rect(Rect::from_center_size(point(k, i), vec2(2.2, 2.2)), colour);
+                pen.rect(
+                    Rect::from_center_size(point(age, i), vec2(2.2, 2.2)),
+                    colour,
+                );
             }
         }
         for (i, peak) in a.peaks.iter().enumerate() {
-            let p = point(rows - 1, i);
+            let p = point(0, i);
             disc(
                 pen,
-                pos2(p.x, g.y0 + base(rows - 1) - peak * h * 0.5 - 4.0),
+                pos2(p.x, g.y0 + base(place(0)) - peak * h * 0.5 - 4.0),
                 1.75,
                 s.peak,
             );

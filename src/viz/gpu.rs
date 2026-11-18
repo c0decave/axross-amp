@@ -1456,12 +1456,20 @@ fn moire(u: &Uniforms, p: [f32; 2], pixel: f32) -> V3 {
         cycle(u, v * 0.4 + t * 0.1),
         smoothstep(0.15, 0.9, v),
     );
-    let over = luma(c) - luma(ground);
-    if over > 0.09 {
-        mix3(ground, c, 0.09 / over)
-    } else {
-        c
+    let over = (luma(c) - luma(ground)).abs();
+    if over <= 0.09 {
+        return c;
     }
+    let (mut lo, mut hi) = (0.0f32, 1.0f32);
+    for _ in 0..8 {
+        let t = (lo + hi) * 0.5;
+        if (luma(mix3(ground, c, t)) - luma(ground)).abs() > 0.09 {
+            hi = t;
+        } else {
+            lo = t;
+        }
+    }
+    mix3(ground, c, lo)
 }
 
 /// A colour no longer saturated red (R over R + G + B, linear, under 0.75):

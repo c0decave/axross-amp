@@ -26,6 +26,8 @@ impl Report {
             || self.red > 6
             || self.strict > 6
             || self.strict_red > 6
+            || self.area > 6
+            || self.area_red > 6
             || self.pattern_frames > 0
     }
 }
@@ -36,6 +38,9 @@ struct Report {
     /// By the strict reading (100 ms at once, every rise).
     strict: usize,
     strict_red: usize,
+    /// By the area reading, whatever the phase (see the meter).
+    area: usize,
+    area_red: usize,
     pattern_frames: usize,
     stripes: f32,
     /// The share of frames the guard's veil was on (over 0.3).
@@ -43,6 +48,24 @@ struct Report {
     /// The share of frames the guard's pattern stage softened (over a
     /// twentieth of the picture).
     softened: f32,
+}
+
+thread_local! {
+    /// The Options the faces are measured with (this test's thread; None:
+    /// the defaults).
+    static OPTIONS: std::cell::RefCell<Option<axross_amp::state::VisualOptions>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// The Options at their extremes: no smoothing, 128 bars, peaks falling
+/// at 300 % a second.
+fn extreme_options() -> axross_amp::state::VisualOptions {
+    axross_amp::state::VisualOptions {
+        bars: 128,
+        peak_fall: 300,
+        smoothing: 0,
+        ..Default::default()
+    }
 }
 
 /// How a face is measured.
@@ -103,6 +126,10 @@ fn measure(
     h.state_mut().fps = fps;
     h.state_mut().sound = music;
     h.state_mut().analyzer.motion = motion;
+    // (the Options as a test sets them, on its own thread)
+    if let Some(o) = OPTIONS.with(|o| o.borrow().clone()) {
+        h.state_mut().options = o;
+    }
     // (the extreme schemes: white on black, pure red on black)
     let (key_scheme, custom): (&str, &[(&str, &str)]) = match scheme {
         "bw" => (
@@ -123,6 +150,27 @@ fn measure(
                 ("peak", "#ff3030"),
             ],
         ),
+        // (the other way: black on white, black on a pure red ground; the
+        // colour editor's own defaults)
+        "wb" => (
+            "custom",
+            &[
+                ("background", "#ffffff"),
+                ("low", "#000000"),
+                ("high", "#000000"),
+                ("peak", "#000000"),
+            ],
+        ),
+        "redbg" => (
+            "custom",
+            &[
+                ("background", "#ff0000"),
+                ("low", "#000000"),
+                ("high", "#000000"),
+                ("peak", "#000000"),
+            ],
+        ),
+        "defcustom" => ("custom", &[]),
         other => (other, &[]),
     };
     h.state_mut().scheme = key_scheme.to_owned();
@@ -191,6 +239,7 @@ fn measure(
         println!("{key}: patterns at frames {:?}", meter.hazard_at);
         let (at, field) = meter.worst_field_strict();
         println!("{key}: strictly, field {field:?} transits at frames {at:?}");
+        println!("{key}: by area over six at frames {:?}", meter.area_at);
         let (at, field) = meter.worst_red_field_strict();
         println!("{key}: red strictly, field {field:?} transits at frames {at:?}");
     }
@@ -199,6 +248,8 @@ fn measure(
         red,
         strict,
         strict_red,
+        area: meter.area,
+        area_red: meter.area_red,
         pattern_frames: meter.pattern_frames,
         stripes: meter.stripes,
         veiled: veiled as f32 / frames.max(1) as f32,
@@ -250,7 +301,7 @@ fn probe() {
                 },
             );
             println!(
-                "{key:<13} {music:<7} {motion:?} {scheme} {}x{}@{fps}: transitions/s {:>2} ({:>2})  red {:>2} ({:>2})  stripes {:.2} ({} frames)  veiled {:.0} %",
+                "{key:<13} {music:<7} {motion:?} {scheme} {}x{}@{fps}: transitions/s {:>2} ({:>2})  red {:>2} ({:>2})  stripes {:.2} ({} frames)  area {} (red {})  veiled {:.0} %",
                 size.0,
                 size.1,
                 r.transitions,
@@ -259,6 +310,8 @@ fn probe() {
                 r.strict_red,
                 r.stripes,
                 r.pattern_frames,
+                r.area,
+                r.area_red,
                 r.veiled * 100.0
             );
         }
@@ -311,8 +364,15 @@ fn sweep(
                     format!("{key} ({option})")
                 };
                 let line = format!(
-                    "{motion:?} {scheme:<8} {name:<20} transitions/s {:>2} ({:>2})  red {:>2} ({:>2})  stripes {:.2} ({} frames)",
-                    r.transitions, r.strict, r.red, r.strict_red, r.stripes, r.pattern_frames
+                    "{motion:?} {scheme:<8} {name:<20} transitions/s {:>2} ({:>2})  red {:>2} ({:>2})  stripes {:.2} ({} frames)  area {} (red {})",
+                    r.transitions,
+                    r.strict,
+                    r.red,
+                    r.strict_red,
+                    r.stripes,
+                    r.pattern_frames,
+                    r.area,
+                    r.area_red
                 );
                 // (as it is measured: a long sweep shows how far it is)
                 println!("{line}");
@@ -323,6 +383,64 @@ fn sweep(
         }
     }
     failures
+}
+
+/// A checker of 5 x 5 tiles flickering grey 200 <-> 20 at `hz`, its tiles
+/// in phase or each the other way from its neighbours: the most
+/// transitions a second by the normal, the strict and the area reading.
+fn checker(hz: f32, antiphase: bool) -> (usize, usize, usize) {
+    let (w, h) = (300usize, 180usize);
+    let mut meter = Meter::new(w, h);
+    for f in 0..120usize {
+        let on = (((f as f32 / 60.0) * hz * 2.0) as usize).is_multiple_of(2);
+        let img = image::RgbaImage::from_fn(w as u32, h as u32, |x, y| {
+            let tile = (x as usize * 5 / w) + (y as usize * 5 / h);
+            let lit = if antiphase && tile % 2 == 1 { !on } else { on };
+            let v = if lit { 200 } else { 20 };
+            image::Rgba([v, v, v, 255])
+        });
+        meter.push(&img);
+    }
+    let (normal, _) = meter.most();
+    let (strict, _) = meter.most_strict();
+    (normal, strict, meter.area)
+}
+
+/// Flicker in antiphase is flicker: WCAG counts the area of the flashes
+/// at once, whatever their phase. The readings that count a quarter of a
+/// field changing the same way saw 2 of a checker in antiphase at 15 Hz;
+/// the area reading sees it as it sees the checker in phase.
+#[test]
+fn flicker_in_antiphase_is_counted() {
+    for hz in [5.0, 8.0, 15.0] {
+        for antiphase in [false, true] {
+            let (normal, strict, area) = checker(hz, antiphase);
+            println!(
+                "{hz} Hz, antiphase {antiphase}: normal {normal}, strict {strict}, area {area}"
+            );
+            assert!(area >= 9, "{hz} Hz, antiphase {antiphase}: area {area}");
+        }
+    }
+    // thin lines moving over white - motion, not flicker: by area, no more
+    // than a pixel's worth of the lines' edges each frame
+    let (w, h) = (300usize, 180usize);
+    let mut meter = Meter::new(w, h);
+    for f in 0..120usize {
+        let img = image::RgbaImage::from_fn(w as u32, h as u32, |x, _| {
+            let v = if (x as usize + 2 * f) % 14 < 1 {
+                0
+            } else {
+                255
+            };
+            image::Rgba([v, v, v, 255])
+        });
+        meter.push(&img);
+    }
+    assert!(
+        meter.area <= 2,
+        "moving lines read as flicker: {}",
+        meter.area
+    );
 }
 
 #[test]
@@ -540,8 +658,15 @@ fn faces_with_history_stay_calm_through_steady_music() {
                 |s| s.waterfall_hd = hd,
             );
             let line = format!(
-                "{key} (hd {hd}) {music}: transitions/s {} ({})  red {} ({})  stripes {:.2} ({} frames)",
-                r.transitions, r.strict, r.red, r.strict_red, r.stripes, r.pattern_frames
+                "{key} (hd {hd}) {music}: transitions/s {} ({})  red {} ({})  stripes {:.2} ({} frames)  area {} (red {})",
+                r.transitions,
+                r.strict,
+                r.red,
+                r.strict_red,
+                r.stripes,
+                r.pattern_frames,
+                r.area,
+                r.area_red
             );
             println!("{line}");
             if r.fails() {
@@ -641,6 +766,45 @@ fn faces_moved_by_the_energy_move_alike_after_long_play() {
     assert!(failures.is_empty(), "{failures:#?}");
 }
 
+/// The Options at their extremes - no smoothing, 128 bars, peaks falling
+/// at 300 % a second - in Classic: the faces stay within both readings (the
+/// pictures take at least 75 % smoothing and at most 100 %/s). Before: the
+/// LED equalizer 11 by the strict reading in Calm, the aurora and the
+/// isometric bars 8; with no smoothing alone, the isometric bars 9 and the
+/// mirror 7 in Intense.
+#[test]
+fn the_options_at_their_extremes_keep_the_faces_calm() {
+    OPTIONS.with(|o| *o.borrow_mut() = Some(extreme_options()));
+    let mut failures = Vec::new();
+    for (key, motion) in [
+        ("led", Motion::Calm),
+        ("aurora", Motion::Calm),
+        ("isometric", Motion::Calm),
+        ("bells", Motion::Calm),
+        ("spectrum", Motion::Intense),
+        ("mirror", Motion::Intense),
+        ("isometric", Motion::Intense),
+    ] {
+        let r = run(key, motion, "classic", (320.0, 180.0), 1.2, FPS, |_| {});
+        let line = format!(
+            "{motion:?} {key}: transitions/s {} ({})  red {} ({})  area {} ({})  stripes {:.2} ({} frames)",
+            r.transitions,
+            r.strict,
+            r.red,
+            r.strict_red,
+            r.area,
+            r.area_red,
+            r.stripes,
+            r.pattern_frames
+        );
+        println!("{line}");
+        if r.fails() {
+            failures.push(line);
+        }
+    }
+    assert!(failures.is_empty(), "{failures:#?}");
+}
+
 /// The pattern stage softens only what is striped: where the meter finds
 /// no stripes, the faces are left as they are. (The particles' columns of
 /// dots, laid on the guard's cells unevenly, read as a grating there: the
@@ -703,6 +867,21 @@ fn what_the_sweep_found_stays_fixed() {
         ("julia", Motion::Calm, "bw", false, true),
         ("terrain", Motion::Intense, "classic", false, true),
         ("particles", Motion::Calm, "bw", false, true),
+        // review 7: custom schemes the other way round - black on white,
+        // black on a pure red ground - and the editor's own defaults (the
+        // LED 8, the scope red 8, the piano roll's octaves a grating in 439
+        // frames, the moiré in 371, the helix in 72 and 22)
+        ("led", Motion::Calm, "wb", false, true),
+        ("particles", Motion::Calm, "wb", false, true),
+        ("helix", Motion::Calm, "wb", false, true),
+        ("terrain", Motion::Calm, "wb", false, true),
+        ("pianoroll", Motion::Calm, "wb", false, true),
+        ("ridges", Motion::Calm, "wb", false, true),
+        ("scope", Motion::Calm, "redbg", false, true),
+        ("terrain", Motion::Calm, "redbg", false, true),
+        ("morph", Motion::Calm, "redbg", false, true),
+        ("moire", Motion::Calm, "redbg", false, true),
+        ("helix", Motion::Calm, "defcustom", false, true),
         // the moiré at its most: Intense, white on black
         ("moire", Motion::Intense, "bw", false, true),
         // the kaleidoscope by itself, turned at once by each onset (12)
@@ -716,8 +895,15 @@ fn what_the_sweep_found_stays_fixed() {
             s.flash_off = !guard;
         });
         let line = format!(
-            "{motion:?} {scheme} {key}: transitions/s {} ({})  red {} ({})  stripes {:.2} ({} frames)",
-            r.transitions, r.strict, r.red, r.strict_red, r.stripes, r.pattern_frames
+            "{motion:?} {scheme} {key}: transitions/s {} ({})  red {} ({})  stripes {:.2} ({} frames)  area {} (red {})",
+            r.transitions,
+            r.strict,
+            r.red,
+            r.strict_red,
+            r.stripes,
+            r.pattern_frames,
+            r.area,
+            r.area_red
         );
         println!("{line}");
         if r.fails() {
@@ -745,8 +931,15 @@ fn every_feedback_look_stays_calm() {
                 |s| axross_amp::viz::set_feedback_preset(s, k),
             );
             let line = format!(
-                "look {k} Intense {scheme}: transitions/s {} ({})  red {} ({})  stripes {:.2} ({} frames)",
-                r.transitions, r.strict, r.red, r.strict_red, r.stripes, r.pattern_frames
+                "look {k} Intense {scheme}: transitions/s {} ({})  red {} ({})  stripes {:.2} ({} frames)  area {} (red {})",
+                r.transitions,
+                r.strict,
+                r.red,
+                r.strict_red,
+                r.stripes,
+                r.pattern_frames,
+                r.area,
+                r.area_red
             );
             println!("{line}");
             if r.fails() {
@@ -764,8 +957,12 @@ fn every_feedback_look_stays_calm() {
 fn no_face_flashes_in_any_scheme_or_motion() {
     // (AMP_FLASH_SCHEMES=neon,fire and AMP_FLASH_MOTIONS=intense: a part
     // of it, to run the parts side by side)
-    let schemes =
-        std::env::var("AMP_FLASH_SCHEMES").unwrap_or("classic,neon,mono,fire,bw,redcustom".into());
+    let schemes = std::env::var("AMP_FLASH_SCHEMES")
+        .unwrap_or("classic,neon,mono,fire,bw,redcustom,wb,redbg,defcustom".into());
+    // (AMP_FLASH_OPTIONS=extreme: with the Options at their extremes)
+    if std::env::var("AMP_FLASH_OPTIONS").as_deref() == Ok("extreme") {
+        OPTIONS.with(|o| *o.borrow_mut() = Some(extreme_options()));
+    }
     let schemes: Vec<&str> = schemes.split(',').collect();
     let motions: Vec<Motion> = std::env::var("AMP_FLASH_MOTIONS")
         .unwrap_or("calm,intense".into())

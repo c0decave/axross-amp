@@ -735,7 +735,7 @@ fn flowfield(f: &Frame<'_>, pen: &mut Pen<'_>, st: &mut State, dt: f32) {
     // (in the starkest schemes - white on black - the lines a shade under
     // full: thousands of white hairs on black lie in rows the eye reads as
     // a moving grating)
-    let reach = 1.0 / super::scheme_calm(s);
+    let reach = 1.0 - 0.65 * s.stark();
     for (k, q) in st.flow.iter().enumerate() {
         // fading in as it is born and out as it ends
         let life = (q.age / 0.5).min(1.0) * ((q.life - q.age) / 0.8).clamp(0.0, 1.0) * reach;
@@ -743,6 +743,13 @@ fn flowfield(f: &Frame<'_>, pen: &mut Pen<'_>, st: &mut State, dt: f32) {
             s.at(
                 0.25 + 0.75 * ((k as f32 * 0.618).fract() * 0.6 + band(a, q.trail[q.head].y) * 0.4)
             );
+        // (in the starkest schemes faint: hundreds of hairs, black on
+        // white, flowed in rows - moving stripes over a quarter of it)
+        let hue = if s.stark() > 0.5 {
+            super::faint(hue, s.background)
+        } else {
+            hue
+        };
         for j in 1..TRAIL {
             let i0 = (q.head + TRAIL - j) % TRAIL;
             let i1 = (q.head + TRAIL - j + 1) % TRAIL;
@@ -1239,7 +1246,9 @@ fn helix(f: &Frame<'_>, pen: &mut Pen<'_>, st: &mut State, dt: f32) {
     }
     let at = |k: usize, strand: f32| {
         let u = k as f32 / (POINTS - 1) as f32;
-        let theta = u * TAU * 2.4 + spin + strand * PI;
+        // (1.7 turns across: at 2.4 a row crossed the strands ten times
+        // at even steps - a standing grating over half the picture)
+        let theta = u * TAU * 1.7 + spin + strand * PI;
         // (a slow sway along it, as if seen from a turning camera)
         let wobble = (u * 5.0 + t * 0.5).sin() * r.height() * 0.04;
         (
@@ -1265,10 +1274,12 @@ fn helix(f: &Frame<'_>, pen: &mut Pen<'_>, st: &mut State, dt: f32) {
                         super::faint(s.at(0.3 + 0.7 * level), s.background),
                         super::faint(s.at(1.0 - 0.6 * level), s.background),
                     );
-                    pen.segment(p, mid, w * 2.5, glow(c1, 0.12 * depth));
-                    pen.segment(mid, q, w * 2.5, glow(c2, 0.12 * depth));
-                    pen.segment(p, mid, w, mix(s.background, c1, depth));
-                    pen.segment(mid, q, w, mix(s.background, c2, depth));
+                    // (no glow round them, and half as strong: lying over
+                    // the strands' haze, 35 glowing rungs were a standing
+                    // grating over half the picture in the editor's own
+                    // colours)
+                    pen.segment(p, mid, w * 0.6, mix(s.background, c1, depth * 0.5));
+                    pen.segment(mid, q, w * 0.6, mix(s.background, c2, depth * 0.5));
                 }
             }
             for strand in [0.0, 1.0] {
@@ -1400,7 +1411,11 @@ fn spirograph(f: &Frame<'_>, pen: &mut Pen<'_>, st: &mut State, dt: f32) {
                 let colour = mix(
                     s.background,
                     s.at(0.2 + 0.8 * level),
-                    (0.5 + 0.2 * (4 - layer) as f32 / 4.0 + 0.15 * a.energy) * faint,
+                    // (in the starkest schemes a shade into the ground: black
+                    // laps on white were moving stripes)
+                    (0.5 + 0.2 * (4 - layer) as f32 / 4.0 + 0.15 * a.energy)
+                        * faint
+                        * (1.0 - 0.5 * s.stark()),
                 );
                 glowing_line(
                     pen,

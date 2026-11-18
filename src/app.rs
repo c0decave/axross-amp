@@ -2425,6 +2425,23 @@ impl App {
                     ui.label(RichText::new(name).small());
                 }
             });
+            // (a ground of saturated red is shown darker: said, not hidden)
+            let ground = self
+                .custom_colours
+                .get("background")
+                .and_then(|v| u32::from_str_radix(v.trim_start_matches('#'), 16).ok())
+                .map(|v| Color32::from_rgb((v >> 16) as u8, (v >> 8) as u8, v as u8));
+            if let Some(g) = ground
+                && viz::quiet_ground(g) != g
+            {
+                ui.label(
+                    RichText::new(
+                        "A saturated red ground is shown darker: on it, what moves flashes red.",
+                    )
+                    .small()
+                    .color(th().muted),
+                );
+            }
         }
     }
 
@@ -2477,8 +2494,18 @@ impl App {
         ui.separator();
         let mut o = self.options.clone();
         ui.add(egui::Slider::new(&mut o.bars, 8..=128).text("Bars"));
-        ui.add(egui::Slider::new(&mut o.smoothing, 0..=95).text("Smoothing %"));
-        ui.add(egui::Slider::new(&mut o.peak_fall, 5..=300).text("Peak fall %/s"));
+        ui.add(
+            egui::Slider::new(&mut o.smoothing, crate::analyzer::SAFE_SMOOTHING..=95)
+                .text("Smoothing %"),
+        )
+        .on_hover_text("At least 75 %: less smoothing flashes (photosensitivity)");
+        // (the pictures take no less smoothing and no faster a fall than
+        // these: at their extremes the faces flashed)
+        ui.add(
+            egui::Slider::new(&mut o.peak_fall, 5..=crate::analyzer::SAFE_PEAK_FALL)
+                .text("Peak fall %/s"),
+        )
+        .on_hover_text("At most 100 %/s: faster falls flash (photosensitivity)");
         ui.add(egui::Slider::new(&mut o.fps, 10..=60).text("Frame rate cap"));
         ui.checkbox(&mut o.hide_cursor, "Hide the pointer in full screen");
         if o != self.options {

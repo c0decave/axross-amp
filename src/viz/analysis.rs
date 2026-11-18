@@ -244,7 +244,11 @@ fn analyzer(f: &Frame<'_>, cv: &mut Canvas) {
             pen.points.push(pos2(x, y_of(db)));
             x += step;
         }
-        under_gradient(pen, s, plot.bottom(), plot.bottom(), plot.top());
+        // (in the starkest schemes the fill under the curve a shade into
+        // the ground: the fine spectrum's area, black on white, rising and
+        // falling with every onset, was 11 transitions a second)
+        let fill = s.towards_ground(0.75 * s.stark());
+        under_gradient(pen, &fill, plot.bottom(), plot.bottom(), plot.top());
         pen.line(1.4, s.trace());
         pen.points.clear();
         let mut x = plot.left();

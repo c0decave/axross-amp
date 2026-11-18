@@ -32,6 +32,10 @@ pub const MAX_BARS: usize = 128;
 /// The history (and what is counted per step: the beat's turn, the
 /// sparks) moves on this many times a second - axross's default frame rate.
 pub const TICK_HZ: f32 = 30.0;
+/// The least smoothing and the fastest peak fall (% a second) the pictures
+/// take, whatever the options (photosensitivity).
+pub const SAFE_SMOOTHING: u32 = 75;
+pub const SAFE_PEAK_FALL: u32 = 100;
 /// Samples kept for the scopes.
 pub const SAMPLES: usize = 2048;
 /// axross's spectrum: 40 Hz to 16 kHz, -70..0 dBFS.
@@ -324,8 +328,16 @@ impl Analyzer {
         }
         // axross's smoothing: a bar jumps up and eases down, keeping a share
         // of its height a 30th of a second
-        let keep = (options.smoothing.min(95) as f32 / 100.0).powf(dt * 30.0);
-        let fall = options.peak_fall as f32 / 100.0 * dt;
+        // (the pictures keep at least SAFE_SMOOTHING and their peaks fall
+        // at most SAFE_PEAK_FALL whatever the options say - axross's
+        // values are kept in its file: no smoothing at all, 128 bars and
+        // peaks falling at 300 % a second made the LED equalizer flash 11
+        // times a second by the strict reading, in Calm)
+        // (more bars, more of them turning out of step: with 128, at least
+        // 85 %)
+        let floor = SAFE_SMOOTHING + (options.bars.saturating_sub(64) * 10 / 64).min(10);
+        let keep = (options.smoothing.clamp(floor, 95) as f32 / 100.0).powf(dt * 30.0);
+        let fall = options.peak_fall.min(SAFE_PEAK_FALL) as f32 / 100.0 * dt;
         for i in 0..n {
             let value = self.raw[i];
             let level = self.smooth[i];

@@ -87,7 +87,7 @@ impl Track {
 }
 
 /// Transitions of the cells followed on one picture (raw or shown).
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct Watch {
     lum: Vec<Track>,
     red: Vec<Track>,
@@ -112,6 +112,16 @@ struct Watch {
     last: Vec<[i8; 2]>,
     /// Counts of this frame's changes, summed (four kinds a cell).
     integral: Vec<u32>,
+    /// The either-way count, whatever the phase: the area of each field
+    /// newly transiting - brightening and darkening alike, luminance or
+    /// red - summed over the last frames "at once"; each time it reaches a
+    /// quarter of the field, a transition, and the sum starts again. A
+    /// checker flickering in antiphase - its tiles each the other way from
+    /// their neighbours - never has a quarter of a field changing the same
+    /// way, and was not seen.
+    either_new: Vec<std::collections::VecDeque<u32>>,
+    either_events: Vec<Vec<f32>>,
+    either_sum: Vec<u32>,
 }
 
 impl Watch {
@@ -131,6 +141,9 @@ impl Watch {
             .map(|_| [Vec::with_capacity(16), Vec::with_capacity(16)])
             .collect();
         self.last = vec![[0; 2]; fields];
+        self.either_new = vec![std::collections::VecDeque::new(); fields];
+        self.either_events = (0..fields).map(|_| Vec::with_capacity(16)).collect();
+        let _ = cells;
     }
 
     /// The same cells and fields on a new grid (each new one as the nearest
@@ -148,6 +161,8 @@ impl Watch {
         self.red_w = map.cells(&self.red_w);
         self.over = map.fields(&self.over);
         self.events = map.fields(&self.events);
+        self.either_new = map.fields(&self.either_new);
+        self.either_events = map.fields(&self.either_events);
         self.last = map.fields(&self.last);
     }
 
@@ -189,6 +204,7 @@ impl Watch {
                 self.lum_dir[i] = all;
                 self.lum_w[i] = part;
             }
+
             // (WCAG's step of 20, a little less: the estimate is coarse)
             let all = self.red[i].step(red_of(c), 16.0, None);
             let large = self.red_big[i].step(red_of(&big[i]), 16.0, None);
@@ -200,6 +216,55 @@ impl Watch {
                 self.red_at[i] = frame;
                 self.red_dir[i] = all;
                 self.red_w[i] = part;
+            }
+        }
+        // (the either-way count: this frame's new transitions, of either
+        // kind and either way, their area summed in each field over the
+        // frames "at once")
+        {
+            let rows = cells.len() / cols.max(1);
+            let stride = cols + 1;
+            self.either_sum.clear();
+            self.either_sum.resize(stride * (rows + 1), 0);
+            for y in 0..rows {
+                let mut row = 0u32;
+                for x in 0..cols {
+                    let i = y * cols + x;
+                    // (of the large content only: small shapes moving -
+                    // a galaxy's thousands of stars - change cells all
+                    // over, and the face was veiled half the time)
+                    let lum = self.lum_at[i] == frame && self.lum_w[i] == 16;
+                    let red = self.red_at[i] == frame && self.red_w[i] == 16;
+                    if lum || red {
+                        row += 16;
+                    }
+                    self.either_sum[(y + 1) * stride + x + 1] =
+                        self.either_sum[y * stride + x + 1] + row;
+                }
+            }
+            let sums = &self.either_sum;
+            for (k, field) in fields.iter().enumerate() {
+                let (x, y, w, h) = field.at;
+                let at = |x: usize, y: usize| sums[y * stride + x] as i64;
+                let new = (at(x + w, y + h) - at(x, y + h) - at(x + w, y) + at(x, y)) as u32;
+                let ring = &mut self.either_new[k];
+                ring.push_back(new);
+                // (a frame's: summed over frames, a moving line -
+                // transiting where it comes and where it leaves - came to
+                // a quarter, and the galaxy and the ribbon were veiled)
+                while ring.len() > 1 {
+                    ring.pop_front();
+                }
+                // (half the field, not a quarter: the estimate lays a
+                // gradient's triangles flat, and a glow growing with the
+                // bass changed many cells in one frame where the picture
+                // changed a few pixels; a checker in antiphase changes the
+                // whole field at once)
+                if ring.iter().sum::<u32>() >= field.quarter * 2 {
+                    self.either_events[k].push(now);
+                    ring.clear();
+                }
+                self.either_events[k].retain(|t| now - t < second);
             }
         }
         // (a flash: an area changing together, the same way - counted in
@@ -270,7 +335,10 @@ impl Watch {
     }
 
     fn recent(&self, field: usize) -> usize {
-        self.events[field][0].len().max(self.events[field][1].len())
+        self.events[field][0]
+            .len()
+            .max(self.events[field][1].len())
+            .max(self.either_events[field].len())
     }
 }
 
@@ -341,6 +409,9 @@ pub struct FlashGuard {
     hold: Vec<(f32, f32)>,
     raw_watch: Watch,
     shown_watch: Watch,
+    /// No veil on, now or the last frame: the shown picture is the raw one,
+    /// and its transitions are followed once (the raw's), not twice.
+    shown_is_raw: bool,
     time: f32,
     /// The feedback face's own estimate (its last picture).
     feedback: Vec<gpu::V3>,
@@ -358,8 +429,10 @@ pub struct FlashGuard {
     /// The estimate as laid on (sRGB values), kept for the next frame.
     acc: Vec<[f32; 3]>,
     acc_big: Vec<[f32; 3]>,
-    /// The pieces covering part of a cell, this frame (kept: its memory).
+    /// The pieces covering part of a cell, this frame (kept: its memory),
+    /// and the cells they lie on.
     parts: Vec<Part>,
+    touched: Vec<u32>,
 }
 
 impl Default for FlashGuard {
@@ -384,6 +457,7 @@ impl Default for FlashGuard {
             hold: Vec::new(),
             raw_watch: Watch::default(),
             shown_watch: Watch::default(),
+            shown_is_raw: true,
             time: 0.0,
             feedback: Vec::new(),
             shade: Vec::new(),
@@ -394,6 +468,7 @@ impl Default for FlashGuard {
             acc: Vec::new(),
             acc_big: Vec::new(),
             parts: Vec::new(),
+            touched: Vec::new(),
         }
     }
 }
@@ -630,6 +705,7 @@ impl FlashGuard {
                             big: &mut big,
                             small: &mut self.small,
                             parts: &mut parts,
+                            touched: &mut self.touched,
                         };
                         let thumb = texture
                             .filter(|(id, _)| *id == mesh.texture_id)
@@ -789,17 +865,29 @@ impl FlashGuard {
             now,
             second,
         );
-        self.shown_watch.step(
-            &self.shown,
-            &self.shown_big,
-            &self.small_most,
-            &self.fields,
-            self.cols,
-            self.frame,
-            at_once,
-            now,
-            second,
-        );
+        // (no veil: the shown picture is the raw one - its transitions
+        // are the raw's, followed once; when a veil comes, the shown
+        // picture's are followed from where the raw's are)
+        let veiled = self.strength > 0.0;
+        if veiled && self.shown_is_raw {
+            self.shown_watch = self.raw_watch.clone();
+            self.shown_is_raw = false;
+        } else if !veiled {
+            self.shown_is_raw = true;
+        }
+        if !self.shown_is_raw {
+            self.shown_watch.step(
+                &self.shown,
+                &self.shown_big,
+                &self.small_most,
+                &self.fields,
+                self.cols,
+                self.frame,
+                at_once,
+                now,
+                second,
+            );
+        }
         // each field's wanted veil: from the fifth raw transition in a
         // second (closer where the veiled picture itself still transits);
         // once on, it stays while the face goes on near the rule - four in
@@ -807,7 +895,11 @@ impl FlashGuard {
         // that comes and goes)
         for k in 0..self.fields.len() {
             let raw = self.raw_watch.recent(k);
-            let shown = self.shown_watch.recent(k);
+            let shown = if self.shown_is_raw {
+                raw
+            } else {
+                self.shown_watch.recent(k)
+            };
             let (level, until) = &mut self.hold[k];
             // (0.95 at once: a veil of 85 % left 0.15 of a black and white
             // swing - still a transition)
@@ -846,6 +938,10 @@ impl FlashGuard {
             let t = target[i];
             let k = if t > self.veil[i] { on } else { off };
             self.veil[i] += (t - self.veil[i]) * k;
+            // (gone below a thousandth: gone - the shown picture is the raw)
+            if t == 0.0 && self.veil[i] < 0.001 {
+                self.veil[i] = 0.0;
+            }
             strongest = strongest.max(self.veil[i]);
             // the slow picture the veil blends towards
             let follow = follow * (1.0 - self.veil[i]).powi(2);
@@ -940,6 +1036,15 @@ impl FlashGuard {
             p.wide = std::mem::replace(&mut p.marked, wide);
             p.src = src;
         }
+        // (nothing striped and nothing softened still: nothing to work
+        // out - most frames, at no cost)
+        if !hazard && self.pattern_strength < 0.002 {
+            if self.pattern_strength > 0.0 {
+                p.soft.iter_mut().for_each(|v| *v = 0.0);
+                self.pattern_strength = 0.0;
+            }
+            return;
+        }
         // the mean of each cell's neighbourhood (21 x 21 cells: wider than
         // the stripes' period, so that it is even), and how far its light
         // and dark lie apart (5 x 5)
@@ -1017,7 +1122,12 @@ impl FlashGuard {
                 .max()
                 .unwrap_or(0)
         };
-        (most(&self.raw_watch), most(&self.shown_watch))
+        let shown = if self.shown_is_raw {
+            &self.raw_watch
+        } else {
+            &self.shown_watch
+        };
+        (most(&self.raw_watch), most(shown))
     }
 
     /// How much of the picture the pattern stage softens (the mean of its
@@ -1042,8 +1152,17 @@ impl FlashGuard {
     /// (no blocks, no edges).
     fn draw(&self, painter: &egui::Painter) {
         if self.pattern_strength >= 0.01 {
+            // (its edge feathered over three cells each way: softened cell
+            // by cell, its edges were dark steps over the picture)
+            let alpha: Vec<[f32; 3]> = self.pattern.soft.iter().map(|v| [*v; 3]).collect();
+            // (the marks reach six cells past the stripes: blurred over
+            // three, the stripes themselves stay softened in full)
+            let alpha: Vec<f32> = box_mean(&alpha, self.cols, self.rows, 3)
+                .into_iter()
+                .map(|m| m[0])
+                .collect();
             painter.add(egui::Shape::mesh(
-                self.cells_mesh(&self.pattern.soft, &self.pattern.mean),
+                self.cells_mesh(&alpha, &self.pattern.mean),
             ));
         }
         if self.strength < 0.01 {
@@ -1230,6 +1349,8 @@ struct Onto<'a> {
     big: &'a mut [[f32; 3]],
     small: &'a mut [f32],
     parts: &'a mut [Part],
+    /// The cells with pieces pending (laid on when the mesh is done).
+    touched: &'a mut Vec<u32>,
 }
 
 /// The pieces laid on a cell that each cover part of it: side by side, as
@@ -1237,23 +1358,62 @@ struct Onto<'a> {
 /// of a line - they add up, until they cover it all. (Laid each over the
 /// last, two halves of a cell lay as three quarters of it, and an even
 /// band of rows touching read as bright rows and dim ones: a grating.)
+/// (Summed while a mesh is laid and laid on the cell once, when it is done
+/// or a piece covering all of the cell comes: a cell's arithmetic a piece
+/// is two additions - the particles' twenty thousand pieces cost a few
+/// milliseconds less.)
 #[derive(Clone, Copy, Default)]
 struct Part {
-    /// What lay under the first of them.
-    under: [f32; 3],
     /// Their colours, each by how much it covers (premultiplied).
     sum: [f32; 3],
-    /// How much of the cell they cover (up to all of it).
+    /// How much of the cell they cover (beyond all of it: each the less).
     cover: f32,
-    /// The cell as they left it: anything else laid since, over all of
-    /// it, starts them afresh.
-    last: [f32; 3],
     open: bool,
+}
+
+/// The pieces pending on cell `at` laid over it.
+fn lay_parts(acc: &mut Onto<'_>, at: usize) {
+    let part = &mut acc.parts[at];
+    if !part.open {
+        return;
+    }
+    part.open = false;
+    let scale = if part.cover > 1.0 {
+        1.0 / part.cover
+    } else {
+        1.0
+    };
+    let left = 1.0 - part.cover.min(1.0);
+    for i in 0..3 {
+        acc.all[at][i] = part.sum[i] * scale + acc.all[at][i] * left;
+    }
 }
 
 /// A tessellated mesh laid onto the cells (sRGB values, premultiplied).
 #[allow(clippy::too_many_arguments)]
 fn lay_mesh(
+    acc: &mut Onto<'_>,
+    mesh: &Mesh,
+    thumb: Option<&super::Thumb>,
+    rect: Rect,
+    cols: usize,
+    rows: usize,
+    cw: f32,
+    ch: f32,
+    clip: Rect,
+) {
+    acc.touched.clear();
+    lay_pieces(acc, mesh, thumb, rect, cols, rows, cw, ch, clip);
+    // (the pieces side by side, pending, laid on their cells)
+    let touched = std::mem::take(acc.touched);
+    for at in &touched {
+        lay_parts(acc, *at as usize);
+    }
+    *acc.touched = touched;
+}
+
+#[allow(clippy::too_many_arguments)]
+fn lay_pieces(
     acc: &mut Onto<'_>,
     mesh: &Mesh,
     thumb: Option<&super::Thumb>,
@@ -1346,33 +1506,23 @@ fn lay_mesh(
             // (how much it covers: without the half again - an additive
             // glow too, which has no alpha)
             if k >= 0.99 {
+                // (what is pending under it first)
+                lay_parts(acc, at);
                 lay(&mut acc.all[at]);
                 lay(&mut acc.big[at]);
-                acc.parts[at].open = false;
             } else {
                 let part = &mut acc.parts[at];
-                if !part.open || part.last != acc.all[at] {
+                if !part.open {
                     *part = Part {
-                        under: acc.all[at],
                         open: true,
                         ..Part::default()
                     };
-                }
-                // (beyond all of the cell: over those before it)
-                let beyond = part.cover + a - 1.0;
-                if beyond > 0.0 && part.cover > 0.0 {
-                    let keep = ((part.cover - beyond) / part.cover).max(0.0);
-                    part.sum.iter_mut().for_each(|v| *v *= keep);
-                    part.cover *= keep;
+                    acc.touched.push(at as u32);
                 }
                 for i in 0..3 {
                     part.sum[i] += mean[i] * k;
                 }
-                part.cover = (part.cover + a).min(1.0);
-                for i in 0..3 {
-                    acc.all[at][i] = part.sum[i] + part.under[i] * (1.0 - part.cover);
-                }
-                part.last = acc.all[at];
+                part.cover += a;
                 if a > 0.004 || mean[0] + mean[1] + mean[2] > 0.004 {
                     acc.small[at] += k / SPREAD;
                 }
@@ -1419,12 +1569,6 @@ fn lay_mesh(
                 .to_pos2()
                 .clamp(Pos2::ZERO, Pos2::new(1.0, 1.0))
         };
-        let inside = |p: Pos2| {
-            let d0 = (p1.x - p0.x) * (p.y - p0.y) - (p1.y - p0.y) * (p.x - p0.x);
-            let d1 = (p2.x - p1.x) * (p.y - p1.y) - (p2.y - p1.y) * (p.x - p1.x);
-            let d2 = (p0.x - p2.x) * (p.y - p2.y) - (p0.y - p2.y) * (p.x - p2.x);
-            (d0 >= 0.0 && d1 >= 0.0 && d2 >= 0.0) || (d0 <= 0.0 && d1 <= 0.0 && d2 <= 0.0)
-        };
         // (small - within four cells each way: its share where it lies, no
         // samples; most of a line's or a dot's pieces)
         // (a known picture is sampled cell by cell, however its triangles
@@ -1458,8 +1602,8 @@ fn lay_mesh(
             }
             continue;
         }
-        // (thin - a line's long piece: its area along its length, half a
-        // cell at a time, not every cell of its box sampled)
+        // (thin - a line's long piece: its area along its length, a cell
+        // at a time, not every cell of its box sampled)
         let bbox = (max.x - min.x).max(1e-3) * (max.y - min.y).max(1e-3);
         if thumb.is_none() && area.abs() < bbox * 0.25 {
             if sampled {
@@ -1471,7 +1615,9 @@ fn lay_mesh(
                 .max_by(|x, y| (x.1 - x.0).length().total_cmp(&(y.1 - y.0).length()))
                 .unwrap_or((p0, p1, p2));
             let length = (b - a).length();
-            let n = ((length / (cw.min(ch) * 0.5)).ceil() as usize).max(1);
+            // (a cell at a time: half a cell at a time, a bar's thin edges
+            // a whole picture tall cost hundreds of blends each)
+            let n = ((length / cw.min(ch)).ceil() as usize).max(1);
             let towards = (c - Pos2::new((a.x + b.x) / 2.0, (a.y + b.y) / 2.0)) / 3.0;
             let share = SPREAD * area.abs() * stride as f32 / n as f32 / (cw * ch);
             for k in 0..n {
@@ -1480,32 +1626,58 @@ fn lay_mesh(
             }
             continue;
         }
+        // where a horizontal line crosses the triangle (x from, to)
+        let span = |y: f32| -> Option<(f32, f32)> {
+            let mut lo = f32::MAX;
+            let mut hi = f32::MIN;
+            for (a, b) in [(p0, p1), (p1, p2), (p2, p0)] {
+                let (ya, yb) = (a.y.min(b.y), a.y.max(b.y));
+                if y < ya || y > yb {
+                    continue;
+                }
+                let x = if (b.y - a.y).abs() < 1e-6 {
+                    lo = lo.min(a.x.min(b.x));
+                    hi = hi.max(a.x.max(b.x));
+                    continue;
+                } else {
+                    a.x + (b.x - a.x) * (y - a.y) / (b.y - a.y)
+                };
+                lo = lo.min(x);
+                hi = hi.max(x);
+            }
+            (lo <= hi).then_some((lo, hi))
+        };
         let mut any = false;
         for cy in y0.max(0)..=y1.min(rows as i64 - 1) {
+            let top = rect.top() + cy as f32 * ch;
+            // (a convex shape: the cells between where it crosses the
+            // cell row's top and bottom edges are wholly inside - laid with
+            // no samples)
+            let (t, b) = (span(top), span(top + ch));
+            let inner = match (t, b) {
+                (Some(t), Some(b)) => Some((t.0.max(b.0), t.1.min(b.1))),
+                _ => None,
+            };
+            // (and where it crosses four lines through the row: a cell at
+            // its edge covered as much as those lines' lengths in it say -
+            // not sixteen points tested a cell)
+            let subs = [0.125f32, 0.375, 0.625, 0.875].map(|f| span(top + f * ch));
             for cx in x0.max(0)..=x1.min(cols as i64 - 1) {
-                let corner = Pos2::new(rect.left() + cx as f32 * cw, rect.top() + cy as f32 * ch);
-                // (a cell wholly inside - its four corners in - needs no
-                // samples: most of a large shape's cells)
-                let whole = inside(corner)
-                    && inside(corner + egui::vec2(cw, 0.0))
-                    && inside(corner + egui::vec2(0.0, ch))
-                    && inside(corner + egui::vec2(cw, ch));
-                let mut n = if whole { 16 } else { 0 };
-                if !whole {
-                    for sy in 0..4 {
-                        for sx in 0..4 {
-                            let p = corner
-                                + egui::vec2(
-                                    (sx as f32 + 0.5) * cw / 4.0,
-                                    (sy as f32 + 0.5) * ch / 4.0,
-                                );
-                            n += usize::from(inside(p));
-                        }
-                    }
-                }
-                if n > 0 {
+                let corner = Pos2::new(rect.left() + cx as f32 * cw, top);
+                let whole = inner.is_some_and(|(l, r)| corner.x >= l && corner.x + cw <= r);
+                let share = if whole {
+                    1.0
+                } else {
+                    let (l, r) = (corner.x, corner.x + cw);
+                    subs.iter()
+                        .flatten()
+                        .map(|(a, b)| (b.min(r) - a.max(l)).max(0.0))
+                        .sum::<f32>()
+                        / (4.0 * cw)
+                };
+                if share > 0.03 {
                     any = true;
-                    let k = (n as f32 / 16.0 * SPREAD).min(1.0);
+                    let k = (share * SPREAD).min(1.0);
                     match thumb {
                         // (a picture whose pixels are known - the cover:
                         // what it shows there, not a grey)
@@ -1569,11 +1741,13 @@ mod tests {
         let mut big = all.clone();
         let mut small = vec![0.0f32; cols * rows];
         let mut parts = vec![Part::default(); cols * rows];
+        let mut touched = Vec::new();
         let mut onto = Onto {
             all: &mut all,
             big: &mut big,
             small: &mut small,
             parts: &mut parts,
+            touched: &mut touched,
         };
         lay_mesh(&mut onto, &mesh, None, rect, cols, rows, cw, ch, rect);
         let (mut lo, mut hi) = (f32::MAX, 0.0f32);
@@ -1599,6 +1773,35 @@ mod tests {
             );
             assert!(lo > 0.75, "{lo}");
         }
+    }
+
+    #[test]
+    fn flicker_in_antiphase_brings_the_veil() {
+        // a checker of 5 x 5 tiles, each the other way from its
+        // neighbours, at 8 Hz: never a quarter of a field changing the
+        // same way at once - by area, a strobe
+        let mut g = FlashGuard::default();
+        g.layout(
+            Rect::from_min_size(Pos2::ZERO, egui::vec2(384.0, 216.0)),
+            egui::vec2(384.0, 216.0),
+        );
+        let (cols, rows) = (g.cols, g.rows);
+        for i in 0..120 {
+            let on = (((i as f32 / 60.0) * 16.0) as u32).is_multiple_of(2);
+            g.raw = (0..cols * rows)
+                .map(|k| {
+                    let tile = (k % cols) * 5 / cols + (k / cols) * 5 / rows;
+                    let lit = if tile % 2 == 1 { !on } else { on };
+                    let v = if lit { 0.58 } else { 0.007 };
+                    [v, v, v]
+                })
+                .collect();
+            g.raw_big = g.raw.clone();
+            g.time += 1.0 / 60.0;
+            g.frame += 1;
+            g.follow(1.0 / 60.0);
+        }
+        assert!(g.strength > 0.8, "the veil: {}", g.strength);
     }
 
     #[test]

@@ -326,11 +326,24 @@ fn moire(p: vec2<f32>, pixel: f32) -> vec3<f32> {
     let v = r1 * r2 + 0.35 * lines * r1;
     let ground = colour(0);
     let c = mix(ground, cycle(v * 0.4 + t * 0.1), smoothstep(0.15, 0.9, v));
-    let over = luma(c) - luma(ground);
-    if over > 0.09 {
-        return mix(ground, c, 0.09 / over);
+    // (either way from the ground - dark rings on a light ground too - and
+    // as the luminance goes, not the sRGB mix: rings darkened half way
+    // towards black from a red ground were 0.15 of luminance below it)
+    let over = abs(luma(c) - luma(ground));
+    if over <= 0.09 {
+        return c;
     }
-    return c;
+    var lo = 0.0;
+    var hi = 1.0;
+    for (var i = 0; i < 8; i = i + 1) {
+        let t = (lo + hi) * 0.5;
+        if abs(luma(mix(ground, c, t)) - luma(ground)) > 0.09 {
+            hi = t;
+        } else {
+            lo = t;
+        }
+    }
+    return mix(ground, c, lo);
 }
 
 fn no_red(c: vec3<f32>) -> vec3<f32> {

@@ -116,6 +116,25 @@ pub struct Meter {
     /// every rise above the quarter a transition (not only one the other
     /// way from the last) - an independent review's meter.
     strict_at_once: usize,
+    /// The either-way reading, whatever the phase: the area of a field
+    /// newly transiting in one frame - brightening and darkening alike,
+    /// where most of a pixel's 5 x 5 neighbourhood transits with it; where
+    /// it is a quarter of the field, a transition. (Summed over
+    /// frames, it counted motion as flicker: a moving line transits where
+    /// it comes and where it leaves each frame, and five thin lines of the
+    /// ribbon summed to a quarter of a field every other frame - motion,
+    /// not flashing: at no moment was a quarter of the field changing.) A checker flickering in antiphase (each tile the other way
+    /// from its neighbours) never has a quarter changing the same way, and
+    /// the readings above saw 2 of it at 15 Hz. The most in any second of
+    /// any field (luminance, red).
+    either_lum_events: Vec<Vec<usize>>,
+    either_red_events: Vec<Vec<usize>>,
+    either_lum_new: Vec<std::collections::VecDeque<usize>>,
+    either_red_new: Vec<std::collections::VecDeque<usize>>,
+    pub area: usize,
+    pub area_red: usize,
+    /// The frames the either-way reading counted (the first few).
+    pub area_at: Vec<usize>,
     strict_lum_events: Vec<Vec<usize>>,
     strict_red_events: Vec<Vec<usize>>,
     strict_lum_over: Vec<[bool; 2]>,
@@ -166,6 +185,13 @@ impl Meter {
             lum_last: vec![0; n],
             red_last: vec![0; n],
             strict_at_once: ((0.1 * fps as f32).round() as usize).max(1),
+            either_lum_events: vec![Vec::new(); n],
+            either_red_events: vec![Vec::new(); n],
+            either_lum_new: vec![std::collections::VecDeque::new(); n],
+            either_red_new: vec![std::collections::VecDeque::new(); n],
+            area: 0,
+            area_red: 0,
+            area_at: Vec::new(),
             strict_lum_events: vec![Vec::new(); n],
             strict_red_events: vec![Vec::new(); n],
             strict_lum_over: vec![[false; 2]; n],
@@ -223,6 +249,44 @@ impl Meter {
         let (slu, sld) = (
             strict_integral(&self.lum_at, &self.lum_dir, 1),
             strict_integral(&self.lum_at, &self.lum_dir, -1),
+        );
+        // (this frame's new transitions, either way)
+        let new_integral = |at: &[usize]| {
+            let mut s = vec![0u32; (w + 1) * (h + 1)];
+            for y in 0..h {
+                let mut row = 0u32;
+                for x in 0..w {
+                    row += u32::from(at[y * w + x] == f);
+                    s[(y + 1) * (w + 1) + x + 1] = s[y * (w + 1) + x + 1] + row;
+                }
+            }
+            s
+        };
+        // (counted where an area transits together - most of a 5 x 5
+        // neighbourhood at once - not the slivers at a moving line's edges:
+        // thin black lines moving over white, transiting where they come
+        // and where they go, were a quarter of a field every frame - motion,
+        // not flicker)
+        let coherent = |s: &[u32]| {
+            let at = |x: usize, y: usize| s[y * (w + 1) + x] as i64;
+            let mut out = vec![0u32; (w + 1) * (h + 1)];
+            for y in 0..h {
+                let mut row = 0u32;
+                for x in 0..w {
+                    let (x0, y0) = (x.saturating_sub(2), y.saturating_sub(2));
+                    let (x1, y1) = ((x + 3).min(w), (y + 3).min(h));
+                    let n = at(x1, y1) - at(x0, y1) - at(x1, y0) + at(x0, y0);
+                    let area = ((x1 - x0) * (y1 - y0)) as i64;
+                    let own = at(x + 1, y + 1) - at(x, y + 1) - at(x + 1, y) + at(x, y);
+                    row += u32::from(own > 0 && n * 5 >= area * 3);
+                    out[(y + 1) * (w + 1) + x + 1] = out[y * (w + 1) + x + 1] + row;
+                }
+            }
+            out
+        };
+        let (nl, nr) = (
+            coherent(&new_integral(&self.lum_at)),
+            coherent(&new_integral(&self.red_at)),
         );
         let (sru, srd) = (
             strict_integral(&self.red_at, &self.red_dir, 1),
@@ -297,7 +361,49 @@ impl Meter {
                 }
                 *overs = over;
             }
+            // (the either-way reading: new transitions, up and down
+            // together, summed over 100 ms; a quarter is one, and the sum
+            // starts again)
+            for (new, ring, events) in [
+                (
+                    &nl,
+                    &mut self.either_lum_new[k],
+                    &mut self.either_lum_events[k],
+                ),
+                (
+                    &nr,
+                    &mut self.either_red_new[k],
+                    &mut self.either_red_events[k],
+                ),
+            ] {
+                ring.push_back(sum(new, *field));
+                while ring.len() > 1 {
+                    ring.pop_front();
+                }
+                if ring.iter().sum::<usize>() >= quarter {
+                    events.push(f);
+                    ring.clear();
+                }
+            }
         }
+        let most = |events: &[Vec<usize>]| {
+            events
+                .iter()
+                .map(|e| {
+                    (0..e.len())
+                        .map(|k| e[k..].iter().take_while(|&&g| g < e[k] + self.fps).count())
+                        .max()
+                        .unwrap_or(0)
+                })
+                .max()
+                .unwrap_or(0)
+        };
+        let (area, area_red) = (most(&self.either_lum_events), most(&self.either_red_events));
+        if area > 6 && area > self.area && self.area_at.len() < 8 {
+            self.area_at.push(f);
+        }
+        self.area = area;
+        self.area_red = area_red;
         // stripes: a hazard over 40 %, or over 25 % where they move
         let (share, marked) = stripes_marked(&lum_now, w, h);
         self.stripes = self.stripes.max(share);

@@ -186,6 +186,25 @@ pub struct Scheme {
 }
 
 impl Scheme {
+    /// The scheme's colours `k` of the way to its ground (the ground and
+    /// the peak as they are): for what fills large areas in the starkest
+    /// schemes.
+    pub fn towards_ground(&self, k: f32) -> Scheme {
+        Scheme {
+            background: self.background,
+            low: mix(self.low, self.background, k),
+            mid: mix(self.mid, self.background, k),
+            high: mix(self.high, self.background, k),
+            peak: self.peak,
+        }
+    }
+
+    /// How far the starkest schemes' large fills go towards the ground
+    /// (0 in all but white or red on black, black on white).
+    pub fn stark(&self) -> f32 {
+        ((scheme_calm(self) - 1.0) / 0.6).clamp(0.0, 1.0)
+    }
+
     /// The scheme with no saturated red (see [`unred`]): for the faces
     /// whose lines, many of them moving at once, flashed red in a red one.
     pub fn unred(&self) -> Scheme {
@@ -479,28 +498,52 @@ pub fn from_oklch(l: f32, c: f32, hue: f32) -> Color32 {
 /// into a flash by the strict reading - bars of four turns a second, eight
 /// rises and falls; in such a scheme they turn at most two and a half times.
 pub fn scheme_calm(s: &Scheme) -> f32 {
-    let lin = |v: u8| LINEAR[v as usize];
     let ground = luminance(s.background);
     // (the colours of the faces' bodies - the peak's thin marks aside)
     let colours = [s.low, s.mid, s.high];
-    // (the mean of their contrast with the ground, and the share of them
-    // saturated red: a ramp ending in red - Classic's - is mostly not)
+    // (the mean of their contrast with the ground, either way - black on
+    // white as white on black - and the share of them whose change to the
+    // ground is a red transition: red on black, or black on a red ground;
+    // a ramp ending in red - Classic's - is mostly not)
     let contrast = colours
         .iter()
-        .map(|c| (luminance(*c) - ground).max(0.0))
+        .map(|c| (luminance(*c) - ground).abs())
         .sum::<f32>()
         / colours.len() as f32;
+    let red_of = |c: Color32| {
+        let lin = |v: u8| LINEAR[v as usize];
+        flashguard::red(lin(c.r()), lin(c.g()), lin(c.b()))
+    };
     let red = colours
         .iter()
-        .filter(|c| {
-            let (r, g, b) = (lin(c.r()), lin(c.g()), lin(c.b()));
-            r + g + b > 0.0 && r / (r + g + b) >= 0.8 && (r - g - b) * 320.0 >= 20.0
-        })
+        .filter(|c| (red_of(**c) - red_of(s.background)).abs() >= 20.0)
         .count() as f32
         / colours.len() as f32;
     let by_contrast = 1.0 + 0.6 * ((contrast - 0.45) / 0.45).clamp(0.0, 1.0);
     let by_red = 1.0 + 0.6 * ((red - 0.34) / 0.66).clamp(0.0, 1.0);
     by_contrast.max(by_red)
+}
+
+/// A ground no flash can be red against: a saturated red one - by WCAG's
+/// measure, (R - G - B) x 320 of 20 or more, linear - darkened until it is
+/// under 16. On a pure red ground every dark mark that moves is a red
+/// flash (the oscilloscope's trace, the terrain's lines, the morph's: 8
+/// to 12 a second); a ground of dark red is not.
+pub fn quiet_ground(c: Color32) -> Color32 {
+    let red_of = |c: Color32| {
+        flashguard::red(
+            LINEAR[c.r() as usize],
+            LINEAR[c.g() as usize],
+            LINEAR[c.b() as usize],
+        )
+    };
+    let mut out = c;
+    let mut k = 0.0;
+    while red_of(out) >= 16.0 && k < 1.0 {
+        k += 0.05;
+        out = mix(c, Color32::BLACK, k);
+    }
+    out
 }
 
 pub fn scheme(key: &str, custom: &std::collections::BTreeMap<String, String>) -> Scheme {
@@ -523,7 +566,7 @@ pub fn scheme(key: &str, custom: &std::collections::BTreeMap<String, String>) ->
         };
         let low = get("low", "#1e90ff");
         let high = get("high", "#ff1493");
-        let background = get("background", "#000000");
+        let background = quiet_ground(get("background", "#000000"));
         return Scheme {
             background,
             low,
@@ -577,31 +620,40 @@ pub fn luminance(c: Color32) -> f32 {
 /// regular grating, ITU-R BT.1702's pattern hazard, where their light
 /// and dark differ by 0.1 or more).
 pub fn between(c: Color32, ground: Color32) -> Color32 {
-    let want = (luminance(c) - 0.075).max(luminance(ground));
-    let (mut lo, mut hi) = (0.0f32, 1.0f32);
-    for _ in 0..10 {
-        let t = (lo + hi) / 2.0;
-        if luminance(mix(ground, c, t)) < want {
-            lo = t;
-        } else {
-            hi = t;
-        }
-    }
-    mix(ground, c, hi)
+    // (either way: a dark colour on a light ground is lightened towards it
+    // as a light one on a dark ground is darkened - else black bars on a
+    // white ground had the white ground between them, a grating)
+    let (lc, lg) = (luminance(c), luminance(ground));
+    let want = if lc >= lg {
+        (lc - 0.075).max(lg)
+    } else {
+        (lc + 0.075).min(lg)
+    };
+    towards(c, ground, want)
 }
 
-/// A colour towards `ground` until its luminance is no more than 0.08
-/// above the ground's: lines so faint form no grating (their light and
-/// dark differ by less than 0.1).
+/// A colour towards `ground` until its luminance is no further than 0.08
+/// from the ground's (either way): lines so faint form no grating (their
+/// light and dark differ by less than 0.1).
 pub fn faint(c: Color32, ground: Color32) -> Color32 {
-    let want = luminance(ground) + 0.08;
-    if luminance(c) <= want {
+    let (lc, lg) = (luminance(c), luminance(ground));
+    if (lc - lg).abs() <= 0.08 {
         return c;
     }
+    towards(c, ground, if lc > lg { lg + 0.08 } else { lg - 0.08 })
+}
+
+/// `c` mixed towards `ground` until its luminance is `want` (between the
+/// two's).
+fn towards(c: Color32, ground: Color32, want: f32) -> Color32 {
+    let up = luminance(c) >= luminance(ground);
+    // (t: how much of `c`; at 1 it is `c`, at 0 the ground)
     let (mut lo, mut hi) = (0.0f32, 1.0f32);
-    for _ in 0..10 {
+    for _ in 0..12 {
         let t = (lo + hi) / 2.0;
-        if luminance(mix(ground, c, t)) > want {
+        let l = luminance(mix(ground, c, t));
+        let past = if up { l > want } else { l < want };
+        if past {
             hi = t;
         } else {
             lo = t;
@@ -657,12 +709,14 @@ impl Scheme {
 
     /// Lines and ticks on the background.
     pub fn grid(&self) -> Color32 {
-        mix(self.background, self.peak, 0.22)
+        // (faint either way: on a light ground, lines a fifth of the way to
+        // black were a grating of octaves over the piano roll)
+        faint(mix(self.background, self.peak, 0.22), self.background)
     }
 
     /// The ground a meter's track lies on.
     pub fn track(&self) -> Color32 {
-        mix(self.background, self.peak, 0.08)
+        faint(mix(self.background, self.peak, 0.08), self.background)
     }
 
     /// Labels.
