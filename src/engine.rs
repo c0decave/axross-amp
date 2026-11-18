@@ -1346,7 +1346,9 @@ pub fn codec_name(short: &str) -> String {
 
 /// A local file as a media source.
 fn open_file(path: &str) -> Result<(MediaSourceStream<'static>, Hint), String> {
-    let meta = std::fs::metadata(path).map_err(|e| {
+    // (a name in bytes that are no UTF-8, as the playlist keeps it)
+    let path_os = crate::fspath::to_path(path);
+    let meta = std::fs::metadata(&path_os).map_err(|e| {
         if e.kind() == std::io::ErrorKind::NotFound {
             "no such file".to_owned()
         } else {
@@ -1359,7 +1361,7 @@ fn open_file(path: &str) -> Result<(MediaSourceStream<'static>, Hint), String> {
     if meta.len() == 0 {
         return Err("the file is empty".into());
     }
-    let file = File::open(path).map_err(|e| e.to_string())?;
+    let file = File::open(&path_os).map_err(|e| e.to_string())?;
     let source: Box<dyn symphonia::core::io::MediaSource> =
         if READ_STALL_MS.load(Ordering::Relaxed) > 0 {
             Box::new(Stalling { file, read: 0 })
@@ -1501,7 +1503,7 @@ fn open_media(
     // MP4 / M4A: the edit list says where the sound begins and how long it
     // is (symphonia does not apply it yet)
     let edit = if seekable && is_mp4(path) {
-        crate::mp4edit::read_edit(Path::new(path)).map(|e| e.frames(rate))
+        crate::mp4edit::read_edit(&crate::fspath::to_path(path)).map(|e| e.frames(rate))
     } else {
         None
     };
@@ -1509,7 +1511,10 @@ fn open_media(
         info.duration = Some(length as f64 / rate as f64);
     }
     if seekable
-        && let (Ok(meta), Some(secs)) = (std::fs::metadata(path), info.duration)
+        && let (Ok(meta), Some(secs)) = (
+            std::fs::metadata(crate::fspath::to_path(path)),
+            info.duration,
+        )
         && secs > 0.5
     {
         info.bitrate = Some((meta.len() as f64 * 8.0 / secs / 1000.0).round() as u32);

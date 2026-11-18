@@ -11,7 +11,7 @@
 //! the high-contrast theme) by the tests below.
 
 use egui::{Color32, CornerRadius, Shadow, Stroke};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::cell::Cell;
 
 /// A theme: its name, its character and its tokens.
 #[derive(Clone, Copy, Debug)]
@@ -465,11 +465,17 @@ pub const THEMES: [Theme; 12] = [
     },
 ];
 
-static CURRENT: AtomicUsize = AtomicUsize::new(0);
+thread_local! {
+    /// The theme shown now - the window's thread's own (a window draws on
+    /// one thread; two windows in tests side by side, each on its own,
+    /// each keep theirs: a process-wide one let a test's Sakura into
+    /// another's Midnight picture).
+    static CURRENT: Cell<usize> = const { Cell::new(0) };
+}
 
-/// The theme shown now.
+/// The theme shown now (on this thread: the window's).
 pub fn current() -> &'static Theme {
-    &THEMES[CURRENT.load(Ordering::Relaxed) % THEMES.len()]
+    &THEMES[CURRENT.with(Cell::get) % THEMES.len()]
 }
 
 /// The theme of that key (the first - Midnight - for one not known).
@@ -481,7 +487,7 @@ pub fn find(key: &str) -> &'static Theme {
 /// the default).
 pub fn set(key: &str) {
     let i = THEMES.iter().position(|t| t.key == key).unwrap_or(0);
-    CURRENT.store(i, Ordering::Relaxed);
+    CURRENT.with(|c| c.set(i));
 }
 
 /// Ink on a fill: the theme's titles' colour, its ground or its cards',
@@ -538,9 +544,23 @@ pub fn faded(c: Color32, ground: Color32, alpha: f32) -> Color32 {
     mix(ground, c, alpha)
 }
 
-/// The fill of the row that plays (the accent laid thinly over the ground).
+/// The fill of the row that plays: the accent laid thinly over the
+/// ground, as little of it as lets the row's words read on it - its title,
+/// its quiet line, its time (4.5 : 1; 7 : 1 in high contrast).
 pub fn playing_row(t: &Theme, accent: Color32) -> Color32 {
-    mix(t.ground, accent, if t.high_contrast { 0.18 } else { 0.22 })
+    let need = text_contrast(t);
+    let most = if t.high_contrast { 0.18 } else { 0.22 };
+    let mut k = most;
+    loop {
+        let fill = mix(t.ground, accent, k);
+        let reads = [t.strong, t.text, t.muted]
+            .iter()
+            .all(|c| crate::viz::contrast(*c, fill) >= need);
+        if reads || k <= 0.0 {
+            return fill;
+        }
+        k -= 0.02;
+    }
 }
 
 /// The no-sound banner's ground.
@@ -567,8 +587,22 @@ pub fn selection(t: &Theme, accent: Color32) -> (Color32, Color32) {
             return (fill, ink_on_in(t, fill));
         }
     }
-    // (none of them: the accent itself)
-    (accent, ink_on_in(t, accent))
+    // (none of them - an accent too near the rail or the ground: the
+    // accent made lighter or darker, away from the ground, until it is)
+    let away = if t.dark {
+        Color32::WHITE
+    } else {
+        Color32::BLACK
+    };
+    for j in 1..=10 {
+        let fill = mix(accent, away, j as f32 * 0.1);
+        if ok(fill) {
+            return (fill, ink_on_in(t, fill));
+        }
+    }
+    // (the theme's own accent: it is checked to)
+    let fill = mix(t.surface, t.accent, 0.85);
+    (fill, ink_on_in(t, fill))
 }
 
 /// egui's look for a theme and an accent (the theme's own, or the cover's
@@ -724,6 +758,20 @@ mod tests {
             text,
         ));
         out
+    }
+
+    #[test]
+    fn a_theme_is_its_threads_own() {
+        set("sakura");
+        let other = std::thread::spawn(|| {
+            set("paper");
+            current().key
+        })
+        .join()
+        .unwrap();
+        assert_eq!(other, "paper");
+        assert_eq!(current().key, "sakura", "another thread's theme came in");
+        set("midnight");
     }
 
     #[test]

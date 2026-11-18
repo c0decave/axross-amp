@@ -640,8 +640,8 @@ fn hand(conn: &Connection, items: &[String]) -> bool {
             if crate::playlist::is_stream(i) || i.starts_with("file://") {
                 i.clone()
             } else {
-                std::path::absolute(i)
-                    .map(|p| p.to_string_lossy().into_owned())
+                std::path::absolute(crate::fspath::to_path(i))
+                    .map(|p| crate::fspath::to_string(&p))
                     .unwrap_or_else(|_| i.clone())
             }
         })

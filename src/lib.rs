@@ -10,6 +10,7 @@ pub mod bluetooth_ui;
 pub mod cover;
 pub mod engine;
 pub mod eq;
+pub mod fspath;
 pub mod limiter;
 pub mod meters;
 pub mod mixer;

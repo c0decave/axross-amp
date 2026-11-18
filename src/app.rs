@@ -2112,7 +2112,9 @@ impl App {
             .unwrap_or(kept);
         crate::theme::set(t.key);
         let accent = match self.cover_hue {
-            Some(c) if self.amp.cover_accent => accent_for(c, t),
+            // (in high contrast always its own yellow: a cover's colour
+            // there is one more thing to tell apart)
+            Some(c) if self.amp.cover_accent && !t.high_contrast => accent_for(c, t),
             _ => t.accent,
         };
         if self.theme_shown != (t.key, accent, kept.key) {
@@ -4204,17 +4206,15 @@ impl App {
         match self.picking {
             Picking::Files => {
                 if let Some(paths) = self.dialog.take_picked_multiple() {
-                    let args: Vec<String> = paths
-                        .iter()
-                        .map(|p| p.to_string_lossy().into_owned())
-                        .collect();
+                    let args: Vec<String> =
+                        paths.iter().map(|p| crate::fspath::to_string(p)).collect();
                     self.add(&args, Then::Nothing);
                     self.picking = Picking::Nothing;
                 }
             }
             Picking::Folder => {
                 if let Some(path) = self.dialog.take_picked() {
-                    self.add(&[path.to_string_lossy().into_owned()], Then::Nothing);
+                    self.add(&[crate::fspath::to_string(&path)], Then::Nothing);
                     self.picking = Picking::Nothing;
                 }
             }
@@ -4284,7 +4284,7 @@ impl eframe::App for App {
             i.raw
                 .dropped_files
                 .iter()
-                .map(|f| f.path().to_string_lossy().into_owned())
+                .map(|f| crate::fspath::to_string(f.path()))
                 .filter(|p| !p.is_empty())
                 .collect()
         });
@@ -5121,6 +5121,66 @@ mod tests {
         }
         let (fill, ink) = selection_colours(th().accent);
         assert!(viz::contrast(ink, fill) >= 4.5);
+    }
+
+    #[test]
+    fn the_cover_accent_reads_in_every_theme() {
+        // covers of every hue, light and dark, in every theme: the row that
+        // plays (its title, its quiet line), what is chosen and its words,
+        // and a slider's fill against its rail and the ground
+        let mut failures = Vec::new();
+        for t in &crate::theme::THEMES {
+            let need = crate::theme::text_contrast(t);
+            for k in 0..36 {
+                for (l, c) in [
+                    (0.45, 0.15),
+                    (0.7, 0.18),
+                    (0.85, 0.12),
+                    (0.3, 0.12),
+                    (0.92, 0.08),
+                ] {
+                    let raw = viz::from_oklch(l, c, k as f32 * 10.0);
+                    let accent = if t.high_contrast {
+                        t.accent
+                    } else {
+                        accent_for(raw, t)
+                    };
+                    let row = crate::theme::playing_row(t, accent);
+                    for (what, ink) in [("title", t.strong), ("text", t.text), ("quiet", t.muted)] {
+                        if viz::contrast(ink, row) < need {
+                            failures.push(format!(
+                                "{}: {raw:?}: {what} on the playing row {:.2}",
+                                t.name,
+                                viz::contrast(ink, row)
+                            ));
+                        }
+                    }
+                    let (fill, ink) = crate::theme::selection(t, accent);
+                    if viz::contrast(ink, fill) < need {
+                        failures.push(format!(
+                            "{}: {raw:?}: chosen words {:.2}",
+                            t.name,
+                            viz::contrast(ink, fill)
+                        ));
+                    }
+                    for (what, g) in [("rail", t.track), ("ground", t.ground)] {
+                        if viz::contrast(fill, g) < 3.0 {
+                            failures.push(format!(
+                                "{}: {raw:?}: slider fill on the {what} {:.2}",
+                                t.name,
+                                viz::contrast(fill, g)
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+        assert!(
+            failures.is_empty(),
+            "{} failures, e.g. {:#?}",
+            failures.len(),
+            &failures[..failures.len().min(12)]
+        );
     }
 
     #[test]

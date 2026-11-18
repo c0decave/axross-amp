@@ -568,7 +568,7 @@ pub fn collect_with(args: &[String], progress: &mut dyn FnMut(usize)) -> Collect
             });
             continue;
         }
-        let path = PathBuf::from(arg);
+        let path = crate::fspath::to_path(arg);
         if path.is_dir() {
             walk(&path, 0, &mut tracks, &mut seen, progress);
         } else if PLAYLIST_EXTENSIONS.contains(&extension(&path).as_str()) {
@@ -598,10 +598,7 @@ pub fn collect_with(args: &[String], progress: &mut dyn FnMut(usize)) -> Collect
 }
 
 fn absolute(path: &Path) -> String {
-    std::path::absolute(path)
-        .unwrap_or_else(|_| path.to_path_buf())
-        .to_string_lossy()
-        .into_owned()
+    crate::fspath::to_string(&std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf()))
 }
 
 /// Audio files below `dir`, sorted by name; symbolic links to folders are

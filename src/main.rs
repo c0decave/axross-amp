@@ -27,7 +27,12 @@ play it, Delete remove it, Ctrl+Z undo.
 The mouse wheel seeks over the position and sets the volume over its slider.";
 
 fn main() -> eframe::Result {
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    // (args_os: a file name in bytes that are no UTF-8 - "Open with" from a
+    // file manager - is kept, not a panic)
+    let args: Vec<String> = std::env::args_os()
+        .skip(1)
+        .map(|a| axross_amp::fspath::os_to_string(&a))
+        .collect();
     if args.iter().any(|a| a == "-h" || a == "--help") {
         println!("{USAGE}");
         return Ok(());

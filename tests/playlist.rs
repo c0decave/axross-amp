@@ -304,3 +304,31 @@ fn play_next_from_a_rows_menu() {
     // (then the list goes on from a: b, and c in its turn)
     assert_eq!(order, vec![0, 2, 1, 2], "c was to play next");
 }
+
+/// A file named in bytes that are no UTF-8 (Latin-1's "café", as old disks
+/// have them): found in its folder, opened and played - not Stopped for a
+/// name changed on the way - and, given on the command line, no panic.
+#[cfg(unix)]
+#[test]
+fn a_name_that_is_no_utf8_plays() {
+    use std::os::unix::ffi::OsStrExt;
+    let dir = folder("latin1");
+    let raw = std::ffi::OsStr::from_bytes(b"caf\xe9.wav");
+    write_wav(&dir.join(raw), 1.0);
+    let found = axross_amp::playlist::collect(&[dir.to_string_lossy().into_owned()]);
+    assert_eq!(found.tracks.len(), 1);
+    let path = &found.tracks[0].path;
+    let info = axross_amp::engine::probe(path);
+    assert!(info.is_ok(), "{path:?}: {info:?}");
+    // the program itself, given such a name (with --version: it ends there)
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_axross-amp"))
+        .arg("--version")
+        .arg(dir.join(raw))
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
