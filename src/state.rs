@@ -189,6 +189,11 @@ pub struct AmpSettings {
     pub display_name: String,
     pub display_sound: bool,
     pub display_open: bool,
+    /// What the display view's sound took over, to be put back when the
+    /// view closes - also after a restart or a crash: the output before,
+    /// and the card's profile before it was switched (card, profile).
+    pub display_restore_output: Option<String>,
+    pub display_restore_profile: Option<(String, String)>,
     /// The window's design (`design::DESIGNS`' key).
     pub design: String,
 }
@@ -223,6 +228,8 @@ impl Default for AmpSettings {
             display_name: String::new(),
             display_sound: false,
             display_open: false,
+            display_restore_output: None,
+            display_restore_profile: None,
             design: "modern".into(),
         }
     }
@@ -314,6 +321,22 @@ pub fn read_amp(path: &Path) -> AmpSettings {
     if let Some(on) = map.get("display_open").and_then(Value::as_bool) {
         settings.display_open = on;
     }
+    if let Some(v) = map.get("display_restore") {
+        settings.display_restore_output = v
+            .get("output")
+            .and_then(Value::as_str)
+            .filter(|v| v.len() < 256)
+            .map(str::to_owned);
+        settings.display_restore_profile = match (
+            v.get("card").and_then(Value::as_str),
+            v.get("profile").and_then(Value::as_str),
+        ) {
+            (Some(c), Some(p)) if !c.is_empty() && c.len() < 256 && p.len() < 256 => {
+                Some((c.to_owned(), p.to_owned()))
+            }
+            _ => None,
+        };
+    }
     if let Some(d) =
         text(&map, "design").filter(|k| crate::design::DESIGNS.iter().any(|d| d.key == k))
     {
@@ -356,6 +379,19 @@ pub fn write_amp(path: &Path, settings: &AmpSettings) -> std::io::Result<()> {
     map.insert("display_name".into(), json!(settings.display_name));
     map.insert("display_sound".into(), json!(settings.display_sound));
     map.insert("display_open".into(), json!(settings.display_open));
+    if settings.display_restore_output.is_some() || settings.display_restore_profile.is_some() {
+        let (card, profile) = settings.display_restore_profile.clone().unwrap_or_default();
+        map.insert(
+            "display_restore".into(),
+            json!({
+                "output": settings.display_restore_output,
+                "card": card,
+                "profile": profile,
+            }),
+        );
+    } else {
+        map.remove("display_restore");
+    }
     map.insert("design".into(), json!(settings.design));
     write_object(path, &map)
 }
@@ -892,6 +928,11 @@ mod tests {
             display_name: "LG TV".into(),
             display_sound: true,
             display_open: true,
+            display_restore_output: Some("alsa_output.pci-0000_00_1f.3.analog-stereo".into()),
+            display_restore_profile: Some((
+                "alsa_card.pci-0000_00_1f.3".into(),
+                "output:analog-stereo+input:analog-stereo".into(),
+            )),
             design: "cassette".into(),
         };
         write_amp(&path, &settings).unwrap();
@@ -919,6 +960,11 @@ mod tests {
             ("HDMI-1", "LG TV")
         );
         assert!(back.display_sound && back.display_open);
+        assert_eq!(back.display_restore_output, settings.display_restore_output);
+        assert_eq!(
+            back.display_restore_profile,
+            settings.display_restore_profile
+        );
         assert!(!fresh.display_open && !fresh.display_sound);
         assert_eq!(back.design, "cassette");
         assert_eq!(fresh.design, "modern", "the default design");

@@ -50,9 +50,11 @@ enum Picking {
 /// The pictures shown on a display of their own.
 struct External {
     monitor: crate::display::Monitor,
-    /// The sound moved there too, and the output it was on before.
+    /// The sound moved there too (what it was on before: in the settings,
+    /// `display_restore_*` - kept across a restart or a crash).
     with_sound: bool,
-    previous_output: Option<String>,
+    /// The sound being moved there, on a thread of its own (pactl).
+    moving: Option<crossbeam_channel::Receiver<Result<crate::display::Moved, String>>>,
     /// The track's words over the picture: which track, since when.
     told: String,
     told_at: f64,
@@ -101,6 +103,13 @@ pub struct App {
     monitors: Arc<Mutex<Vec<crate::display::Monitor>>>,
     external: Option<External>,
     reopen_display: bool,
+    /// Whether the monitors are asked again (every 2 s): the display menu
+    /// open lately, the display view shown or to be opened again.
+    displays_wanted: Arc<std::sync::atomic::AtomicBool>,
+    /// The monitors are the desktop's (else a test sets them).
+    monitors_watched: bool,
+    /// When the display menu was last drawn (its time; ctx's clock).
+    display_menu_at: f64,
     analyzer: Analyzer,
     /// Loudness, beat, notes, key: on their own thread, every sample heard.
     meters: crate::meters::Meters,
@@ -580,6 +589,7 @@ impl App {
                 slow_note(slow)
             );
         }
+        let displays_wanted = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let mut app = App {
             engine,
             playlist,
@@ -600,11 +610,14 @@ impl App {
             theme_preview: None,
             monitors: if setup.desktop {
                 let ctx = cc.egui_ctx.clone();
-                crate::display::watch(move || ctx.request_repaint())
+                crate::display::watch(displays_wanted.clone(), move || ctx.request_repaint())
             } else {
                 Arc::new(Mutex::new(Vec::new()))
             },
             external: None,
+            displays_wanted,
+            monitors_watched: setup.desktop,
+            display_menu_at: f64::NEG_INFINITY,
             reopen_display: false,
             analyzer: Analyzer::new(),
             meters,
@@ -732,6 +745,9 @@ impl App {
         // (the display view open when it ended: opened there again once
         // the monitors are known)
         app.reopen_display = app.amp.display_open;
+        if !app.amp.display_open {
+            app.restore_sound();
+        }
         if !args.is_empty() {
             app.add(&args, Then::Play);
         } else if saved.current >= 0 {
@@ -1962,6 +1978,7 @@ impl App {
             if self.external.is_some() {
                 self.close_display(None);
             } else {
+                self.refresh_monitors();
                 let monitors = self.monitors();
                 let chosen = crate::display::find(
                     &monitors,
@@ -2193,6 +2210,17 @@ impl App {
         self.monitors.lock().map(|m| m.clone()).unwrap_or_default()
     }
 
+    /// The monitors asked again now (the display menu opened, D pressed):
+    /// where the window watches them (not in the tests' windows).
+    fn refresh_monitors(&mut self) {
+        if self.monitors_watched {
+            let now = crate::display::list();
+            if let Ok(mut m) = self.monitors.lock() {
+                *m = now;
+            }
+        }
+    }
+
     /// The monitors connected, as a test says (a display plugged in or
     /// out).
     pub fn set_monitors(&mut self, monitors: Vec<crate::display::Monitor>) {
@@ -2230,26 +2258,48 @@ impl App {
         let mut external = External {
             monitor: monitor.clone(),
             with_sound: false,
-            previous_output: None,
+            moving: None,
             told: String::new(),
             told_at: f64::NEG_INFINITY,
         };
         let mut said = format!("Showing the pictures on {}", monitor.label());
         if with_sound {
-            match self.sound_to(&monitor) {
-                Ok(sink) => {
-                    external.previous_output = Some(self.output_choice.clone());
-                    external.with_sound = true;
-                    self.apply(crate::mixer_ui::PlayerChange::Output(sink));
-                    said.push_str(", with the sound");
+            if monitor.can_play() {
+                // (where the sound was, kept before anything moves it - and
+                // kept across a restart: a view opened again does not take
+                // the display's output for "before")
+                if self.amp.display_restore_output.is_none() {
+                    self.amp.display_restore_output = Some(self.output_choice.clone());
+                    self.amp_dirty = true;
                 }
-                Err(why) => said = format!("{said} - the sound stays here: {why}"),
+                // (pactl on a thread: switching a card's profile and waiting
+                // for its output takes seconds)
+                let (tx, rx) = crossbeam_channel::bounded(1);
+                let target = monitor.clone();
+                let all = monitors.clone();
+                let wake = self.ctx.clone();
+                let _ = std::thread::Builder::new()
+                    .name("amp-display-sound".into())
+                    .spawn(move || {
+                        let _ = tx.send(crate::display::move_sound(&target, &all));
+                        wake.request_repaint();
+                    });
+                external.moving = Some(rx);
+                said.push_str(" - moving the sound there…");
+            } else {
+                said = format!(
+                    "{said} - the sound stays here: {} carries no sound",
+                    monitor.connector
+                );
             }
         }
-        // (its flash guard sized for that screen: a third of it a field)
+        // (its flash guard sized for that screen, in points as the faces
+        // are drawn: a third of it a field - the desktop's scale taken as
+        // this window's)
+        let ppp = self.ctx.pixels_per_point().max(0.5);
         self.viz_state.flash.screen_is = Some(vec2(
-            monitor.width.max(640) as f32,
-            monitor.height.max(480) as f32,
+            monitor.width.max(640) as f32 / ppp,
+            monitor.height.max(480) as f32 / ppp,
         ));
         self.external = Some(external);
         self.amp.display_connector = monitor.connector.clone();
@@ -2262,15 +2312,13 @@ impl App {
     }
 
     /// Close the display view: the pictures back in the window, the sound
-    /// back on the output it was on (`why`: said, as when it was
-    /// unplugged).
+    /// back on the output it was on and the card on its profile (`why`:
+    /// said, as when it was unplugged).
     pub fn close_display(&mut self, why: Option<String>) {
-        let Some(external) = self.external.take() else {
+        let Some(_external) = self.external.take() else {
             return;
         };
-        if let Some(previous) = external.previous_output {
-            self.apply(crate::mixer_ui::PlayerChange::Output(previous));
-        }
+        self.restore_sound();
         self.viz_state.flash.screen_is = None;
         if why.is_none() {
             self.amp.display_open = false;
@@ -2279,38 +2327,57 @@ impl App {
         self.notice = why.unwrap_or_else(|| "The pictures are back here".into());
     }
 
-    /// The sound server's output on a monitor (switching its card to the
-    /// HDMI / DisplayPort profile where that makes it); its sink's name.
-    fn sound_to(&mut self, monitor: &crate::display::Monitor) -> Result<String, String> {
-        use crate::display::SoundOn;
-        if !monitor.can_play() {
-            return Err(format!("{} carries no sound", monitor.connector));
+    /// The sound back where it was before a display view took it: the
+    /// output, and the card's profile (on a thread: pactl) - as kept in
+    /// the settings, also from before a restart or a crash.
+    fn restore_sound(&mut self) {
+        if let Some(previous) = self.amp.display_restore_output.take() {
+            self.apply(crate::mixer_ui::PlayerChange::Output(previous));
+            self.amp_dirty = true;
         }
-        let snapshot = crate::mixer::refresh()?;
-        match crate::display::sound_on(monitor, &snapshot) {
-            Some(SoundOn::Sink(name)) => Ok(name),
-            Some(SoundOn::Profile { card, profile }) => {
-                let (args, what) = crate::mixer::Action::Profile {
-                    card,
-                    profile: profile.clone(),
+        if let Some((card, profile)) = self.amp.display_restore_profile.take() {
+            self.amp_dirty = true;
+            let _ = std::thread::Builder::new()
+                .name("amp-display-profile".into())
+                .spawn(move || {
+                    let _ = crate::display::set_profile(&card, &profile);
+                });
+        }
+    }
+
+    /// The sound moved to the display, as it comes: its output taken, the
+    /// card's profile before kept; or why not, said. A view closed in the
+    /// meantime: what was switched is put back.
+    fn sound_moved(&mut self) {
+        let Some(external) = self.external.as_mut() else {
+            return;
+        };
+        let Some(result) = external.moving.as_ref().and_then(|rx| rx.try_recv().ok()) else {
+            return;
+        };
+        external.moving = None;
+        let label = external.monitor.label();
+        match result {
+            Ok(moved) => {
+                external.with_sound = true;
+                if let Some(switched) = moved.switched
+                    && self.amp.display_restore_profile.is_none()
+                {
+                    self.amp.display_restore_profile = Some(switched);
                 }
-                .command()?;
-                let (ok, _, err) = crate::mixer::run(&args)?;
-                if !ok {
-                    return Err(crate::mixer::error_sentence(&what, &err));
-                }
-                // (its sink comes a moment later)
-                for _ in 0..15 {
-                    let snapshot = crate::mixer::refresh()?;
-                    if let Some(SoundOn::Sink(name)) = crate::display::sound_on(monitor, &snapshot)
-                    {
-                        return Ok(name);
-                    }
-                    std::thread::sleep(Duration::from_millis(200));
-                }
-                Err(format!("no output came for {profile}"))
+                self.amp_dirty = true;
+                self.apply(crate::mixer_ui::PlayerChange::Output(moved.sink));
+                self.notice = format!("Showing the pictures on {label}, with the sound");
             }
-            None => Err(format!("no sound output for {}", monitor.connector)),
+            Err(why) => {
+                // (nothing moved: nothing to put back)
+                if self.amp.display_restore_profile.is_none() {
+                    self.amp.display_restore_output = None;
+                    self.amp_dirty = true;
+                }
+                self.notice =
+                    format!("Showing the pictures on {label} - the sound stays here: {why}");
+            }
         }
     }
 
@@ -2318,6 +2385,13 @@ impl App {
     /// back, said) or to be opened again (as it was when the program
     /// ended).
     fn follow_displays(&mut self) {
+        self.sound_moved();
+        // (the monitors asked again only while it matters)
+        let now = self.ctx.input(|i| i.time);
+        self.displays_wanted.store(
+            self.external.is_some() || self.reopen_display || now - self.display_menu_at < 3.0,
+            std::sync::atomic::Ordering::Relaxed,
+        );
         let monitors = self.monitors();
         if let Some(e) = &self.external
             && !monitors.iter().any(|m| m.connector == e.monitor.connector)
@@ -2334,9 +2408,13 @@ impl App {
                 self.amp.display_name.clone(),
                 self.amp.display_sound,
             );
-            if let Some(m) = crate::display::find(&monitors, &connector, &name) {
-                let c = m.connector.clone();
-                let _ = self.show_on(&c, sound);
+            match crate::display::find(&monitors, &connector, &name) {
+                Some(m) => {
+                    let c = m.connector.clone();
+                    let _ = self.show_on(&c, sound);
+                }
+                // (that display gone since: the sound back where it was)
+                None => self.restore_sound(),
             }
         }
     }
@@ -2344,6 +2422,12 @@ impl App {
     /// The menu: the monitors to show the pictures on.
     fn display_menu(&mut self, ui: &mut Ui) {
         ui.set_min_width(260.0);
+        let first = ui.input(|i| i.time) - self.display_menu_at > 3.0;
+        self.display_menu_at = ui.input(|i| i.time);
+        // (opened: the list as it is now, not as it was at the start)
+        if first {
+            self.refresh_monitors();
+        }
         let monitors = self.monitors();
         if monitors.is_empty() {
             ui.label(RichText::new("No other display is known here").color(th().muted));

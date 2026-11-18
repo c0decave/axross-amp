@@ -80,6 +80,10 @@ pub struct Device {
     pub card_index: Option<u32>,
     pub bus: String,
     pub form_factor: String,
+    /// The display it plays on, as the display says (its ELD: an HDMI /
+    /// DisplayPort sink's `device.product.name`, a port's name for it in
+    /// brackets); empty for the others.
+    pub monitors: Vec<String>,
 }
 
 impl Device {
@@ -146,6 +150,47 @@ pub struct Card {
     pub profiles: Vec<Profile>,
     pub active_profile: String,
     pub bus: String,
+    /// Its ports with the display on each (HDMI / DisplayPort: the ELD's
+    /// monitor name) and the profiles that use them.
+    pub ports: Vec<CardPort>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct CardPort {
+    pub name: String,
+    /// The display on it (ELD), else empty.
+    pub monitor: String,
+    pub profiles: Vec<String>,
+}
+
+/// A display's name a sink or a port carries: `device.product.name` in
+/// its properties, else the part in brackets of a port's description
+/// ("HDMI / DisplayPort (LG TV)").
+fn monitor_names(v: &Value) -> Vec<String> {
+    let mut out = Vec::new();
+    let product = prop(v, "device.product.name");
+    if !product.is_empty() {
+        out.push(product);
+    }
+    let bracketed = |d: &str| {
+        let (_, rest) = d.rsplit_once('(')?;
+        let name = rest.strip_suffix(')')?.trim();
+        (!name.is_empty()).then(|| name.to_owned())
+    };
+    let ports: Vec<Value> = match v.get("ports") {
+        Some(Value::Array(a)) => a.clone(),
+        Some(Value::Object(o)) => o.values().cloned().collect(),
+        _ => Vec::new(),
+    };
+    for p in &ports {
+        let name = prop(p, "device.product.name");
+        if !name.is_empty() {
+            out.push(name);
+        } else if let Some(name) = bracketed(&text(p, "description")) {
+            out.push(name);
+        }
+    }
+    out
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -302,6 +347,7 @@ pub fn parse_devices(raw: &str, kind: Kind, default: &str) -> Result<Vec<Device>
                 card_index: None,
                 bus: prop(e, "device.bus"),
                 form_factor: prop(e, "device.form_factor"),
+                monitors: monitor_names(e),
                 name,
             })
         })
@@ -376,6 +422,32 @@ pub fn parse_cards(raw: &str) -> Result<Vec<Card>, String> {
                 profiles,
                 active_profile: text(e, "active_profile"),
                 bus: prop(e, "device.bus"),
+                ports: match e.get("ports") {
+                    Some(Value::Object(o)) => {
+                        o.iter().map(|(k, p)| (k.clone(), p)).collect::<Vec<_>>()
+                    }
+                    _ => Vec::new(),
+                }
+                .into_iter()
+                .map(|(port, p)| CardPort {
+                    monitor: monitor_names(&serde_json::json!({
+                        "properties": p.get("properties").cloned().unwrap_or_default()
+                    }))
+                    .into_iter()
+                    .next()
+                    .unwrap_or_default(),
+                    profiles: p
+                        .get("profiles")
+                        .and_then(Value::as_array)
+                        .map(|a| {
+                            a.iter()
+                                .filter_map(|x| x.as_str().map(str::to_owned))
+                                .collect()
+                        })
+                        .unwrap_or_default(),
+                    name: port,
+                })
+                .collect(),
             })
         })
         .collect();

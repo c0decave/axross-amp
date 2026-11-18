@@ -10,7 +10,7 @@
 //! compositors decide, see the README). Elsewhere (macOS, Windows) there
 //! is no list here: only the window's own monitor.
 
-use crate::mixer::{Card, Snapshot};
+use crate::mixer::Snapshot;
 use std::path::Path;
 
 /// A monitor connected.
@@ -43,21 +43,6 @@ impl Monitor {
     pub fn can_play(&self) -> bool {
         let c = self.connector.to_ascii_uppercase();
         c.starts_with("HDMI") || c.starts_with("DP") || c.starts_with("DISPLAYPORT")
-    }
-
-    /// Its kind and number: ("HDMI", 1), ("DP", 2).
-    fn kind_number(&self) -> (String, u32) {
-        let c = self.connector.to_ascii_uppercase();
-        let kind: String = c
-            .chars()
-            .take_while(|ch| ch.is_ascii_alphabetic())
-            .collect();
-        let number = c
-            .rsplit(|ch: char| !ch.is_ascii_digit())
-            .find(|s| !s.is_empty())
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(1);
-        (kind, number)
     }
 }
 
@@ -162,24 +147,52 @@ pub fn edid_name(edid: &[u8]) -> String {
     String::new()
 }
 
+/// What xrandr is asked: the state as it is (`--query` probes every
+/// output's EDID again, which can make a display blink).
+pub const XRANDR_ARGS: [&str; 1] = ["--current"];
+
 /// The monitors connected now (see the module's text).
 pub fn list() -> Vec<Monitor> {
-    if cfg!(target_os = "linux") {
-        if std::env::var_os("DISPLAY").is_some()
-            && let Ok(out) = std::process::Command::new("xrandr")
-                .arg("--query")
+    if !cfg!(target_os = "linux") {
+        return Vec::new();
+    }
+    let wayland = std::env::var_os("WAYLAND_DISPLAY").is_some()
+        || std::env::var("XDG_SESSION_TYPE").is_ok_and(|t| t == "wayland");
+    let xrandr = (!wayland && std::env::var_os("DISPLAY").is_some())
+        .then(|| {
+            std::process::Command::new("xrandr")
+                .args(XRANDR_ARGS)
                 .stderr(std::process::Stdio::null())
                 .output()
-            && out.status.success()
-        {
-            let found = parse_xrandr(&String::from_utf8_lossy(&out.stdout));
-            if !found.is_empty() {
-                return found;
-            }
+                .ok()
+                .filter(|o| o.status.success())
+                .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+        })
+        .flatten();
+    choose_list(wayland, xrandr.as_deref(), || {
+        parse_drm(Path::new("/sys/class/drm"))
+    })
+}
+
+/// Which list to trust: under Wayland the kernel's (XWayland sets DISPLAY
+/// too, and its xrandr says XWAYLAND0, XWAYLAND1 - no real connector, no
+/// sound); on X11 xrandr's (with the places on the desktop), else the
+/// kernel's.
+pub fn choose_list(
+    wayland: bool,
+    xrandr: Option<&str>,
+    drm: impl FnOnce() -> Vec<Monitor>,
+) -> Vec<Monitor> {
+    if !wayland && let Some(text) = xrandr {
+        let found: Vec<Monitor> = parse_xrandr(text)
+            .into_iter()
+            .filter(|m| !m.connector.starts_with("XWAYLAND"))
+            .collect();
+        if !found.is_empty() {
+            return found;
         }
-        return parse_drm(Path::new("/sys/class/drm"));
     }
-    Vec::new()
+    drm()
 }
 
 /// How the sound gets to a display: a sink there is, or a card's profile
@@ -190,63 +203,181 @@ pub enum SoundOn {
     Profile { card: String, profile: String },
 }
 
-/// The sound server's way to `m`'s speakers: a sink whose description
-/// names the monitor (its ELD), else the HDMI / DisplayPort output of its
-/// number (HDMI-1: "hdmi-stereo", HDMI-2: "hdmi-stereo-extra1" - as
-/// PulseAudio and PipeWire number them), a sink if there is one, else the
-/// card's profile that makes it. None for VGA and DVI (no sound) or where
-/// no such output exists.
+/// Whether a sink or port is an HDMI / DisplayPort one (by its name, its
+/// description or its port: never a Bluetooth or USB device).
+fn is_hdmi(text: &str) -> bool {
+    let t = text.to_ascii_lowercase();
+    t.contains("hdmi") || t.contains("displayport") || t.contains("iec958-stereo-hdmi")
+}
+
+/// The same name, as two sources write it (case and spaces aside) -
+/// never a part of one: "TV" is not "TV Soundbar".
+fn same_name(a: &str, b: &str) -> bool {
+    let norm = |s: &str| {
+        s.split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .to_lowercase()
+    };
+    !a.trim().is_empty() && norm(a) == norm(b)
+}
+
+/// The sound server's way to `m`'s speakers:
+/// - the HDMI / DisplayPort sink, or card port, whose monitor (the ELD the
+///   display sends: PulseAudio's and PipeWire's `device.product.name`,
+///   in a port's description in brackets) is `m`'s own name (its EDID) -
+///   the same name, never a part of one;
+/// - else, where it cannot be mistaken, the one HDMI / DisplayPort output
+///   there is for the one display that can carry sound: the only such sink,
+///   else the only card profile that makes one.
+///
+/// None for VGA and DVI (no sound), where no such output exists, or where
+/// it cannot be told which output plays on `m` (two displays, two HDMI
+/// outputs and no names: its number is no guide - DP-1 and HDMI-1 are
+/// both a card's first HDMI output, NVIDIA's HDMI-0 and DP-0 alike).
 pub fn sound_on(m: &Monitor, s: &Snapshot) -> Option<SoundOn> {
+    sound_on_among(m, std::slice::from_ref(m), s)
+}
+
+/// As [`sound_on`], `monitors` the displays connected (the one display
+/// that can carry sound, or several).
+pub fn sound_on_among(m: &Monitor, monitors: &[Monitor], s: &Snapshot) -> Option<SoundOn> {
     if !m.can_play() {
         return None;
     }
-    let hdmi = |text: &str| {
-        let t = text.to_ascii_lowercase();
-        t.contains("hdmi") || t.contains("displayport") || t.contains("dp ")
-    };
-    // the monitor's own name in a sink's description
-    if !m.name.is_empty()
-        && let Some(sink) = s.sinks.iter().find(|d| {
-            d.description
-                .to_ascii_lowercase()
-                .contains(&m.name.to_ascii_lowercase())
-        })
-    {
-        return Some(SoundOn::Sink(sink.name.clone()));
-    }
-    let (_, number) = m.kind_number();
-    let profile = if number <= 1 {
-        "output:hdmi-stereo".to_owned()
-    } else {
-        format!("output:hdmi-stereo-extra{}", number - 1)
-    };
-    let short = profile.trim_start_matches("output:");
-    // a sink of that output (its name ends in it)
-    if let Some(sink) = s.sinks.iter().find(|d| {
-        let n = d.name.to_ascii_lowercase();
-        n.ends_with(short) || n.ends_with(&format!("{short}.monitor"))
-    }) {
-        return Some(SoundOn::Sink(sink.name.clone()));
-    }
-    // a card with that profile, not yet on
-    let card: Option<&Card> = s
-        .cards
-        .iter()
-        .find(|c| c.profiles.iter().any(|p| p.name == profile && p.available));
-    if let Some(c) = card {
-        return Some(SoundOn::Profile {
-            card: c.name.clone(),
-            profile,
-        });
-    }
-    // the only HDMI / DisplayPort sink there is
-    let mut hdmi_sinks = s
+    let hdmi_sinks: Vec<&crate::mixer::Device> = s
         .sinks
         .iter()
-        .filter(|d| hdmi(&d.name) || hdmi(&d.description));
-    match (hdmi_sinks.next(), hdmi_sinks.next()) {
-        (Some(only), None) => Some(SoundOn::Sink(only.name.clone())),
+        .filter(|d| {
+            !d.is_monitor
+                && d.bus != "bluetooth"
+                && (is_hdmi(&d.name) || is_hdmi(&d.description) || is_hdmi(&d.active_port))
+        })
+        .collect();
+    // by the monitor's name (ELD = EDID)
+    if !m.name.is_empty() {
+        if let Some(sink) = hdmi_sinks
+            .iter()
+            .find(|d| d.monitors.iter().any(|n| same_name(n, &m.name)))
+        {
+            return Some(SoundOn::Sink(sink.name.clone()));
+        }
+        for card in &s.cards {
+            for port in &card.ports {
+                if same_name(&port.monitor, &m.name)
+                    && let Some(profile) = port.profiles.iter().find(|p| {
+                        p.starts_with("output:")
+                            && is_hdmi(p)
+                            && !p.contains("+input")
+                            && card.profiles.iter().any(|q| &q.name == *p && q.available)
+                    })
+                {
+                    return Some(SoundOn::Profile {
+                        card: card.name.clone(),
+                        profile: profile.clone(),
+                    });
+                }
+            }
+        }
+    }
+    // the one there is, for the one display that can carry sound
+    let others = monitors
+        .iter()
+        .filter(|o| o.can_play() && !o.primary && o.connector != m.connector)
+        .count();
+    if others > 0 {
+        return None;
+    }
+    match hdmi_sinks.as_slice() {
+        [only] => return Some(SoundOn::Sink(only.name.clone())),
+        [] => {}
+        _ => return None,
+    }
+    let mut profiles = s.cards.iter().flat_map(|c| {
+        c.profiles
+            .iter()
+            .filter(|p| {
+                p.available
+                    && p.name.starts_with("output:")
+                    && is_hdmi(&p.name)
+                    && !p.name.contains("+input")
+            })
+            .map(move |p| (c, p))
+    });
+    match (profiles.next(), profiles.next()) {
+        (Some((card, profile)), None) => Some(SoundOn::Profile {
+            card: card.name.clone(),
+            profile: profile.name.clone(),
+        }),
         _ => None,
+    }
+}
+
+/// The sound moved to a display: its sink, and the card's profile before
+/// it was switched for it (card, profile), where one was.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Moved {
+    pub sink: String,
+    pub switched: Option<(String, String)>,
+}
+
+/// Switch `card` to `profile` (pactl).
+pub fn set_profile(card: &str, profile: &str) -> Result<(), String> {
+    let (args, what) = crate::mixer::Action::Profile {
+        card: card.to_owned(),
+        profile: profile.to_owned(),
+    }
+    .command()?;
+    let (ok, _, err) = crate::mixer::run(&args)?;
+    if ok {
+        Ok(())
+    } else {
+        Err(crate::mixer::error_sentence(&what, &err))
+    }
+}
+
+/// The sound server's output on `m` (blocking: pactl, and a card switched
+/// to its HDMI / DisplayPort profile waited for - run it on a thread of
+/// its own). A switch whose output does not come is undone at once: the
+/// card back on the profile it had, not left with no output at all.
+pub fn move_sound(m: &Monitor, monitors: &[Monitor]) -> Result<Moved, String> {
+    if !m.can_play() {
+        return Err(format!("{} carries no sound", m.connector));
+    }
+    let snapshot = crate::mixer::refresh()?;
+    match sound_on_among(m, monitors, &snapshot) {
+        Some(SoundOn::Sink(sink)) => Ok(Moved {
+            sink,
+            switched: None,
+        }),
+        Some(SoundOn::Profile { card, profile }) => {
+            let before = snapshot
+                .cards
+                .iter()
+                .find(|c| c.name == card)
+                .map(|c| c.active_profile.clone())
+                .unwrap_or_default();
+            set_profile(&card, &profile)?;
+            // (its sink comes a moment later)
+            for _ in 0..15 {
+                let now = crate::mixer::refresh()?;
+                if let Some(SoundOn::Sink(sink)) = sound_on_among(m, monitors, &now) {
+                    return Ok(Moved {
+                        sink,
+                        switched: (!before.is_empty()).then(|| (card.clone(), before.clone())),
+                    });
+                }
+                std::thread::sleep(std::time::Duration::from_millis(200));
+            }
+            if !before.is_empty() {
+                let _ = set_profile(&card, &before);
+            }
+            Err(format!("no output came for {profile}"))
+        }
+        None => Err(format!(
+            "no sound output that is surely {}'s (choose it in the Mixer tab)",
+            m.connector
+        )),
     }
 }
 
@@ -259,21 +390,40 @@ pub fn find<'a>(monitors: &'a [Monitor], connector: &str, name: &str) -> Option<
         .or_else(|| monitors.iter().find(|m| !name.is_empty() && m.name == name))
 }
 
-/// The monitors connected, asked again every two seconds on a thread of
-/// its own (`wake` when the list changes: a display plugged in or out).
-pub fn watch(wake: impl Fn() + Send + 'static) -> std::sync::Arc<std::sync::Mutex<Vec<Monitor>>> {
-    let out = std::sync::Arc::new(std::sync::Mutex::new(list()));
+/// The monitors connected: asked when the window opens, then every two
+/// seconds while `wanted` (the display menu open, the display view shown or
+/// to be opened again - an unplugged display seen at once there), on a
+/// thread of its own (`wake` when the list changes); not otherwise - no
+/// prober running for the whole session.
+pub fn watch(
+    wanted: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    wake: impl Fn() + Send + 'static,
+) -> std::sync::Arc<std::sync::Mutex<Vec<Monitor>>> {
+    watch_with(list, wanted, std::time::Duration::from_secs(2), wake)
+}
+
+/// As [`watch`], with the lister and the period given (tests).
+pub fn watch_with(
+    lister: impl Fn() -> Vec<Monitor> + Send + 'static,
+    wanted: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    period: std::time::Duration,
+    wake: impl Fn() + Send + 'static,
+) -> std::sync::Arc<std::sync::Mutex<Vec<Monitor>>> {
+    let out = std::sync::Arc::new(std::sync::Mutex::new(lister()));
     let shared = out.clone();
     let _ = std::thread::Builder::new()
         .name("amp-displays".into())
         .spawn(move || {
             loop {
-                std::thread::sleep(std::time::Duration::from_secs(2));
+                std::thread::sleep(period);
                 // (the window gone: no one holds the other end)
                 if std::sync::Arc::strong_count(&shared) == 1 {
                     return;
                 }
-                let now = list();
+                if !wanted.load(std::sync::atomic::Ordering::Relaxed) {
+                    continue;
+                }
+                let now = lister();
                 if let Ok(mut m) = shared.lock()
                     && *m != now
                 {
@@ -288,7 +438,7 @@ pub fn watch(wake: impl Fn() + Send + 'static) -> std::sync::Arc<std::sync::Mute
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mixer::{Device, Kind, Profile};
+    use crate::mixer::{Card, CardPort, Device, Kind, Profile};
 
     const XRANDR: &str = "Screen 0: minimum 8 x 8, current 5760 x 2160, maximum 32767 x 32767
 eDP-1 connected primary 1920x1080+0+0 (normal left inverted right x axis y axis) 344mm x 194mm
@@ -347,7 +497,7 @@ VGA-1 connected (normal left inverted right x axis y axis)
         assert_eq!(m[0].label(), "HDMI-1 (LG TV) 3840 x 2160");
     }
 
-    fn sink(name: &str, description: &str) -> Device {
+    fn sink(name: &str, description: &str, monitor: &str) -> Device {
         Device {
             kind: Kind::Sink,
             index: 0,
@@ -363,79 +513,236 @@ VGA-1 connected (normal left inverted right x axis y axis)
             card_index: None,
             bus: String::new(),
             form_factor: String::new(),
+            monitors: if monitor.is_empty() {
+                Vec::new()
+            } else {
+                vec![monitor.into()]
+            },
+        }
+    }
+
+    fn mon(connector: &str, name: &str) -> Monitor {
+        Monitor {
+            connector: connector.into(),
+            name: name.into(),
+            ..Default::default()
+        }
+    }
+
+    fn hdmi_card(profiles: &[&str], ports: Vec<CardPort>) -> Card {
+        Card {
+            index: 1,
+            name: "alsa_card.pci-0000_00_1f.3".into(),
+            description: "Built-in Audio".into(),
+            profiles: profiles
+                .iter()
+                .map(|p| Profile {
+                    name: (*p).into(),
+                    description: String::new(),
+                    available: true,
+                    priority: 5900,
+                })
+                .collect(),
+            active_profile: "output:analog-stereo".into(),
+            bus: "pci".into(),
+            ports,
         }
     }
 
     #[test]
-    fn a_displays_sound_is_found() {
-        let hdmi1 = Monitor {
-            connector: "HDMI-1".into(),
-            ..Default::default()
-        };
-        let hdmi2 = Monitor {
-            connector: "HDMI-2".into(),
-            ..Default::default()
-        };
-        let tv = Monitor {
-            connector: "DP-1".into(),
-            name: "LG TV".into(),
-            ..Default::default()
-        };
-        let vga = Monitor {
-            connector: "VGA-1".into(),
-            ..Default::default()
-        };
+    fn a_displays_sound_is_found_by_its_name_or_where_it_cannot_be_mistaken() {
+        let analog = sink(
+            "alsa_output.pci-0000_00_1f.3.analog-stereo",
+            "Built-in Audio Analog Stereo",
+            "",
+        );
+        // two displays, two HDMI outputs, each saying whose it is (ELD)
         let s = Snapshot {
             sinks: vec![
+                analog.clone(),
                 sink(
-                    "alsa_output.pci-0000_00_1f.3.analog-stereo",
-                    "Built-in Audio Analog Stereo",
+                    "alsa_output.pci-0000_01_00.1.hdmi-stereo",
+                    "GA104 HDMI 0",
+                    "DELL U2415",
                 ),
                 sink(
                     "alsa_output.pci-0000_01_00.1.hdmi-stereo-extra1",
                     "GA104 HDMI 1",
+                    "LG TV",
                 ),
-                sink("alsa_output.pci-0000_01_00.1.hdmi-stereo-extra2", "LG TV"),
             ],
-            cards: vec![Card {
-                index: 1,
-                name: "alsa_card.pci-0000_00_1f.3".into(),
-                description: "Built-in Audio".into(),
-                profiles: vec![Profile {
-                    name: "output:hdmi-stereo".into(),
-                    description: "Digital Stereo (HDMI) Output".into(),
-                    available: true,
-                    priority: 5900,
-                }],
-                active_profile: "output:analog-stereo".into(),
-                bus: "pci".into(),
-            }],
             ..Default::default()
         };
-        // by its number: HDMI-2 is "extra1"
+        let dell = mon("DP-1", "DELL U2415");
+        let tv = mon("HDMI-1", "LG TV");
+        let both = [dell.clone(), tv.clone()];
         assert_eq!(
-            sound_on(&hdmi2, &s),
+            sound_on_among(&tv, &both, &s),
             Some(SoundOn::Sink(
                 "alsa_output.pci-0000_01_00.1.hdmi-stereo-extra1".into()
             ))
         );
-        // by the monitor's own name
         assert_eq!(
-            sound_on(&tv, &s),
+            sound_on_among(&dell, &both, &s),
             Some(SoundOn::Sink(
-                "alsa_output.pci-0000_01_00.1.hdmi-stereo-extra2".into()
+                "alsa_output.pci-0000_01_00.1.hdmi-stereo".into()
             ))
         );
-        // no sink of its number yet: the card's profile that makes one
+        // DP-1 and HDMI-1, NVIDIA's DP-0 and HDMI-0, AMD's DisplayPort-0
+        // and -1, no names: their numbers are no guide - none
+        let s_nameless = Snapshot {
+            sinks: vec![
+                analog.clone(),
+                sink(
+                    "alsa_output.pci-0000_01_00.1.hdmi-stereo",
+                    "GA104 HDMI 0",
+                    "",
+                ),
+                sink(
+                    "alsa_output.pci-0000_01_00.1.hdmi-stereo-extra1",
+                    "GA104 HDMI 1",
+                    "",
+                ),
+            ],
+            ..Default::default()
+        };
+        for (a, b) in [
+            ("DP-1", "HDMI-1"),
+            ("DP-0", "HDMI-0"),
+            ("DisplayPort-0", "DisplayPort-1"),
+        ] {
+            let pair = [mon(a, ""), mon(b, "")];
+            assert_eq!(sound_on_among(&pair[0], &pair, &s_nameless), None, "{a}");
+            assert_eq!(sound_on_among(&pair[1], &pair, &s_nameless), None, "{b}");
+        }
+        // one display that can carry sound, one HDMI output: that one
+        let one = Snapshot {
+            sinks: vec![
+                analog.clone(),
+                sink(
+                    "alsa_output.pci-0000_00_1f.3.hdmi-stereo",
+                    "Built-in Audio Digital Stereo (HDMI)",
+                    "",
+                ),
+            ],
+            ..Default::default()
+        };
+        let lone = mon("HDMI-1", "");
         assert_eq!(
-            sound_on(&hdmi1, &s),
+            sound_on_among(&lone, std::slice::from_ref(&lone), &one),
+            Some(SoundOn::Sink(
+                "alsa_output.pci-0000_00_1f.3.hdmi-stereo".into()
+            ))
+        );
+        // a display called "TV" and a Bluetooth soundbar called "TV
+        // Soundbar": never the soundbar
+        let mut bar = sink("bluez_output.11_22.1", "TV Soundbar", "");
+        bar.bus = "bluetooth".into();
+        let tv_short = mon("HDMI-1", "TV");
+        let s_bar = Snapshot {
+            sinks: vec![analog.clone(), bar],
+            ..Default::default()
+        };
+        assert_eq!(
+            sound_on_among(&tv_short, std::slice::from_ref(&tv_short), &s_bar),
+            None
+        );
+        // nothing on yet: the card's port that has the display on it (ELD)
+        let s_card = Snapshot {
+            sinks: vec![analog.clone()],
+            cards: vec![hdmi_card(
+                &["output:hdmi-stereo", "output:hdmi-stereo-extra1"],
+                vec![
+                    CardPort {
+                        name: "hdmi-output-0".into(),
+                        monitor: "DELL U2415".into(),
+                        profiles: vec!["output:hdmi-stereo".into()],
+                    },
+                    CardPort {
+                        name: "hdmi-output-1".into(),
+                        monitor: "LG TV".into(),
+                        profiles: vec!["output:hdmi-stereo-extra1".into()],
+                    },
+                ],
+            )],
+            ..Default::default()
+        };
+        assert_eq!(
+            sound_on_among(&tv, &both, &s_card),
+            Some(SoundOn::Profile {
+                card: "alsa_card.pci-0000_00_1f.3".into(),
+                profile: "output:hdmi-stereo-extra1".into()
+            })
+        );
+        // the one profile there is, for the one display
+        let s_one_profile = Snapshot {
+            sinks: vec![analog],
+            cards: vec![hdmi_card(&["output:hdmi-stereo"], Vec::new())],
+            ..Default::default()
+        };
+        assert_eq!(
+            sound_on_among(&lone, std::slice::from_ref(&lone), &s_one_profile),
             Some(SoundOn::Profile {
                 card: "alsa_card.pci-0000_00_1f.3".into(),
                 profile: "output:hdmi-stereo".into()
             })
         );
         // VGA carries no sound
-        assert_eq!(sound_on(&vga, &s), None);
+        assert_eq!(sound_on(&mon("VGA-1", ""), &one), None);
+    }
+
+    #[test]
+    fn under_wayland_the_kernel_says_which_displays_not_xwayland() {
+        const XWAYLAND: &str =
+            "Screen 0: minimum 16 x 16, current 5760 x 2160, maximum 32767 x 32767
+XWAYLAND0 connected primary 1920x1080+0+0 (normal left inverted right x axis y axis) 340mm x 190mm
+   1920x1080     59.96*+
+XWAYLAND1 connected 3840x2160+1920+0 (normal left inverted right x axis y axis) 600mm x 340mm
+   3840x2160     59.98*+
+";
+        let drm = || vec![mon("eDP-1", ""), mon("HDMI-1", "LG TV")];
+        // a Wayland session (XWayland sets DISPLAY too): the kernel's list
+        let got = choose_list(true, Some(XWAYLAND), drm);
+        assert_eq!(
+            got.iter().map(|m| m.connector.as_str()).collect::<Vec<_>>(),
+            ["eDP-1", "HDMI-1"]
+        );
+        // XWayland's outputs never taken for real ones
+        let got = choose_list(false, Some(XWAYLAND), drm);
+        assert!(
+            got.iter().all(|m| !m.connector.starts_with("XWAYLAND")),
+            "{got:?}"
+        );
+        // X11: xrandr's, with the places on the desktop
+        let got = choose_list(false, Some(XRANDR), drm);
+        assert_eq!(got[0].connector, "eDP-1");
+        assert_eq!(got[1].at, Some((1920, 0)));
+    }
+
+    #[test]
+    fn xrandr_is_asked_for_the_current_state_and_only_when_wanted() {
+        // (--current: no probing of the displays, which can make them blink)
+        assert_eq!(XRANDR_ARGS, ["--current"]);
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        let calls = std::sync::Arc::new(AtomicUsize::new(0));
+        let counted = calls.clone();
+        let wanted = std::sync::Arc::new(AtomicBool::new(false));
+        let watch = watch_with(
+            move || {
+                counted.fetch_add(1, Ordering::Relaxed);
+                Vec::new()
+            },
+            wanted.clone(),
+            std::time::Duration::from_millis(20),
+            || {},
+        );
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        // once when the window opens; not again while nothing wants it
+        assert_eq!(calls.load(Ordering::Relaxed), 1);
+        wanted.store(true, Ordering::Relaxed);
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        assert!(calls.load(Ordering::Relaxed) > 3, "not asked while wanted");
+        drop(watch);
     }
 
     #[test]
