@@ -135,6 +135,10 @@ pub struct App {
     automatic: bool,
     duration: Option<f64>,
     seek_drag: Option<f64>,
+    /// A seek asked for and when: shown (the time, the slider) until the
+    /// sound has caught up with it - at once, not a frame or two later -
+    /// and the next step of ±15 s goes on from it.
+    seek_asked: Option<(f64, Instant)>,
     output: String,
     status: String,
     /// The status line as it was last seen and since when (a message goes
@@ -590,6 +594,7 @@ impl App {
             automatic: false,
             duration: None,
             seek_drag: None,
+            seek_asked: None,
             output: String::new(),
             status: String::new(),
             status_seen: (String::new(), Instant::now()),
@@ -1141,10 +1146,44 @@ impl App {
             return self.next(true);
         }
         self.engine.send(Command::Seek(secs));
+        self.seek_asked = Some((secs, Instant::now()));
         #[cfg(target_os = "linux")]
         if let Some(m) = &self.mpris {
             m.seeked(secs);
         }
+    }
+
+    /// Where the track is, as shown: a seek just asked for until the sound
+    /// has caught up with it (or a second has gone by), else the sound's.
+    pub fn shown_position(&mut self) -> f64 {
+        let heard = self.engine.shared.position();
+        match self.seek_asked {
+            Some((at, when))
+                if (heard - at).abs() > 0.5 && when.elapsed() < Duration::from_secs(1) =>
+            {
+                at
+            }
+            _ => {
+                self.seek_asked = None;
+                heard
+            }
+        }
+    }
+
+    /// Whether the track can be wound (loaded and seekable).
+    fn can_seek(&self) -> bool {
+        self.info.seekable && self.loaded == Some(self.generation)
+    }
+
+    /// Back or on by `secs` (±15 s: the buttons, J and L): from 0:00 at
+    /// the least; past the end, on to the next track as at its end (or,
+    /// the last, stopped there). Paused, it stays paused.
+    pub fn wind(&mut self, secs: f64) {
+        if !self.can_seek() {
+            return;
+        }
+        let from = self.shown_position();
+        self.seek((from + secs).max(0.0));
     }
 
     /// Set the sleep timer (None: off).
@@ -1831,6 +1870,14 @@ impl App {
                 let step = if modifiers.shift { 30.0 } else { 5.0 };
                 self.seek(pos + sign * step);
             }
+        }
+        // (15 s back and on: J and L, as video players have them - the
+        // arrows already seek 5 s, 30 s with Shift)
+        if pressed(Key::J) && !modifiers.any() {
+            self.wind(-15.0);
+        }
+        if pressed(Key::L) && !modifiers.any() {
+            self.wind(15.0);
         }
         for (key, up) in [(Key::ArrowUp, true), (Key::ArrowDown, false)] {
             if !pressed(key) {
@@ -3169,9 +3216,8 @@ impl App {
     }
 
     fn position(&mut self, ui: &mut Ui) {
-        let pos = self
-            .seek_drag
-            .unwrap_or_else(|| self.engine.shared.position());
+        let shown = self.shown_position();
+        let pos = self.seek_drag.unwrap_or(shown);
         let seekable = self.info.seekable && self.duration.is_some();
         ui.horizontal(|ui| {
             ui.label(RichText::new(clock(pos)).monospace().color(th().muted));
@@ -3196,7 +3242,7 @@ impl App {
                 let response = ui
                     .add_enabled(seekable, slider)
                     .accessible_name("Position")
-                    .on_hover_text("Seek: drag, click, the wheel, ←/→ (Shift: 30 s)");
+                    .on_hover_text("Seek: drag, click, the wheel, ←/→ (Shift: 30 s), J/L (15 s)");
                 let notches = self.wheel_steps(ui, &response);
                 if notches != 0 {
                     self.seek(self.engine.shared.position() + 5.0 * notches as f64);
@@ -3216,6 +3262,12 @@ impl App {
         ui.horizontal(|ui| {
             // (a narrow window: smaller buttons, room for the volume)
             let narrow = ui.available_width() < 520.0;
+            // (narrow: closer together, less room round their words - the
+            // two 15 s buttons fit with the rest)
+            if narrow {
+                ui.spacing_mut().item_spacing.x = 4.0;
+                ui.spacing_mut().button_padding.x = 5.0;
+            }
             let big = if narrow {
                 vec2(36.0, 32.0)
             } else {
@@ -3228,6 +3280,26 @@ impl App {
                 .clicked()
             {
                 self.previous();
+            }
+            let can = self.can_seek();
+            let wind = egui::vec2(if narrow { 30.0 } else { 44.0 }, big.y);
+            let (back, on) = if narrow {
+                ("−15", "+15")
+            } else {
+                ("−15 s", "+15 s")
+            };
+            if ui
+                .add_enabled(
+                    can,
+                    egui::Button::new(RichText::new(back).size(if narrow { 11.0 } else { 12.5 }))
+                        .min_size(wind),
+                )
+                .accessible_name("Back 15 s")
+                .on_hover_text("Back 15 seconds (J)")
+                .on_disabled_hover_text("Nothing to wind back (no track, or a stream)")
+                .clicked()
+            {
+                self.wind(-15.0);
             }
             let play = if self.playing() { "⏸" } else { "▶" };
             let button =
@@ -3254,6 +3326,19 @@ impl App {
                 .clicked()
             {
                 self.stop();
+            }
+            if ui
+                .add_enabled(
+                    can,
+                    egui::Button::new(RichText::new(on).size(if narrow { 11.0 } else { 12.5 }))
+                        .min_size(wind),
+                )
+                .accessible_name("Forward 15 s")
+                .on_hover_text("Forward 15 seconds (L)")
+                .on_disabled_hover_text("Nothing to wind on (no track, or a stream)")
+                .clicked()
+            {
+                self.wind(15.0);
             }
             if ui
                 .add(egui::Button::new(RichText::new("⏭").size(18.0)).min_size(big))

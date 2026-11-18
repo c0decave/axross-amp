@@ -360,6 +360,7 @@ Keys (on the Player tab, not while typing in a field):
 |---|---|
 | Space | play / pause |
 | ← / → | seek 5 s (Shift: 30 s); Ctrl: previous / next track |
+| J / L | back / forward 15 s (as the −15 s and +15 s buttons beside play) |
 | ↑ / ↓, + / − | volume |
 | Home | the track's start |
 | M, N, P | mute, next, previous |
@@ -368,6 +369,14 @@ Keys (on the Player tab, not while typing in a field):
 | Ctrl+↑ / ↓, Alt+↑ / ↓ | choose a track in the playlist; move it |
 | Enter, Delete | play the chosen track; remove it |
 | Ctrl+Z | undo the playlist's last change |
+
+The buttons beside play wind 15 s back and on (their tooltips name J and L):
+from 0:00 at the least; past a track's end on to the next, as at its end (the
+last one stops); paused, it stays paused; the time and the slider show the new
+place at once; greyed where there is nothing to wind (no track opened, a radio
+stream). MPRIS's Seek does the same for the desktop's own buttons.
+
+![The row of buttons](docs/transport.png)
 
 The mouse wheel seeks over the position and sets the volume over its slider.
 

@@ -144,6 +144,15 @@ fn the_desktop_sees_and_drives_the_player() {
         < 0.05));
     let position: i64 = p.get_property("Position").unwrap();
     assert!((position - 2_500_000).abs() < 50_000, "{position}");
+    // Seek, as the desktop's 15 s buttons do: back 15 s from 2.5 s, to
+    // 0:00 and no further; on by a second from there
+    p.call_method("Seek", &(-15_000_000i64)).unwrap();
+    assert!(until(&mut h, 3.0, |a| a.engine().shared.position() < 0.3));
+    p.call_method("Seek", &(1_000_000i64)).unwrap();
+    assert!(until(&mut h, 3.0, |a| (a.engine().shared.position() - 1.0)
+        .abs()
+        < 0.3));
+    assert_eq!(h.state().snapshot().current, 0, "Seek left the track");
     p.set_property("Volume", 0.3f64).unwrap();
     assert!(until(&mut h, 3.0, |a| a.snapshot().volume == 30));
     p.set_property("Shuffle", true).unwrap();
