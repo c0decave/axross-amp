@@ -207,10 +207,11 @@ What axross-amp does about it:
   blended towards a slow average of themselves (more persistence), up to
   85 - 95 %, shaded smoothly and feathered at its edges, easing off a second
   after the danger is gone. It works the same whatever a face draws, on the
-  GPU and on the CPU's fallback. It costs about 0.5 - 3 ms of the CPU a
-  frame (`--release`; the spirograph's thousands of segments 7.6 ms), the
-  faces themselves 0.1 - 0.6 ms; the frame rate's cap on a software
-  renderer counts it in.
+  GPU and on the CPU's fallback. It costs about 1 - 4 ms of the CPU a
+  frame (`--release`, `tests/frame_cost.rs`; 7 - 9 ms for the spirograph's
+  thousands of segments, and for the particles and the skyline at 3840 x
+  2160), the faces themselves 0.1 - 2 ms; the frame rate's cap on a
+  software renderer counts it in.
 - **Calmer faces.** What drives the pictures' brightness (the bars, the
   beat's pulse, the VU meter, the oscilloscope's height) turns no faster
   than every quarter of a second in *Calm*; the fire is orange and slow;
