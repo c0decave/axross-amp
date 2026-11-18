@@ -302,7 +302,16 @@ fn click_through(h: &mut Harness<'static, App>, what: &str, out: &mut RenderStat
     assert!(h.state().playing(), "{what}: Play did not play");
     let at = centre(h, "Pause");
     click_at(h, at);
-    assert!(!h.state().playing(), "{what}: Pause did not pause");
+    assert!(
+        until(h, 3.0, |a| !a.playing()),
+        "{what}: Pause did not pause"
+    );
+    // (its name follows on the next frame: on a busy machine, wait for it)
+    settle(h, 2);
+    assert!(
+        h.query_by_label("Play").is_some(),
+        "{what}: paused, but no Play to press"
+    );
     let at = centre(h, "Play");
     click_at(h, at);
     play(h, out, 0.3);
@@ -407,11 +416,16 @@ fn click_through(h: &mut Harness<'static, App>, what: &str, out: &mut RenderStat
     }
 }
 
-const SIZES: [(f32, f32); 3] = [(420.0, 420.0), (620.0, 860.0), (1400.0, 900.0)];
+const SIZES: [(f32, f32); 3] = [(420.0, 420.0), (800.0, 600.0), (1920.0, 1080.0)];
 
 #[test]
 fn every_design_keeps_every_control_at_every_size() {
-    for d in &DESIGNS {
+    // (AMP_DESIGN_ONLY=key,key: those alone, while one is worked on)
+    let only = std::env::var("AMP_DESIGN_ONLY").ok();
+    for d in DESIGNS.iter().filter(|d| {
+        only.as_deref()
+            .is_none_or(|o| o.split(',').any(|k| k == d.key))
+    }) {
         for (w, ht) in SIZES {
             // (each its own settings: the last one's shuffle and repeat
             // not carried over)
@@ -450,9 +464,11 @@ fn the_designs_that_move_do_not_flash() {
     let mut failures = Vec::new();
     for d in DESIGNS
         .iter()
+        // (the designs with something of their own that moves: reels,
+        // needles, a counter, a readout, a marquee)
         .filter(|d| d.extras.reels || d.extras.needles || d.extras.lcd || d.fade_controls)
     {
-        let size = egui::vec2(620.0, 860.0);
+        let size = egui::vec2(800.0, 600.0);
         let mut h = window(&home, vec![loud.clone()], size);
         assert!(until(&mut h, 5.0, |a| a.is_loaded()));
         h.state_mut().set_design(d.key);
@@ -466,13 +482,11 @@ fn the_designs_that_move_do_not_flash() {
         let mut out = RenderState::default();
         // the window as the screen, and the card alone as the screen (its
         // reels, needles and readout as large as a screen: the strictest)
-        let title = h
-            .query_all_by_label("Loud")
-            .map(|n| n.rect())
-            .min_by(|a, b| a.top().total_cmp(&b.top()))
-            .expect("the card's title");
-        let top = (title.top() - 14.0).max(0.0) as u32;
-        let card = (size.x as u32, 170u32);
+        // (what a design adds lies under the bars at the top: the card, the
+        // rack's display and amplifier, the cassette, the 90s strip - the
+        // window's upper part, as the whole screen)
+        let top = 80u32;
+        let card = (size.x as u32, 300u32);
         // (the window's steps, 20 a second, the sound at that pace)
         let mut whole = flashmeter::Meter::with_fps(size.x as usize, size.y as usize, 20);
         let mut alone = flashmeter::Meter::with_fps(card.0 as usize, card.1 as usize, 20);
@@ -561,7 +575,7 @@ fn every_design_in_a_gallery() {
     let c = home.join("Third.wav");
     write_chord(&c, 30);
     tracks.push(c.to_string_lossy().into_owned());
-    let size = egui::vec2(620.0, 860.0);
+    let size = egui::vec2(1280.0, 800.0);
     let mut shots_made = Vec::new();
     for d in &DESIGNS {
         let mut h = window(&home, tracks.clone(), size);
@@ -600,17 +614,17 @@ fn every_design_in_a_gallery() {
         img.save(shots().join(format!("{}.png", d.key))).unwrap();
         shots_made.push(img);
     }
-    // five across, two down, each at half its size
-    let (w, ht) = (310u32, 430u32);
+    // two across, five down, each at half its size
+    let (w, ht) = (640u32, 400u32);
     let gap = 12u32;
     let mut page = image::RgbaImage::from_pixel(
-        5 * w + 6 * gap,
-        2 * ht + 3 * gap,
+        2 * w + 3 * gap,
+        5 * ht + 6 * gap,
         image::Rgba([24, 24, 28, 255]),
     );
     for (i, img) in shots_made.iter().enumerate() {
         let small = image::imageops::resize(img, w, ht, image::imageops::FilterType::Lanczos3);
-        let (x, y) = (i as u32 % 5, i as u32 / 5);
+        let (x, y) = (i as u32 % 2, i as u32 / 2);
         image::imageops::overlay(
             &mut page,
             &small,
@@ -621,4 +635,68 @@ fn every_design_in_a_gallery() {
     let docs = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("docs");
     std::fs::create_dir_all(&docs).unwrap();
     page.save(docs.join("designs.png")).unwrap();
+}
+
+/// Tab goes through the controls in the order they are seen: row by row,
+/// left to right in a row, a column to the right after the one at its
+/// left - in every design (a group laid out right to left, as Clear before
+/// Save… was, would go backwards).
+#[test]
+fn tab_follows_what_is_seen() {
+    use egui_kittest::kittest::NodeT;
+    let only = std::env::var("AMP_DESIGN_ONLY").ok();
+    let mut failures = Vec::new();
+    for d in DESIGNS.iter().filter(|d| {
+        only.as_deref()
+            .is_none_or(|o| o.split(',').any(|k| k == d.key))
+    }) {
+        for (w, ht) in [(800.0, 600.0), (1920.0, 1080.0)] {
+            let home = Scratch::new(&format!("design-tab-{}-{w}", d.key));
+            let tracks = two_tracks(&home);
+            let mut h = window(&home, tracks, egui::vec2(w, ht));
+            assert!(until(&mut h, 5.0, |a| a.is_loaded()));
+            h.state_mut().set_design(d.key);
+            settle(&mut h, 4);
+            let mut seen: Vec<(String, egui::Rect)> = Vec::new();
+            for _ in 0..90 {
+                h.key_press(egui::Key::Tab);
+                h.run_steps(1);
+                let Some(node) = h.query_by(|n| n.is_focused()) else {
+                    continue;
+                };
+                let label = node.accesskit_node().label().unwrap_or_default();
+                let rect = node.rect();
+                if seen.first().is_some_and(|(l, r)| *l == label && *r == rect) {
+                    break;
+                }
+                seen.push((label, rect));
+            }
+            for pair in seen.windows(2) {
+                let ((a, ra), (b, rb)) = (&pair[0], &pair[1]);
+                let same_row =
+                    (rb.center().y - ra.center().y).abs() < ra.height().min(rb.height()) * 0.6;
+                let above = rb.bottom() <= ra.top() + 1.0;
+                let column_right = rb.left() >= ra.right() - 1.0;
+                let backwards = if same_row {
+                    rb.center().x < ra.center().x - 1.0
+                } else {
+                    above && !column_right
+                };
+                if backwards {
+                    failures.push(format!(
+                        "{} at {w} x {ht}: {b:?} {rb:?} after {a:?} {ra:?}",
+                        d.name
+                    ));
+                }
+            }
+            if seen.len() < 15 {
+                failures.push(format!(
+                    "{} at {w} x {ht}: only {} stops by Tab",
+                    d.name,
+                    seen.len()
+                ));
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{failures:#?}");
 }

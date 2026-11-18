@@ -17,6 +17,9 @@ use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+#[path = "app_layouts.rs"]
+mod layouts;
+
 /// The theme shown (its tokens: see `theme`).
 fn th() -> &'static crate::theme::Theme {
     crate::theme::current()
@@ -108,6 +111,8 @@ pub struct App {
     displays_wanted: Arc<std::sync::atomic::AtomicBool>,
     /// The monitors are the desktop's (else a test sets them).
     monitors_watched: bool,
+    /// The fonts installed: all monospace or not (None: egui's own yet).
+    fonts_mono: Option<bool>,
     /// When the display menu was last drawn (its time; ctx's clock).
     display_menu_at: f64,
     analyzer: Analyzer,
@@ -617,6 +622,7 @@ impl App {
             external: None,
             displays_wanted,
             monitors_watched: setup.desktop,
+            fonts_mono: None,
             display_menu_at: f64::NEG_INFINITY,
             reopen_display: false,
             analyzer: Analyzer::new(),
@@ -2636,6 +2642,12 @@ impl App {
         // and room only once chosen (the picker's rows stay under the
         // pointer)
         let kept_design = crate::design::find(&self.amp.design);
+        // (every text monospace in a design that writes so: the fonts
+        // swapped once, when the chosen design asks it)
+        if self.fonts_mono != Some(kept_design.mono) {
+            self.fonts_mono = Some(kept_design.mono);
+            fonts(ctx, kept_design.mono);
+        }
         let d = self
             .design_preview
             .take()
@@ -2701,15 +2713,14 @@ impl App {
             {
                 self.url_open = true;
             }
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                ui.menu_button("⚙", |ui| self.visual_menu(ui))
-                    .response
-                    .on_hover_text("Visualization");
-                let mut mode = self.mode;
-                // (narrower where the row is short; where even that does not
-                // fit beside URL, left out - never over it: the faces are in
-                // ⚙'s menu as well)
-                let room = ui.available_width() - ui.spacing().item_spacing.x - 28.0;
+            // (at the row's end, left to right - the faces' list, then ⚙:
+            // Tab goes through them as they are seen)
+            let room = ui.available_width() - 3.0 * ui.spacing().item_spacing.x - 36.0 - 28.0;
+            let mut mode = self.mode;
+            layouts::right_aligned(ui, egui::Id::unique("top-right"), |ui| {
+                // (narrower where the row is short; where even that does
+                // not fit beside URL, left out - never over it: the faces
+                // are in ⚙'s menu as well)
                 if room >= 96.0 {
                     egui::ComboBox::from_id_salt("mode")
                         .selected_text(viz::name(mode))
@@ -2720,11 +2731,14 @@ impl App {
                         .response
                         .accessible_name("Visualization");
                 }
-                if mode != self.mode {
-                    self.mode = mode;
-                    self.dirty = true;
-                }
+                ui.menu_button("⚙", |ui| self.visual_menu(ui))
+                    .response
+                    .on_hover_text("Visualization");
             });
+            if mode != self.mode {
+                self.mode = mode;
+                self.dirty = true;
+            }
         });
     }
 
@@ -3108,7 +3122,11 @@ impl App {
                     // (the cover as large as the window allows: 120..200 px;
                     // wide, a hero as Amberol has it - up to 320 px, lifted
                     // off the card by a soft shadow)
-                    let most = if wide { 320.0 } else { 200.0 };
+                    // (and never more than a quarter of the window's height:
+                    // the picture keeps its room in a wide, low window)
+                    let most = if wide { 320.0f32 } else { 200.0 }
+                        .min(ui.ctx().content_rect().height() * 0.25)
+                        .max(120.0);
                     let share = if wide { 0.27 } else { 0.22 };
                     let side = (ui.available_width() * share).clamp(120.0, most);
                     let size = vec2(side, side);
@@ -3978,220 +3996,34 @@ impl App {
 
     fn transport(&mut self, ui: &mut Ui) {
         ui.horizontal(|ui| {
-            // (a narrow window: smaller buttons, room for the volume)
+            // (a narrow window: smaller keys, room for the volume)
             let narrow = ui.available_width() < 520.0;
-            // (narrow: closer together, less room round their words - the
-            // two 15 s buttons fit with the rest)
             if narrow {
-                ui.spacing_mut().item_spacing.x = 4.0;
                 ui.spacing_mut().button_padding.x = 5.0;
             }
-            // (a cassette deck: square keys, taller, side by side)
-            let keys = crate::design::current().extras.keys;
-            if keys {
-                ui.spacing_mut().item_spacing.x = 2.0;
-                ui.visuals_mut().widgets.inactive.corner_radius = CornerRadius::same(2);
-                ui.visuals_mut().widgets.hovered.corner_radius = CornerRadius::same(2);
-                ui.visuals_mut().widgets.active.corner_radius = CornerRadius::same(2);
-            }
-            let big = match (narrow, keys) {
-                (true, _) => vec2(36.0, 32.0),
-                (false, true) => vec2(48.0, 42.0),
-                (false, false) => vec2(46.0, 34.0),
+            let look = crate::design::key_look(crate::design::current());
+            let k = layouts::Keys {
+                look,
+                size: if narrow {
+                    vec2(30.0, 32.0)
+                } else {
+                    vec2(46.0, 34.0)
+                },
+                play: if narrow {
+                    vec2(40.0, 36.0)
+                } else {
+                    vec2(58.0, 38.0)
+                },
+                gap: if narrow { 2.0 } else { 6.0 },
+                modes: true,
             };
-            if ui
-                .add(egui::Button::new(RichText::new("⏮").size(18.0)).min_size(big))
-                .accessible_name("Previous")
-                .on_hover_text("Previous (P)")
-                .clicked()
-            {
-                self.previous();
-            }
-            let can = self.can_seek();
-            let wind = egui::vec2(if narrow { 30.0 } else { 44.0 }, big.y);
-            let (back, on) = if narrow {
-                ("−15", "+15")
-            } else {
-                ("−15 s", "+15 s")
-            };
-            if ui
-                .add_enabled(
-                    can,
-                    egui::Button::new(RichText::new(back).size(if narrow { 11.0 } else { 12.5 }))
-                        .min_size(wind),
-                )
-                .accessible_name("Back 15 s")
-                .on_hover_text("Back 15 seconds (J)")
-                .on_disabled_hover_text("Nothing to wind back (no track, or a stream)")
-                .clicked()
-            {
-                self.wind(-15.0);
-            }
-            let play = if self.playing() { "⏸" } else { "▶" };
-            let button = if keys {
-                // (the play key pressed in while it plays, the accent a
-                // band along its top edge as a deck's coloured key)
-                egui::Button::new(RichText::new(play).size(20.0))
-                    .selected(self.playing())
-                    .min_size(if narrow {
-                        vec2(48.0, 36.0)
-                    } else {
-                        vec2(58.0, 42.0)
-                    })
-            } else {
-                egui::Button::new(RichText::new(play).size(22.0).color(ink_on(self.accent)))
-                    .fill(self.accent)
-                    .min_size(if narrow {
-                        vec2(48.0, 36.0)
-                    } else {
-                        vec2(58.0, 38.0)
-                    })
-                    .corner_radius(CornerRadius::same(19))
-            };
-            let response = ui.add(button);
-            if keys {
-                let r = response.rect;
-                ui.painter().rect_filled(
-                    egui::Rect::from_min_size(r.min + vec2(3.0, 3.0), vec2(r.width() - 6.0, 3.0)),
-                    CornerRadius::same(1),
-                    self.accent,
-                );
-            }
-            if response
-                .accessible_name(if self.playing() { "Pause" } else { "Play" })
-                .on_hover_text("Play / pause (Space)")
-                .clicked()
-            {
-                self.toggle_play();
-            }
-            if ui
-                .add(egui::Button::new(RichText::new("⏹").size(18.0)).min_size(big))
-                .accessible_name("Stop")
-                .on_hover_text("Stop")
-                .clicked()
-            {
-                self.stop();
-            }
-            if ui
-                .add_enabled(
-                    can,
-                    egui::Button::new(RichText::new(on).size(if narrow { 11.0 } else { 12.5 }))
-                        .min_size(wind),
-                )
-                .accessible_name("Forward 15 s")
-                .on_hover_text("Forward 15 seconds (L)")
-                .on_disabled_hover_text("Nothing to wind on (no track, or a stream)")
-                .clicked()
-            {
-                self.wind(15.0);
-            }
-            if ui
-                .add(egui::Button::new(RichText::new("⏭").size(18.0)).min_size(big))
-                .accessible_name("Next")
-                .on_hover_text("Next (N)")
-                .clicked()
-            {
-                self.next(false);
-            }
+            self.transport_keys(ui, k);
             ui.add_space(if narrow { 2.0 } else { 6.0 });
-            let shuffle = self.playlist.shuffle;
-            if ui
-                .add(
-                    egui::Button::new(RichText::new("🔀").size(16.0).color(if shuffle {
-                        self.accent
-                    } else {
-                        th().muted
-                    }))
-                    .selected(shuffle),
-                )
-                // (the state in words: not by its colour only)
-                .accessible_name(if shuffle {
-                    "Shuffle: on"
-                } else {
-                    "Shuffle: off"
-                })
-                .on_hover_text(if shuffle {
-                    "Shuffle: on"
-                } else {
-                    "Shuffle: off"
-                })
-                .clicked()
-            {
-                self.playlist.set_shuffle(!shuffle);
-                self.dirty = true;
-            }
-            let (icon, tip) = match self.playlist.repeat {
-                Repeat::Off => ("🔁", "Repeat: off"),
-                Repeat::All => ("🔁", "Repeat: all"),
-                Repeat::One => ("🔂", "Repeat: this track"),
-            };
-            let on = self.playlist.repeat != Repeat::Off;
-            if ui
-                .add(
-                    egui::Button::new(RichText::new(icon).size(16.0).color(if on {
-                        self.accent
-                    } else {
-                        th().muted
-                    }))
-                    .selected(on),
-                )
-                .accessible_name(tip)
-                .on_hover_text(tip)
-                .clicked()
-            {
-                self.playlist.repeat = self.playlist.repeat.next();
-                self.dirty = true;
-            }
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                let mut volume = self.volume;
-                // (narrow: the slider gives way, never over the buttons)
-                ui.spacing_mut().slider_width = (ui.available_width() - 84.0).clamp(36.0, 110.0);
-                let response = if crate::design::current().extras.knob {
-                    crate::design::knob(ui, &mut volume, "Volume")
-                } else {
-                    ui.add(
-                        egui::Slider::new(&mut volume, 0..=100)
-                            .show_value(false)
-                            .trailing_fill(true),
-                    )
-                }
-                .accessible_name("Volume")
-                .on_hover_text(format!("Volume {volume} % (↑/↓, +/-, the wheel)"));
-                if response.changed() {
-                    self.set_volume(volume);
-                }
-                let notches = self.wheel_steps(ui, &response);
-                if notches != 0 {
-                    self.set_volume((self.volume as i32 + 5 * notches).clamp(0, 100) as u32);
-                }
-                let icon = if self.muted || self.volume == 0 {
-                    "🔇"
-                } else {
-                    "🔊"
-                };
-                if ui
-                    .add(
-                        egui::Button::new(RichText::new(icon).size(16.0))
-                            .frame(false)
-                            .min_size(vec2(24.0, 24.0)),
-                    )
-                    .accessible_name("Mute")
-                    .on_hover_text("Mute (M)")
-                    .clicked()
-                {
-                    self.set_muted(!self.muted);
-                }
-                // (at least 24 x 24 to hit, as every button)
-                egui::containers::menu::MenuButton::from_button(
-                    egui::Button::new(RichText::new("⋯").size(16.0)).min_size(vec2(24.0, 24.0)),
-                )
-                .ui(ui, |ui| self.more_menu(ui))
-                .0
-                .accessible_name("More")
-                .on_hover_text("Sleep timer, ReplayGain, track details, mixer");
-                if let Some(label) = self.sleep_label() {
-                    ui.label(RichText::new(label).small().color(self.accent));
-                }
+            // (the volume at the row's end, laid out left to right: Tab
+            // goes through it as it is seen)
+            let slider = (ui.available_width() - 84.0).clamp(36.0, 110.0);
+            layouts::right_aligned(ui, egui::Id::unique("transport-volume"), |ui| {
+                self.volume_group(ui, None, slider)
             });
         });
     }
@@ -4226,7 +4058,7 @@ impl App {
                 self.eq_page = !self.eq_page;
             }
             if !self.eq_page && self.playlist_open {
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                layouts::right_aligned(ui, egui::Id::unique("playlist-actions"), |ui| {
                     self.playlist_actions(ui);
                 });
             }
@@ -4383,13 +4215,14 @@ impl App {
 
     /// Save, Undo, Clear: beside the playlist's switch.
     fn playlist_actions(&mut self, ui: &mut Ui) {
-        if ui.button("Clear").clicked() && !self.playlist.tracks.is_empty() {
-            self.remember_for_undo();
-            let n = self.playlist.tracks.len();
-            self.playlist.clear();
-            self.select(None);
-            self.dirty = true;
-            self.status = format!("{n} tracks removed - Ctrl+Z brings them back.");
+        // (left to right, as they are seen: Save…, Undo, Clear)
+        if ui
+            .button("Save…")
+            .on_hover_text("Save as an M3U playlist")
+            .clicked()
+        {
+            self.picking = Picking::SavePlaylist;
+            self.dialog.save_file();
         }
         if !self.undo.is_empty()
             && ui
@@ -4399,13 +4232,13 @@ impl App {
         {
             self.undo();
         }
-        if ui
-            .button("Save…")
-            .on_hover_text("Save as an M3U playlist")
-            .clicked()
-        {
-            self.picking = Picking::SavePlaylist;
-            self.dialog.save_file();
+        if ui.button("Clear").clicked() && !self.playlist.tracks.is_empty() {
+            self.remember_for_undo();
+            let n = self.playlist.tracks.len();
+            self.playlist.clear();
+            self.select(None);
+            self.dirty = true;
+            self.status = format!("{n} tracks removed - Ctrl+Z brings them back.");
         }
     }
 
@@ -4811,6 +4644,13 @@ impl App {
             self.empty_state(ui);
             return;
         }
+        // (each design its own layout: see app_layouts.rs)
+        self.design_page(ui);
+    }
+
+    /// The modern layout (and the glass and soft designs'): the card of
+    /// what plays, the picture large, the controls, the playlist.
+    fn layout_modern(&mut self, ui: &mut Ui) {
         // (a low window, or the cover as the picture: what plays
         // in one line)
         if ui.available_height() < 560.0 || self.mode == "cover" {
@@ -4885,6 +4725,8 @@ impl App {
         if crate::design::current().panel != crate::design::Panel::Glass {
             return;
         }
+        // (the light behind the panes, with a cover or without)
+        crate::design::glass_light(ui.painter(), ui.max_rect().expand(10.0), th(), self.accent);
         let Some(art) = self.cover_art.as_ref() else {
             return;
         };
@@ -4909,8 +4751,13 @@ impl App {
             // outer cells' colour)
             let uv =
                 egui::Rect::from_min_max(egui::pos2(0.0625, 0.0625), egui::pos2(0.9375, 0.9375));
-            ui.painter()
-                .image(texture.id(), ui.max_rect().expand(10.0), uv, Color32::WHITE);
+            // (over the light, a little of it showing through)
+            ui.painter().image(
+                texture.id(),
+                ui.max_rect().expand(10.0),
+                uv,
+                Color32::from_white_alpha(200),
+            );
         }
     }
 
@@ -5126,13 +4973,16 @@ impl eframe::App for App {
         }
         // (a wide window: the bars above and below as wide as the player's
         // column, over and under it - not across the whole screen)
-        let wide = ui.available_width() > 1240.0 && self.tab == Tab::Player && !self.big_visual;
+        // (zen: the bars as narrow as its column - one column top to bottom)
+        let narrow = crate::design::current().column;
+        let bar = if narrow > 0.0 { narrow - 4.0 } else { 1176.0 };
+        let wide = ui.available_width() > bar + 64.0 && self.tab == Tab::Player && !self.big_visual;
         let column = move |ui: &mut Ui, inner: &mut dyn FnMut(&mut Ui)| {
             if wide {
                 let room = ui.available_rect_before_wrap();
                 let rect = egui::Rect::from_min_size(
-                    egui::pos2(room.center().x - 1176.0 / 2.0, room.top()),
-                    vec2(1176.0, room.height()),
+                    egui::pos2(room.center().x - bar / 2.0, room.top()),
+                    vec2(bar, room.height()),
                 );
                 ui.scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| inner(ui));
             } else {
@@ -5492,6 +5342,13 @@ fn style(ctx: &egui::Context) {
             .text_styles
             .insert(egui::TextStyle::Small, egui::FontId::proportional(11.0));
     });
+    fonts(ctx, false);
+}
+
+/// The fonts: egui's, a bold face and a serif one where the system has
+/// them; `mono`: every text in the monospace face (the terminal's and the
+/// 90s desktop's designs - their rows, their words, not only their titles).
+fn fonts(ctx: &egui::Context, mono: bool) {
     // Hack (the monospace font) as the last fallback of the proportional
     // one: a character the others lack is drawn, not a box.
     let mut fonts = egui::FontDefinitions::default();
@@ -5517,9 +5374,59 @@ fn style(ctx: &egui::Context) {
     }
     fonts
         .families
-        .insert(egui::FontFamily::Name("bold".into()), bold);
+        .insert(egui::FontFamily::Name("bold".into()), bold.clone());
+    // (a serif face for the collage's cut-out words, where there is one)
+    let mut serif = proportional.clone();
+    if let Some(data) = SERIF_FONTS.iter().find_map(|p| std::fs::read(p).ok()) {
+        fonts.font_data.insert(
+            "axross-serif".to_owned(),
+            std::sync::Arc::new(egui::FontData::from_owned(data)),
+        );
+        serif.insert(0, "axross-serif".to_owned());
+    }
+    fonts
+        .families
+        .insert(egui::FontFamily::Name("serif".into()), serif);
+    if mono {
+        let monospace = fonts
+            .families
+            .get(&egui::FontFamily::Monospace)
+            .cloned()
+            .unwrap_or_default();
+        let mut all = monospace.clone();
+        all.extend(proportional.iter().cloned());
+        fonts
+            .families
+            .insert(egui::FontFamily::Proportional, all.clone());
+        let mut bold_mono = all;
+        if let Some(data) = MONO_BOLD_FONTS.iter().find_map(|p| std::fs::read(p).ok()) {
+            fonts.font_data.insert(
+                "axross-mono-bold".to_owned(),
+                std::sync::Arc::new(egui::FontData::from_owned(data)),
+            );
+            bold_mono.insert(0, "axross-mono-bold".to_owned());
+        }
+        fonts
+            .families
+            .insert(egui::FontFamily::Name("bold".into()), bold_mono);
+    }
     ctx.set_fonts(fonts);
 }
+
+/// Serif faces looked for (the collage).
+const SERIF_FONTS: [&str; 4] = [
+    "/usr/share/fonts/truetype/dejavu/DejaVuSerif-Bold.ttf",
+    "/usr/share/fonts/truetype/liberation/LiberationSerif-Bold.ttf",
+    "/System/Library/Fonts/Supplemental/Georgia Bold.ttf",
+    "C:\\Windows\\Fonts\\georgiab.ttf",
+];
+
+/// Bold monospace faces looked for (the terminal's titles).
+const MONO_BOLD_FONTS: [&str; 3] = [
+    "/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Bold.ttf",
+    "/usr/share/fonts/truetype/liberation/LiberationMono-Bold.ttf",
+    "C:\\Windows\\Fonts\\consolab.ttf",
+];
 
 /// A theme and an accent on the window: egui's visuals of both its light
 /// and dark styles (whichever the theme is, egui is told so), its density.

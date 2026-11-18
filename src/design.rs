@@ -1,13 +1,19 @@
 //! The window's designs: how it is built, not what colours it has (that is
 //! the theme's, and any design goes with any theme). A design is data - its
 //! corners, its strokes, its type, its density, how its panels are drawn,
-//! what it adds (an LCD readout, tape reels, VU needles, a volume knob) -
-//! and a few painters in this file; the window is the same window in all
-//! of them, every control where it can be reached, by pointer and by key.
+//! what it adds (a readout, tape reels, VU needles, a volume knob) - a
+//! layout of its own (`app_layouts.rs`: where the parts go, in what sizes;
+//! the hi-fi rack in units one above the other, the cassette deck round a
+//! cassette, the 90s desktop as a small main strip with its panels below,
+//! the terminal as framed boxes of text, the brutalist on a hard grid, the
+//! collage scattered) and the painters in this file. The player itself is
+//! the same in all of them: every control there, reached by pointer and
+//! by key, in the order it is seen.
 //!
-//! What moves in a design (the reels, the needles) moves calmly: slowly,
-//! following the guarded sound, still where the desktop asks for reduced
-//! motion; `tests/designs.rs` puts each through the flash meter.
+//! What moves in a design (the reels, the needles, the counter) moves
+//! calmly: slowly, following the guarded sound, still where the desktop
+//! asks for reduced motion; `tests/designs.rs` puts each through the
+//! flash meter.
 
 use crate::theme::Theme;
 use egui::{Color32, CornerRadius, Painter, Pos2, Rect, Shape, Stroke, Vec2, pos2, vec2};
@@ -433,8 +439,8 @@ pub fn haze(
             }
             let n = n.max(1);
             let raw = Color32::from_rgb((sum[0] / n) as u8, (sum[1] / n) as u8, (sum[2] / n) as u8);
-            // (a tint, never the picture: at least 55 % ground)
-            let mut k = 0.55;
+            // (a tint, never the picture: at least 40 % ground)
+            let mut k = 0.4;
             let mut c = crate::theme::mix(raw, t.ground, k);
             while !reads(c) && k < 1.0 {
                 k = (k + 0.05).min(1.0);
@@ -446,23 +452,77 @@ pub fn haze(
     egui::ColorImage::new([N, N], pixels)
 }
 
-/// What the playlist lies on: the ground where the design leaves it bare
-/// (the modern card, zen), else the design's panel in the theme's colours.
+/// The glass design's light behind its panes: two large soft glows of
+/// the accent and of a second colour, each taken toward the ground until
+/// every word and the accent reads on it as on the ground (as the haze).
+pub fn glass_light(p: &Painter, rect: Rect, t: &Theme, accent: Color32) {
+    let need = crate::theme::text_contrast(t);
+    let reads = |c: Color32| {
+        [t.text, t.muted, t.strong, accent].iter().all(|ink| {
+            crate::viz::contrast(*ink, c) >= need.min(crate::viz::contrast(*ink, t.ground))
+        })
+    };
+    let safe = |raw: Color32| {
+        let mut k = 0.35;
+        let mut c = crate::theme::mix(raw, t.ground, k);
+        while !reads(c) && k < 1.0 {
+            k = (k + 0.05).min(1.0);
+            c = crate::theme::mix(raw, t.ground, k);
+        }
+        c
+    };
+    let second = Color32::from_rgb(accent.b(), accent.r(), accent.g());
+    for (at, radius, raw) in [
+        (
+            rect.left_top() + rect.size() * vec2(0.18, 0.2),
+            rect.width().max(rect.height()) * 0.45,
+            accent,
+        ),
+        (
+            rect.left_top() + rect.size() * vec2(0.85, 0.75),
+            rect.width().max(rect.height()) * 0.4,
+            second,
+        ),
+    ] {
+        let c = safe(raw);
+        let mut mesh = egui::Mesh::default();
+        mesh.colored_vertex(at, c);
+        let n = 48;
+        for i in 0..=n {
+            let a = i as f32 / n as f32 * std::f32::consts::TAU;
+            mesh.colored_vertex(at + vec2(a.cos(), a.sin()) * radius, t.ground);
+        }
+        for i in 0..n as u32 {
+            mesh.add_triangle(0, 1 + i, 2 + i);
+        }
+        p.add(Shape::mesh(mesh));
+    }
+}
+
+/// What the playlist lies on in each design's layout: the ground where the
+/// design leaves it bare (the modern card, zen, the terminal), its panel,
+/// or the container its layout draws round it (the rack's changer unit,
+/// the 90s panel, the cassette's card insert, the collage's ruled page).
 pub fn list_fill(d: &Design, t: &Theme) -> Color32 {
-    match d.panel {
-        Panel::Card | Panel::Bare => t.ground,
-        Panel::Glass => crate::theme::mix(t.surface, t.ground, 0.35),
+    use crate::theme::mix;
+    match d.key {
+        "rack" => mix(t.raised, t.surface, 0.4),
+        "desktop90" => t.raised,
+        "cassette" => mix(t.surface, Color32::WHITE, if t.dark { 0.03 } else { 0.4 }),
+        "collage" => mix(t.surface, Color32::WHITE, if t.dark { 0.03 } else { 0.8 }),
+        "terminal" | "zen" | "modern" | "soft" => t.ground,
+        "glass" => mix(t.surface, t.ground, 0.35),
         _ => card_fill(d, t, t.surface),
     }
 }
 
-/// The room between the playlist's panel and its rows (none where there
-/// is no panel).
+/// The room between the playlist's own panel and its rows (none where
+/// there is no panel, or where the layout draws its container itself).
 pub fn list_margin(d: &Design) -> f32 {
-    match d.panel {
-        Panel::Card | Panel::Bare => 0.0,
-        Panel::Frame => 12.0,
-        _ => 8.0,
+    match d.key {
+        "brutalist" => 8.0,
+        "glass" | "soft" => 8.0,
+        _ => 0.0,
     }
 }
 
@@ -526,9 +586,19 @@ pub fn panel(p: &Painter, rect: Rect, d: &Design, t: &Theme, fill: Color32, seed
             }
         }
         Panel::Glass => {
-            // frosted: the pane, a sheen down from its top edge, a bright
-            // rim above and a faint one round it
-            p.rect_filled(rect, r, fill);
+            // frosted: the pane - the haze and the light behind it showing
+            // through - a sheen down from its top edge, a bright rim above
+            // and a faint one round it, a soft shadow under it
+            p.add(
+                egui::epaint::Shadow {
+                    offset: [0, 10],
+                    blur: 30,
+                    spread: 0,
+                    color: Color32::from_black_alpha(if t.dark { 90 } else { 40 }),
+                }
+                .as_shape(rect, r),
+            );
+            p.rect_filled(rect, r, fill.gamma_multiply(0.72));
             let sheen = Rect::from_min_size(rect.min, vec2(rect.width(), rect.height() * 0.45));
             let mut mesh = egui::Mesh::default();
             let top = Color32::from_white_alpha(if t.dark { 18 } else { 60 });
@@ -562,14 +632,16 @@ pub fn panel(p: &Painter, rect: Rect, d: &Design, t: &Theme, fill: Color32, seed
         Panel::Soft => {
             // pressed out of the ground: a dark shadow below right, a
             // light one above left, the same colour as the ground
-            let dark = crate::theme::mix(t.ground, Color32::BLACK, if t.dark { 0.5 } else { 0.18 });
+            // (deep enough to be seen: the dark one a third darker than the
+            // ground, the light one most of the way to white)
+            let dark = crate::theme::mix(t.ground, Color32::BLACK, if t.dark { 0.65 } else { 0.3 });
             let light =
-                crate::theme::mix(t.ground, Color32::WHITE, if t.dark { 0.08 } else { 0.7 });
-            for (offset, c) in [(vec2(6.0, 6.0), dark), (vec2(-6.0, -6.0), light)] {
+                crate::theme::mix(t.ground, Color32::WHITE, if t.dark { 0.16 } else { 0.9 });
+            for (offset, c) in [(vec2(9.0, 9.0), dark), (vec2(-9.0, -9.0), light)] {
                 p.add(
                     egui::epaint::Shadow {
                         offset: [offset.x as i8, offset.y as i8],
-                        blur: 16,
+                        blur: 22,
                         spread: 0,
                         color: c,
                     }
@@ -769,22 +841,116 @@ pub fn bezel(p: &Painter, rect: Rect, d: &Design, t: &Theme) {
 
 /// A rectangle turned about its centre, filled.
 fn quad(p: &Painter, rect: Rect, angle: f32, fill: Color32) {
+    p.add(Shape::convex_polygon(
+        turned(rect, angle),
+        fill,
+        Stroke::NONE,
+    ));
+}
+
+/// A rectangle's corners turned about its centre by `angle` (radians).
+pub fn turned(rect: Rect, angle: f32) -> Vec<Pos2> {
     let c = rect.center();
     let (s, co) = angle.sin_cos();
-    let turn = |v: Vec2| c + vec2(v.x * co - v.y * s, v.x * s + v.y * co);
     let h = rect.size() / 2.0;
-    let mut mesh = egui::Mesh::default();
-    for v in [
+    [
         vec2(-h.x, -h.y),
         vec2(h.x, -h.y),
         vec2(h.x, h.y),
         vec2(-h.x, h.y),
-    ] {
-        mesh.colored_vertex(turn(v), fill);
+    ]
+    .into_iter()
+    .map(|v| c + vec2(v.x * co - v.y * s, v.x * s + v.y * co))
+    .collect()
+}
+
+/// A sheet of paper, turned by `angle`, its lower edge torn (a ragged
+/// line of points from `seed`); anti-aliased at its edges (a feathered
+/// path, not a bare mesh). Under content laid upright over it.
+pub fn torn_sheet(p: &Painter, rect: Rect, angle: f32, fill: Color32, edge: Color32, seed: u32) {
+    let c = rect.center();
+    let (s, co) = angle.sin_cos();
+    let turn = |q: Pos2| {
+        let v = q - c;
+        c + vec2(v.x * co - v.y * s, v.x * s + v.y * co)
+    };
+    let mut pts = vec![turn(rect.left_top()), turn(rect.right_top())];
+    let mut k = seed.wrapping_mul(2_654_435_761);
+    let steps = ((rect.height() / 9.0) as usize).max(3);
+    for i in 0..=steps {
+        k = k.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+        let jitter = ((k >> 16) % 7) as f32 - 3.0;
+        let y = rect.top() + rect.height() * i as f32 / steps as f32;
+        pts.push(turn(pos2(rect.right() + jitter * 0.6, y)));
     }
-    mesh.add_triangle(0, 1, 2);
-    mesh.add_triangle(0, 2, 3);
+    let teeth = ((rect.width() / 7.0) as usize).max(4);
+    for i in (0..=teeth).rev() {
+        k = k.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+        let jitter = ((k >> 16) % 9) as f32;
+        let x = rect.left() + rect.width() * i as f32 / teeth as f32;
+        pts.push(turn(pos2(x, rect.bottom() - jitter)));
+    }
+    // (a convex outline with the torn edge within: filled as a polygon of
+    // its own, fanned from the centre - every edge feathered)
+    let mesh_pts = pts.clone();
+    let mut mesh = egui::Mesh::default();
+    mesh.colored_vertex(c, fill);
+    for q in &mesh_pts {
+        mesh.colored_vertex(*q, fill);
+    }
+    let n = mesh_pts.len() as u32;
+    for i in 0..n {
+        mesh.add_triangle(0, 1 + i, 1 + (i + 1) % n);
+    }
     p.add(Shape::mesh(mesh));
+    let mut closed = pts;
+    closed.push(closed[0]);
+    p.add(Shape::line(closed, Stroke::new(1.0, edge)));
+}
+
+/// A sticker: a round badge, turned, its word upright in it.
+pub fn sticker(
+    p: &Painter,
+    at: Pos2,
+    radius: f32,
+    word: &str,
+    fill: Color32,
+    ink: Color32,
+    angle: f32,
+) {
+    let n = 20;
+    let pts: Vec<Pos2> = (0..n)
+        .map(|i| {
+            let a = i as f32 / n as f32 * std::f32::consts::TAU;
+            let r = if i % 2 == 0 { radius } else { radius * 0.88 };
+            at + vec2(a.cos(), a.sin()) * r
+        })
+        .collect();
+    // (a star's points: concave - drawn as a fan)
+    let mut mesh = egui::Mesh::default();
+    mesh.colored_vertex(at, fill);
+    for q in &pts {
+        mesh.colored_vertex(*q, fill);
+    }
+    for i in 0..n as u32 {
+        mesh.add_triangle(0, 1 + i, 1 + (i + 1) % n as u32);
+    }
+    p.add(Shape::mesh(mesh));
+    let mut ring = pts;
+    ring.push(ring[0]);
+    p.add(Shape::line(ring, Stroke::new(1.0, ink)));
+    let galley = p.layout_no_wrap(
+        word.to_owned(),
+        egui::FontId::new(radius * 0.42, egui::FontFamily::Name("bold".into())),
+        ink,
+    );
+    let size = galley.size();
+    let (s, c) = angle.sin_cos();
+    let offset = vec2(
+        size.x / 2.0 * c - size.y / 2.0 * s,
+        size.x / 2.0 * s + size.y / 2.0 * c,
+    );
+    p.add(egui::epaint::TextShape::new(at - offset, galley, ink).with_angle(angle));
 }
 
 /// Digits as a segment display: the readout, its unlit segments a shade
@@ -861,8 +1027,11 @@ pub fn needles(p: &Painter, rect: Rect, levels: [f32; 2], t: &Theme) {
         );
         p.rect_filled(r, 4.0, face);
         p.rect_stroke(r, 4.0, Stroke::new(1.0, t.border), egui::StrokeKind::Inside);
-        let pivot = pos2(r.center().x, r.bottom() + r.height() * 0.15);
-        let len = r.height() * 0.95;
+        // (the pivot inside the face, near its foot; the needle and its
+        // scale within the face whatever its shape - clipped to it)
+        let p = p.with_clip_rect(r.shrink(1.0));
+        let pivot = pos2(r.center().x, r.bottom() - 5.0);
+        let len = (r.height() - 9.0).min(r.width() * 0.5 / 50f32.to_radians().sin());
         let ink = crate::theme::ink_on(face);
         // the scale: an arc of ticks, the last third in the warning colour
         for k in 0..=10 {
@@ -870,13 +1039,14 @@ pub fn needles(p: &Painter, rect: Rect, levels: [f32; 2], t: &Theme) {
             let d = vec2(a.sin(), -a.cos());
             let c = if k >= 8 { t.bad } else { ink };
             p.line_segment(
-                [pivot + d * len * 0.82, pivot + d * len * 0.92],
+                [pivot + d * len * 0.82, pivot + d * len * 0.95],
                 Stroke::new(1.0, c),
             );
         }
+        p.circle_filled(pivot, 2.5, ink);
         let a = (-50.0 + 100.0 * level.clamp(0.0, 1.0)).to_radians();
         let d = vec2(a.sin(), -a.cos());
-        p.line_segment([pivot, pivot + d * len * 0.9], Stroke::new(1.5, ink));
+        p.line_segment([pivot, pivot + d * len * 0.92], Stroke::new(1.5, ink));
         p.text(
             r.left_bottom() + vec2(6.0, -4.0),
             egui::Align2::LEFT_BOTTOM,
@@ -890,8 +1060,8 @@ pub fn needles(p: &Painter, rect: Rect, levels: [f32; 2], t: &Theme) {
 /// A rotary knob for a value 0..=100 (the hi-fi rack's volume): dragged
 /// up or right to turn it up, the arrow keys when it has the focus, the
 /// wheel over it; a slider to a screen reader (`name`, its value).
-pub fn knob(ui: &mut egui::Ui, value: &mut u32, name: &str) -> egui::Response {
-    let size = vec2(34.0, 34.0);
+pub fn knob(ui: &mut egui::Ui, value: &mut u32, name: &str, side: f32) -> egui::Response {
+    let size = vec2(side, side);
     let (rect, mut response) = ui.allocate_exact_size(size, egui::Sense::click_and_drag());
     let before = *value;
     if response.dragged() {
@@ -945,6 +1115,484 @@ pub fn knob(ui: &mut egui::Ui, value: &mut u32, name: &str) -> egui::Response {
         Stroke::new(2.5, t.accent),
     );
     response
+}
+
+/// How a design draws the transport's keys.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum KeyLook {
+    /// egui's own button, the theme's (the play key a pill in the accent).
+    Plain,
+    /// Raised grey keys of a 90s desktop, pressed in when held.
+    Bevel,
+    /// Square metal keys, the word engraved under the symbol.
+    Metal,
+    /// A deck's piano keys: tall, the word at the foot, pressed down.
+    Piano,
+    /// `[ PLAY ]` in the terminal's type, inverted when held.
+    Bracket,
+    /// A thick black frame, the word in capitals.
+    Slab,
+    /// A scrap of paper, turned a little.
+    Paper,
+    /// Pressed out of the ground (a light and a dark shadow).
+    Soft,
+    /// No fill, no frame: the symbol alone (zen).
+    Quiet,
+}
+
+pub fn key_look(d: &Design) -> KeyLook {
+    match d.key {
+        "desktop90" => KeyLook::Bevel,
+        "rack" => KeyLook::Metal,
+        "cassette" => KeyLook::Piano,
+        "terminal" => KeyLook::Bracket,
+        "brutalist" => KeyLook::Slab,
+        "collage" => KeyLook::Paper,
+        "soft" => KeyLook::Soft,
+        "zen" => KeyLook::Quiet,
+        _ => KeyLook::Plain,
+    }
+}
+
+/// A key of the transport as the design draws it: `icon` its symbol,
+/// `word` what it is called on it (where the design writes words), `name`
+/// what a screen reader says; `on` held in (playing, shuffle on);
+/// `primary` the play key. At least `size` (never under 24 x 24).
+#[allow(clippy::too_many_arguments)]
+pub fn key(
+    ui: &mut egui::Ui,
+    look: KeyLook,
+    icon: &str,
+    word: &str,
+    name: &str,
+    size: Vec2,
+    on: bool,
+    primary: bool,
+) -> egui::Response {
+    let t = crate::theme::current();
+    let size = size.max(vec2(24.0, 24.0));
+    let enabled = ui.is_enabled();
+    if look == KeyLook::Plain {
+        let accent = ui.visuals().selection.bg_fill;
+        let mut b = egui::Button::new(
+            egui::RichText::new(icon)
+                .size((size.y * 0.5).clamp(12.0, 22.0))
+                .color(if primary {
+                    crate::theme::ink_on_in(t, accent)
+                } else if on {
+                    accent
+                } else {
+                    t.text
+                }),
+        )
+        .min_size(size)
+        .selected(on && !primary);
+        if primary {
+            b = b
+                .fill(accent)
+                .corner_radius(CornerRadius::same((size.y / 2.0) as u8));
+        }
+        let r = ui.add(b);
+        return r.accessible_name(name);
+    }
+    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
+    let name_owned = name.to_owned();
+    response.widget_info(|| {
+        egui::WidgetInfo::selected(egui::accesskit::Role::Button, enabled, on, &name_owned)
+    });
+    let hovered = response.hovered() && enabled;
+    let pressed = response.is_pointer_button_down_on() || on;
+    let p = ui.painter();
+    let mix = crate::theme::mix;
+    let ink = if enabled { t.text } else { t.muted };
+    let accent = ui.visuals().selection.bg_fill;
+    let icon_font = egui::FontId::proportional((size.y * 0.42).clamp(12.0, 24.0));
+    let word_font = egui::FontId::new(
+        (size.y * 0.2).clamp(9.0, 12.0),
+        egui::FontFamily::Name("bold".into()),
+    );
+    match look {
+        KeyLook::Plain => {}
+        KeyLook::Bevel => {
+            let fill = if pressed {
+                t.pressed
+            } else if hovered {
+                t.hover
+            } else {
+                t.raised
+            };
+            p.rect_filled(rect, 0.0, fill);
+            let light = mix(fill, Color32::WHITE, 0.45);
+            let dark = mix(fill, Color32::BLACK, 0.5);
+            let (a, b) = if pressed {
+                (dark, light)
+            } else {
+                (light, dark)
+            };
+            let r = rect.shrink(0.5);
+            p.line_segment([r.left_bottom(), r.left_top()], Stroke::new(1.0, a));
+            p.line_segment([r.left_top(), r.right_top()], Stroke::new(1.0, a));
+            p.line_segment([r.right_top(), r.right_bottom()], Stroke::new(1.0, b));
+            p.line_segment([r.right_bottom(), r.left_bottom()], Stroke::new(1.0, b));
+            let at = rect.center() + if pressed { vec2(1.0, 1.0) } else { Vec2::ZERO };
+            let ink = if primary && enabled {
+                crate::theme::ink_on_in(t, fill)
+            } else {
+                ink
+            };
+            p.text(at, egui::Align2::CENTER_CENTER, icon, icon_font, ink);
+        }
+        KeyLook::Metal => {
+            let top = mix(t.raised, Color32::WHITE, if pressed { 0.0 } else { 0.10 });
+            let bottom = mix(t.raised, Color32::BLACK, if pressed { 0.05 } else { 0.25 });
+            let mut mesh = egui::Mesh::default();
+            mesh.colored_vertex(rect.left_top(), top);
+            mesh.colored_vertex(rect.right_top(), top);
+            mesh.colored_vertex(rect.right_bottom(), bottom);
+            mesh.colored_vertex(rect.left_bottom(), bottom);
+            mesh.add_triangle(0, 1, 2);
+            mesh.add_triangle(0, 2, 3);
+            p.add(Shape::mesh(mesh));
+            p.rect_stroke(
+                rect,
+                2.0,
+                Stroke::new(1.0, mix(t.raised, Color32::BLACK, 0.55)),
+                egui::StrokeKind::Inside,
+            );
+            if hovered {
+                p.rect_stroke(
+                    rect.shrink(2.0),
+                    1.0,
+                    Stroke::new(1.0, t.border),
+                    egui::StrokeKind::Inside,
+                );
+            }
+            // (a lamp: lit while held)
+            if on || primary {
+                let lamp = pos2(rect.right() - 6.0, rect.top() + 6.0);
+                p.circle_filled(
+                    lamp,
+                    2.5,
+                    if on {
+                        accent
+                    } else {
+                        mix(t.raised, Color32::BLACK, 0.4)
+                    },
+                );
+            }
+            let fill = mix(top, bottom, 0.5);
+            let ink = if enabled {
+                crate::theme::ink_on_in(t, fill)
+            } else {
+                t.muted
+            };
+            let has_word = size.y >= 40.0 && !word.is_empty();
+            let at = if has_word {
+                rect.center() - vec2(0.0, size.y * 0.12)
+            } else {
+                rect.center()
+            };
+            p.text(at, egui::Align2::CENTER_CENTER, icon, icon_font, ink);
+            if has_word {
+                p.text(
+                    pos2(rect.center().x, rect.bottom() - 5.0),
+                    egui::Align2::CENTER_BOTTOM,
+                    word.to_uppercase(),
+                    word_font,
+                    ink,
+                );
+            }
+        }
+        KeyLook::Piano => {
+            // (the key's face, its lip below; pressed: down by its lip)
+            let lip = (size.y * 0.1).clamp(3.0, 7.0);
+            let down = if pressed { lip * 0.7 } else { 0.0 };
+            let face =
+                Rect::from_min_max(rect.min + vec2(0.0, down), rect.max - vec2(0.0, lip - down));
+            let body = if hovered { t.hover } else { t.raised };
+            p.rect_filled(rect, 2.0, mix(body, Color32::BLACK, 0.45));
+            p.rect_filled(face, 2.0, body);
+            p.rect_stroke(
+                face,
+                2.0,
+                Stroke::new(1.0, mix(body, Color32::BLACK, 0.3)),
+                egui::StrokeKind::Inside,
+            );
+            if primary {
+                p.rect_filled(
+                    Rect::from_min_size(face.min + vec2(4.0, 4.0), vec2(face.width() - 8.0, 4.0)),
+                    1.0,
+                    accent,
+                );
+            }
+            let ink = if enabled {
+                crate::theme::ink_on_in(t, body)
+            } else {
+                t.muted
+            };
+            let has_word = size.y >= 44.0 && !word.is_empty();
+            let at = if has_word {
+                face.center() - vec2(0.0, face.height() * 0.1)
+            } else {
+                face.center()
+            };
+            p.text(at, egui::Align2::CENTER_CENTER, icon, icon_font, ink);
+            if has_word {
+                p.text(
+                    pos2(face.center().x, face.bottom() - 4.0),
+                    egui::Align2::CENTER_BOTTOM,
+                    word.to_uppercase(),
+                    word_font,
+                    ink,
+                );
+            }
+        }
+        KeyLook::Bracket => {
+            let font = egui::FontId::monospace((size.y * 0.45).clamp(12.0, 16.0));
+            // (its word where it fits, else its symbol: `[ PLAY ]`, `[▶]`)
+            let worded = format!("[ {} ]", word.to_uppercase());
+            let fits = !word.is_empty()
+                && ui.fonts_mut(|f| f.layout_no_wrap(worded.clone(), font.clone(), ink).size().x)
+                    <= size.x;
+            let text = if fits { worded } else { format!("[{icon}]") };
+            let (fill, ink) = if on || pressed {
+                (accent, crate::theme::ink_on_in(t, accent))
+            } else if hovered {
+                (t.hover, t.strong)
+            } else {
+                (Color32::TRANSPARENT, ink)
+            };
+            p.rect_filled(rect, 0.0, fill);
+            p.text(rect.center(), egui::Align2::CENTER_CENTER, text, font, ink);
+        }
+        KeyLook::Slab => {
+            let (fill, ink) = if on || pressed {
+                (t.strong, t.ground)
+            } else if hovered {
+                (accent, crate::theme::ink_on_in(t, accent))
+            } else {
+                (t.surface, t.strong)
+            };
+            let ink = if enabled { ink } else { t.muted };
+            p.rect_filled(rect, 0.0, fill);
+            p.rect_stroke(
+                rect,
+                0.0,
+                Stroke::new(3.0, t.strong),
+                egui::StrokeKind::Inside,
+            );
+            let words = !word.is_empty() && size.x >= 64.0;
+            let text = if words {
+                word.to_uppercase()
+            } else {
+                icon.to_owned()
+            };
+            let font = if words {
+                egui::FontId::new(
+                    (size.y * 0.32).clamp(12.0, 20.0),
+                    egui::FontFamily::Name("bold".into()),
+                )
+            } else {
+                icon_font
+            };
+            p.text(rect.center(), egui::Align2::CENTER_CENTER, text, font, ink);
+        }
+        KeyLook::Paper => {
+            let seed = word
+                .bytes()
+                .fold(7u32, |a, b| a.wrapping_mul(31).wrapping_add(b as u32));
+            let angle = ((seed % 9) as f32 - 4.0) * 0.012;
+            let fill = if on || pressed {
+                accent
+            } else if hovered {
+                t.hover
+            } else {
+                mix(t.surface, Color32::WHITE, if t.dark { 0.04 } else { 0.5 })
+            };
+            p.add(Shape::convex_polygon(
+                turned(rect.shrink(1.0), angle),
+                fill,
+                Stroke::new(1.0, mix(t.border, t.text, 0.3)),
+            ));
+            let ink = if enabled {
+                crate::theme::ink_on_in(t, fill)
+            } else {
+                t.muted
+            };
+            p.text(
+                rect.center(),
+                egui::Align2::CENTER_CENTER,
+                icon,
+                icon_font,
+                ink,
+            );
+        }
+        KeyLook::Soft => {
+            let r = CornerRadius::same((size.y / 2.0).min(18.0) as u8);
+            let dark = mix(t.ground, Color32::BLACK, if t.dark { 0.55 } else { 0.22 });
+            let light = mix(t.ground, Color32::WHITE, if t.dark { 0.10 } else { 0.85 });
+            if pressed {
+                // (pressed in: the shadows inside, the face below the ground)
+                p.rect_filled(
+                    rect,
+                    r,
+                    mix(t.ground, Color32::BLACK, if t.dark { 0.2 } else { 0.06 }),
+                );
+                p.rect_stroke(
+                    rect,
+                    r,
+                    Stroke::new(2.0, dark.gamma_multiply(0.6)),
+                    egui::StrokeKind::Inside,
+                );
+            } else {
+                for (off, c) in [(vec2(4.0, 4.0), dark), (vec2(-4.0, -4.0), light)] {
+                    p.add(
+                        egui::epaint::Shadow {
+                            offset: [off.x as i8, off.y as i8],
+                            blur: 10,
+                            spread: 0,
+                            color: c.gamma_multiply(0.8),
+                        }
+                        .as_shape(rect, r),
+                    );
+                }
+                p.rect_filled(
+                    rect,
+                    r,
+                    if hovered {
+                        mix(t.ground, light, 0.3)
+                    } else {
+                        t.ground
+                    },
+                );
+            }
+            let ink = if primary && enabled { accent } else { ink };
+            let ink = if crate::viz::contrast(ink, t.ground) < 3.0 {
+                t.strong
+            } else {
+                ink
+            };
+            p.text(
+                rect.center(),
+                egui::Align2::CENTER_CENTER,
+                icon,
+                icon_font,
+                ink,
+            );
+        }
+        KeyLook::Quiet => {
+            if hovered || on {
+                p.rect_filled(rect, CornerRadius::same(12), t.hover);
+            }
+            let ink = if primary { t.strong } else { ink };
+            let font = if primary {
+                egui::FontId::proportional((size.y * 0.6).clamp(14.0, 30.0))
+            } else {
+                icon_font
+            };
+            p.text(rect.center(), egui::Align2::CENTER_CENTER, icon, font, ink);
+        }
+    }
+    if response.has_focus() {
+        let focus = ui.visuals().selection.stroke;
+        p.rect_stroke(
+            rect.expand(2.0),
+            2.0,
+            Stroke::new(focus.width.max(2.0), focus.color),
+            egui::StrokeKind::Outside,
+        );
+    }
+    response
+}
+
+/// The time as a tape counter: three or four wheels of digits, each
+/// turned to its digit (the seconds' wheel rolls on to the next as the
+/// second ends - slowly, a sixth of a second; still where the desktop
+/// asks for less motion).
+pub fn counter(p: &Painter, rect: Rect, secs: f64, t: &Theme, still: bool) {
+    let digits = 4;
+    let w = rect.width() / digits as f32;
+    let well = crate::theme::mix(t.sunken, Color32::BLACK, if t.dark { 0.3 } else { 0.0 });
+    p.rect_filled(rect, 2.0, well);
+    let value = secs.max(0.0) as u64 % 10_000;
+    let frac = if still {
+        0.0
+    } else {
+        ((secs.fract() as f32 - 0.85) / 0.15).clamp(0.0, 1.0)
+    };
+    let clip = p.with_clip_rect(rect);
+    let font = egui::FontId::monospace(rect.height() * 0.62);
+    let ink = crate::theme::ink_on_in(t, well);
+    for i in 0..digits {
+        let place = 10u64.pow((digits - 1 - i) as u32);
+        let d = (value / place) % 10;
+        // (a wheel rolls when all the wheels after it are at 9)
+        let rolling = i == digits - 1 || (value % place) == place - 1;
+        let shift = if rolling { frac } else { 0.0 } * rect.height();
+        let cell = Rect::from_min_size(
+            pos2(rect.left() + i as f32 * w, rect.top()),
+            vec2(w, rect.height()),
+        );
+        let wheel = crate::theme::mix(well, Color32::WHITE, if t.dark { 0.06 } else { 0.5 });
+        clip.rect_filled(cell.shrink2(vec2(2.0, 3.0)), 1.0, wheel);
+        let ink = crate::theme::ink_on_in(t, wheel);
+        let _ = &ink;
+        clip.text(
+            cell.center() - vec2(0.0, shift),
+            egui::Align2::CENTER_CENTER,
+            d.to_string(),
+            font.clone(),
+            ink,
+        );
+        clip.text(
+            cell.center() + vec2(0.0, rect.height() - shift),
+            egui::Align2::CENTER_CENTER,
+            ((d + 1) % 10).to_string(),
+            font.clone(),
+            ink,
+        );
+    }
+    let _ = ink;
+}
+
+/// Text in a vacuum fluorescent display's look: the digits and words lit
+/// in the accent on a dark glass, the unlit segments faint behind.
+pub fn vfd(p: &Painter, rect: Rect, lines: &[(&str, f32)], t: &Theme) {
+    let glass = crate::theme::mix(Color32::from_rgb(8, 14, 14), t.sunken, 0.25);
+    p.rect_filled(rect, 3.0, glass);
+    p.rect_stroke(
+        rect,
+        3.0,
+        Stroke::new(1.0, Color32::BLACK),
+        egui::StrokeKind::Inside,
+    );
+    // (the lit colour: the accent made to read on the glass)
+    let lit = if crate::viz::contrast(t.accent, glass) >= 4.5 {
+        t.accent
+    } else {
+        Color32::from_rgb(120, 230, 210)
+    };
+    let mut y = rect.top() + 8.0;
+    for (text, size) in lines {
+        let font = egui::FontId::monospace(*size);
+        let ghost: String = text
+            .chars()
+            .map(|c| if c.is_ascii_digit() { '8' } else { c })
+            .collect();
+        let at = pos2(rect.left() + 10.0, y);
+        let clip = p.with_clip_rect(rect.shrink(2.0));
+        if text.chars().any(|c| c.is_ascii_digit()) {
+            clip.text(
+                at,
+                egui::Align2::LEFT_TOP,
+                ghost,
+                font.clone(),
+                crate::theme::mix(glass, lit, 0.1),
+            );
+        }
+        clip.text(at, egui::Align2::LEFT_TOP, *text, font, lit);
+        y += size * 1.25;
+    }
 }
 
 /// The position as a bar of characters: "[#######-------] 1:23 / 4:05".
