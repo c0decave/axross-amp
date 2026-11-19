@@ -235,3 +235,48 @@ fn a_focused_volume_owns_the_arrows() {
         );
     }
 }
+
+/// A button clicked with the mouse does not keep the arrows: they go on
+/// seeking and setting the volume (only a focused slider owns them) - in
+/// the designs with keys of their own too.
+#[test]
+fn after_a_click_the_arrows_are_the_players() {
+    for design in ["modern", "rack", "terminal", "cassette"] {
+        let dir = folder(&format!("keys-after-click-{design}"));
+        let files = tracks(&dir, &["a.wav"], 30.0);
+        let mut h = harness(&dir, files);
+        assert!(until(&mut h, 5.0, |a| a.is_loaded()));
+        h.state_mut().set_design(design);
+        settle(&mut h, 3);
+        // (the pointer's click, as a mouse does it)
+        let at = h.get_by_label_contains("Shuffle").rect().center();
+        h.event(egui::Event::PointerMoved(at));
+        h.run_steps(1);
+        for pressed in [true, false] {
+            h.event(egui::Event::PointerButton {
+                pos: at,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: Default::default(),
+            });
+        }
+        settle(&mut h, 2);
+        h.event(egui::Event::PointerGone);
+        settle(&mut h, 1);
+        let v = h.state().snapshot().volume;
+        h.key_press(Key::ArrowDown);
+        settle(&mut h, 2);
+        assert_ne!(
+            h.state().snapshot().volume,
+            v,
+            "{design}: ↓ after a click set no volume"
+        );
+        let p = h.state_mut().shown_position();
+        h.key_press(Key::ArrowRight);
+        settle(&mut h, 2);
+        assert!(
+            h.state_mut().shown_position() > p + 2.0,
+            "{design}: → after a click did not seek"
+        );
+    }
+}
