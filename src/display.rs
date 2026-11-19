@@ -254,8 +254,26 @@ pub fn sound_on_among(m: &Monitor, monitors: &[Monitor], s: &Snapshot) -> Option
                 && (is_hdmi(&d.name) || is_hdmi(&d.description) || is_hdmi(&d.active_port))
         })
         .collect();
-    // by the monitor's name (ELD = EDID)
+    // (a card's own sinks: by its index, else by the name they share -
+    // "alsa_card.pci-0000_00_1f.3", "alsa_output.pci-0000_00_1f.3.hdmi-stereo")
+    let of_card = |d: &crate::mixer::Device, card: &crate::mixer::Card| {
+        d.card_index == Some(card.index)
+            || card
+                .name
+                .split_once('.')
+                .is_some_and(|(_, key)| !key.is_empty() && d.name.contains(key))
+    };
+    // by the monitor's name (ELD = EDID) - only where that name is its
+    // alone: two displays of one make and model name both, and which
+    // output is whose cannot be told
     if !m.name.is_empty() {
+        let twins = monitors
+            .iter()
+            .filter(|o| o.connector != m.connector && same_name(&o.name, &m.name))
+            .count();
+        if twins > 0 {
+            return None;
+        }
         if let Some(sink) = hdmi_sinks.iter().find(|d| {
             s.displays
                 .iter()
@@ -264,18 +282,32 @@ pub fn sound_on_among(m: &Monitor, monitors: &[Monitor], s: &Snapshot) -> Option
             return Some(SoundOn::Sink(sink.name.clone()));
         }
         for card in &s.cards {
-            for port in &card.ports {
-                if same_name(&port.monitor, &m.name)
-                    && let Some(profile) = port.profiles.iter().find(|p| {
-                        p.starts_with("output:")
-                            && is_hdmi(p)
-                            && !p.contains("+input")
-                            && card.profiles.iter().any(|q| &q.name == *p && q.available)
-                    })
-                {
+            for port in card.ports.iter().filter(|p| same_name(&p.monitor, &m.name)) {
+                // its sink there already: on that port, or the card's HDMI
+                // sink while one of the port's profiles is on
+                let on_port = hdmi_sinks
+                    .iter()
+                    .find(|d| of_card(d, card) && d.active_port == port.name);
+                let active = port.profiles.iter().any(|p| *p == card.active_profile);
+                let sink = on_port.or_else(|| {
+                    active
+                        .then(|| hdmi_sinks.iter().find(|d| of_card(d, card)))
+                        .flatten()
+                });
+                if let Some(sink) = sink {
+                    return Some(SoundOn::Sink(sink.name.clone()));
+                }
+                if active {
+                    // (on, but its sink not there yet: the profile as it is)
                     return Some(SoundOn::Profile {
                         card: card.name.clone(),
-                        profile: profile.clone(),
+                        profile: card.active_profile.clone(),
+                    });
+                }
+                if let Some(profile) = choose_profile(card, &port.profiles) {
+                    return Some(SoundOn::Profile {
+                        card: card.name.clone(),
+                        profile,
                     });
                 }
             }
@@ -294,24 +326,50 @@ pub fn sound_on_among(m: &Monitor, monitors: &[Monitor], s: &Snapshot) -> Option
         [] => {}
         _ => return None,
     }
-    let mut profiles = s.cards.iter().flat_map(|c| {
-        c.profiles
+    // the one HDMI output a card can switch to (its profiles with an
+    // input kept count as the same output)
+    let mut found: Option<(&crate::mixer::Card, String)> = None;
+    for card in &s.cards {
+        let outputs: std::collections::BTreeSet<&str> = card
+            .profiles
             .iter()
-            .filter(|p| {
-                p.available
-                    && p.name.starts_with("output:")
-                    && is_hdmi(&p.name)
-                    && !p.name.contains("+input")
-            })
-            .map(move |p| (c, p))
-    });
-    match (profiles.next(), profiles.next()) {
-        (Some((card, profile)), None) => Some(SoundOn::Profile {
-            card: card.name.clone(),
-            profile: profile.name.clone(),
-        }),
-        _ => None,
+            .filter(|p| p.available && p.name.starts_with("output:") && is_hdmi(&p.name))
+            .map(|p| p.name.split('+').next().unwrap_or(&p.name))
+            .collect();
+        match outputs.len() {
+            0 => {}
+            1 if found.is_none() => {
+                let names: Vec<String> = card.profiles.iter().map(|p| p.name.clone()).collect();
+                found = choose_profile(card, &names).map(|p| (card, p));
+            }
+            _ => return None,
+        }
     }
+    found.map(|(card, profile)| SoundOn::Profile {
+        card: card.name.clone(),
+        profile,
+    })
+}
+
+/// Of `candidates`, the HDMI / DisplayPort profile to switch `card` to: an
+/// available one that keeps the input the card has now (the analog mic of
+/// "output:analog-stereo+input:analog-stereo" stays with
+/// "output:hdmi-stereo+input:analog-stereo"), else the output alone.
+fn choose_profile(card: &crate::mixer::Card, candidates: &[String]) -> Option<String> {
+    let usable: Vec<&String> = candidates
+        .iter()
+        .filter(|p| {
+            p.starts_with("output:")
+                && is_hdmi(p)
+                && card.profiles.iter().any(|q| &q.name == *p && q.available)
+        })
+        .collect();
+    let input = card.active_profile.split_once('+').map(|(_, i)| i);
+    input
+        .and_then(|i| usable.iter().find(|p| p.ends_with(&format!("+{i}"))))
+        .or_else(|| usable.iter().find(|p| !p.contains('+')))
+        .or(usable.first())
+        .map(|p| (*p).clone())
 }
 
 /// The sound moved to a display: its sink, and the card's profile before
@@ -403,16 +461,19 @@ pub fn move_sound(
             if cancel.load(Ordering::Relaxed) {
                 return Err("the view was closed".into());
             }
-            if !before.is_empty() {
+            // (never a profile switched that is on already: its sink is
+            // waited for)
+            let switching = profile != before;
+            if switching && !before.is_empty() {
                 remember_profile(dir, &card, &before);
             }
             let undo = || {
-                if !before.is_empty() {
+                if switching && !before.is_empty() {
                     let _ = set_profile(&card, &before);
                     let _ = take_profile(dir);
                 }
             };
-            if let Err(why) = set_profile(&card, &profile) {
+            if switching && let Err(why) = set_profile(&card, &profile) {
                 undo();
                 return Err(why);
             }
@@ -430,7 +491,8 @@ pub fn move_sound(
                     }
                     return Ok(Moved {
                         sink,
-                        switched: (!before.is_empty()).then(|| (card.clone(), before.clone())),
+                        switched: (switching && !before.is_empty())
+                            .then(|| (card.clone(), before.clone())),
                     });
                 }
                 std::thread::sleep(std::time::Duration::from_millis(200));
@@ -748,6 +810,98 @@ VGA-1 connected (normal left inverted right x axis y axis)
         );
         // VGA carries no sound
         assert_eq!(sound_on(&mon("VGA-1", ""), &one), None);
+    }
+
+    #[test]
+    fn a_name_on_the_cards_port_and_its_profile_on_already() {
+        // PulseAudio as it lists it: the display's name on the card's port,
+        // the HDMI profile (with the mic) on already, its sink there with
+        // no name of its own - that sink, nothing switched
+        let mut hd = sink(
+            "alsa_output.pci-0000_00_1f.3.hdmi-stereo",
+            "Built-in Audio Digital Stereo (HDMI)",
+        );
+        hd.active_port = "hdmi-output-0".into();
+        let profiles = |active: &str| {
+            let mut c = hdmi_card(
+                &[
+                    "output:analog-stereo+input:analog-stereo",
+                    "output:hdmi-stereo",
+                    "output:hdmi-stereo+input:analog-stereo",
+                ],
+                vec![CardPort {
+                    name: "hdmi-output-0".into(),
+                    monitor: "LG TV SSCR2".into(),
+                    profiles: vec![
+                        "output:hdmi-stereo".into(),
+                        "output:hdmi-stereo+input:analog-stereo".into(),
+                    ],
+                }],
+            );
+            c.index = 0;
+            c.active_profile = active.into();
+            c
+        };
+        let tv = mon("HDMI-1", "LG TV SSCR2");
+        let lap = Monitor {
+            primary: true,
+            ..mon("eDP-1", "")
+        };
+        let both = [lap, tv.clone()];
+        let on = Snapshot {
+            sinks: vec![hd],
+            displays: says(&[(
+                "alsa_output.pci-0000_00_1f.3.hdmi-stereo",
+                "Cannon Lake PCH cAVS",
+            )]),
+            cards: vec![profiles("output:hdmi-stereo+input:analog-stereo")],
+            ..Default::default()
+        };
+        assert_eq!(
+            sound_on_among(&tv, &both, &on),
+            Some(SoundOn::Sink(
+                "alsa_output.pci-0000_00_1f.3.hdmi-stereo".into()
+            ))
+        );
+        // analog with the mic on: switched to HDMI with the mic kept
+        let off = Snapshot {
+            sinks: vec![sink("alsa_output.pci-0000_00_1f.3.analog-stereo", "Analog")],
+            cards: vec![profiles("output:analog-stereo+input:analog-stereo")],
+            ..Default::default()
+        };
+        assert_eq!(
+            sound_on_among(&tv, &both, &off),
+            Some(SoundOn::Profile {
+                card: "alsa_card.pci-0000_00_1f.3".into(),
+                profile: "output:hdmi-stereo+input:analog-stereo".into()
+            })
+        );
+    }
+
+    #[test]
+    fn two_displays_of_one_name_get_no_sound_by_guessing() {
+        let s = Snapshot {
+            sinks: vec![
+                sink("alsa_output.pci-0000_01_00.1.hdmi-stereo", "GA104 HDMI 0"),
+                sink(
+                    "alsa_output.pci-0000_01_00.1.hdmi-stereo-extra1",
+                    "GA104 HDMI 1",
+                ),
+            ],
+            displays: says(&[
+                ("alsa_output.pci-0000_01_00.1.hdmi-stereo", "DELL U2723QE"),
+                (
+                    "alsa_output.pci-0000_01_00.1.hdmi-stereo-extra1",
+                    "DELL U2723QE",
+                ),
+            ]),
+            ..Default::default()
+        };
+        let a = mon("DP-1", "DELL U2723QE");
+        let b = mon("DP-2", "DELL U2723QE");
+        let both = [a.clone(), b.clone()];
+        assert_eq!(sound_on_among(&a, &both, &s), None);
+        assert_eq!(sound_on_among(&b, &both, &s), None);
     }
 
     #[test]
