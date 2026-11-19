@@ -26,6 +26,9 @@ second on the shape-heavy faces (see *Known limitations*).
 - **Twelve window themes** on design tokens; following the desktop's light
   or dark (XDG portal, GNOME, GTK).
 - A fourth reading of the flash meter: red from the gamma-encoded values.
+- **Started from a terminal it goes to the background** (Linux, macOS): the
+  prompt comes back, the player goes on after the terminal closes, a start
+  that fails is said; `--foreground` / `-F` keeps it in the terminal.
 
 ### Changed
 - **No saturated red in any face**, whatever the colour scheme: Classic's
@@ -37,6 +40,15 @@ second on the shape-heavy faces (see *Known limitations*).
 - The Options' extremes are bounded (smoothing at least 75 %, peaks falling
   at most 100 % a second); the terrain, beat rings and starfield calmed at
   them; the ring calm at a slow renderer's 12 frames a second.
+
+- At a slow renderer's rate (under 40 frames a second) the pictures step
+  at most about half the way a frame: a sweep at 12 frames a second over
+  every scheme passes.
+- Show on display: the card's profile before is kept before the card is
+  switched and put back also when the view is closed while the sound is
+  still moving; the display's name on the card's port is understood; a
+  profile on already is never switched again; two displays of one name get
+  no sound by guessing; the 90s desktop's title rests while paused.
 
 ### Fixed
 - File names in bytes that are not UTF-8 (from the command line too).
