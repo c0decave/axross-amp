@@ -506,7 +506,9 @@ What axross-amp does about it:
   editor's own defaults - at 320 x 180: 936 cases, **all pass all four
   readings** (the whole sweep run again with the gamma reading in it; the
   ring, changed after it, swept again in all nine schemes, Calm and Intense: 18 cases, all
-  pass - at most 5 by the strict reading, 3 by the either-way one). The
+  pass - at most 5 by the strict reading, 3 by the either-way one; Classic
+  and Fire swept again once their reds were taken out: 208 cases, all pass,
+  not one red transition). The
   most by the normal reading: 4 transitions a second, red 4; by the strict
   reading: 6, red 6 (14 cases at the limit, 13 of them in *Intense*); by
   the either-way reading: 4, red 4; red by the gamma-encoded reading 6
