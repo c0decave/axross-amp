@@ -337,11 +337,53 @@ pub fn set_profile(card: &str, profile: &str) -> Result<(), String> {
     }
 }
 
+/// Where the card's profile before a display took the sound is kept - in
+/// its own small file, written before the card is switched (not with the
+/// window's settings a moment later: a crash, a quit or a closed view in
+/// between must not lose it).
+pub fn restore_file(dir: &Path) -> std::path::PathBuf {
+    dir.join("axross-amp-display-restore.json")
+}
+
+/// Keep (card, profile) as what to put back - unless something is kept
+/// already: the first "before" is the one to go back to.
+pub fn remember_profile(dir: &Path, card: &str, profile: &str) {
+    let path = restore_file(dir);
+    if path.exists() {
+        return;
+    }
+    let _ = std::fs::create_dir_all(dir);
+    let text = serde_json::json!({ "card": card, "profile": profile }).to_string();
+    let tmp = path.with_extension("tmp");
+    if std::fs::write(&tmp, text).is_ok() {
+        let _ = std::fs::rename(&tmp, &path);
+    }
+}
+
+/// What was kept, taken (the file removed).
+pub fn take_profile(dir: &Path) -> Option<(String, String)> {
+    let path = restore_file(dir);
+    let text = std::fs::read_to_string(&path).ok()?;
+    let _ = std::fs::remove_file(&path);
+    let v: serde_json::Value = serde_json::from_str(&text).ok()?;
+    let card = v.get("card")?.as_str()?.to_owned();
+    let profile = v.get("profile")?.as_str()?.to_owned();
+    (!card.is_empty() && !profile.is_empty()).then_some((card, profile))
+}
+
 /// The sound server's output on `m` (blocking: pactl, and a card switched
 /// to its HDMI / DisplayPort profile waited for - run it on a thread of
-/// its own). A switch whose output does not come is undone at once: the
-/// card back on the profile it had, not left with no output at all.
-pub fn move_sound(m: &Monitor, monitors: &[Monitor]) -> Result<Moved, String> {
+/// its own). The card's profile before is kept in `dir` before it is
+/// switched (see [`remember_profile`]); a switch whose output does not
+/// come is undone at once, and so is one whose view was closed meanwhile
+/// (`cancel`): the card back on the profile it had.
+pub fn move_sound(
+    m: &Monitor,
+    monitors: &[Monitor],
+    dir: &Path,
+    cancel: &std::sync::atomic::AtomicBool,
+) -> Result<Moved, String> {
+    use std::sync::atomic::Ordering;
     if !m.can_play() {
         return Err(format!("{} carries no sound", m.connector));
     }
@@ -358,11 +400,34 @@ pub fn move_sound(m: &Monitor, monitors: &[Monitor]) -> Result<Moved, String> {
                 .find(|c| c.name == card)
                 .map(|c| c.active_profile.clone())
                 .unwrap_or_default();
-            set_profile(&card, &profile)?;
+            if cancel.load(Ordering::Relaxed) {
+                return Err("the view was closed".into());
+            }
+            if !before.is_empty() {
+                remember_profile(dir, &card, &before);
+            }
+            let undo = || {
+                if !before.is_empty() {
+                    let _ = set_profile(&card, &before);
+                    let _ = take_profile(dir);
+                }
+            };
+            if let Err(why) = set_profile(&card, &profile) {
+                undo();
+                return Err(why);
+            }
             // (its sink comes a moment later)
             for _ in 0..15 {
+                if cancel.load(Ordering::Relaxed) {
+                    undo();
+                    return Err("the view was closed".into());
+                }
                 let now = crate::mixer::refresh()?;
                 if let Some(SoundOn::Sink(sink)) = sound_on_among(m, monitors, &now) {
+                    if cancel.load(Ordering::Relaxed) {
+                        undo();
+                        return Err("the view was closed".into());
+                    }
                     return Ok(Moved {
                         sink,
                         switched: (!before.is_empty()).then(|| (card.clone(), before.clone())),
@@ -370,9 +435,7 @@ pub fn move_sound(m: &Monitor, monitors: &[Monitor]) -> Result<Moved, String> {
                 }
                 std::thread::sleep(std::time::Duration::from_millis(200));
             }
-            if !before.is_empty() {
-                let _ = set_profile(&card, &before);
-            }
+            undo();
             Err(format!("no output came for {profile}"))
         }
         None => Err(format!(

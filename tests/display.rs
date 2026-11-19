@@ -490,3 +490,70 @@ fn the_guard_is_given_the_display_in_points() {
     settle(&mut h, 2);
     assert_eq!(h.state().guard_screen(), Some(egui::vec2(1920.0, 1080.0)));
 }
+
+/// Closed at once, while the sound is still being moved (the card's switch
+/// under way on its thread): the switch, when it comes, is undone - the card
+/// back on its profile, the sound where it was.
+#[test]
+#[cfg(unix)]
+fn closed_while_the_sound_moves_the_switch_is_undone() {
+    let _one = PACTL.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = Scratch::new("display-early-close");
+    let Some(state) = hda_card(&dir, true) else {
+        eprintln!("AMP_FAKE_PACTL not set: skipped");
+        return;
+    };
+    let mut h = window(&dir, vec![]);
+    h.state_mut().set_monitors(hdmi_only());
+    settle(&mut h, 2);
+    let before = h.state().output_choice().to_owned();
+    h.state_mut().show_on("HDMI-1", true).unwrap();
+    h.state_mut().close_display(None);
+    // (long enough for the switch and its undoing)
+    for _ in 0..60 {
+        settle(&mut h, 1);
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    assert!(
+        wait_for(&mut h, |_| card_profile(&state)
+            == "output:analog-stereo+input:analog-stereo"),
+        "the card stayed on {}",
+        card_profile(&state)
+    );
+    assert_eq!(h.state().output_choice(), before);
+}
+
+/// The program gone while the sound was being moved (a crash, a quit):
+/// what the card was on is kept before it is switched, and the next start
+/// puts it back.
+#[test]
+#[cfg(unix)]
+fn gone_while_the_sound_moves_the_next_start_puts_it_back() {
+    let _one = PACTL.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = Scratch::new("display-gone");
+    let Some(state) = hda_card(&dir, true) else {
+        eprintln!("AMP_FAKE_PACTL not set: skipped");
+        return;
+    };
+    {
+        let mut h = window(&dir, vec![]);
+        h.state_mut().set_monitors(hdmi_only());
+        settle(&mut h, 2);
+        h.state_mut().show_on("HDMI-1", true).unwrap();
+        // (gone before the switch's result is taken in, before its settings
+        // are written: as a crash)
+        h.state_mut().forget_on_drop();
+    }
+    // the switch finishes on its own thread meanwhile
+    for _ in 0..40 {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    let mut h = window(&dir, vec![]);
+    // (no displays this time: the view does not open again)
+    assert!(
+        wait_for(&mut h, |_| card_profile(&state)
+            == "output:analog-stereo+input:analog-stereo"),
+        "the card stayed on {}",
+        card_profile(&state)
+    );
+}

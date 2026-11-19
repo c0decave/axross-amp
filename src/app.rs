@@ -56,8 +56,11 @@ struct External {
     /// The sound moved there too (what it was on before: in the settings,
     /// `display_restore_*` - kept across a restart or a crash).
     with_sound: bool,
-    /// The sound being moved there, on a thread of its own (pactl).
+    /// The sound being moved there, on a thread of its own (pactl), and
+    /// its word to stop (the view closed, the program gone): a switch it
+    /// made is undone.
     moving: Option<crossbeam_channel::Receiver<Result<crate::display::Moved, String>>>,
+    cancel: Arc<AtomicBool>,
     /// The track's words over the picture: which track, since when.
     told: String,
     told_at: f64,
@@ -113,6 +116,10 @@ pub struct App {
     monitors_watched: bool,
     /// The fonts installed: all monospace or not (None: egui's own yet).
     fonts_mono: Option<bool>,
+    /// Where the settings are (the display's "before" is kept there too).
+    config_dir: PathBuf,
+    /// A test's crash: nothing written when the window goes.
+    forget: bool,
     /// When the display menu was last drawn (its time; ctx's clock).
     display_menu_at: f64,
     analyzer: Analyzer,
@@ -623,6 +630,8 @@ impl App {
             displays_wanted,
             monitors_watched: setup.desktop,
             fonts_mono: None,
+            config_dir: setup.config_dir.clone(),
+            forget: false,
             display_menu_at: f64::NEG_INFINITY,
             reopen_display: false,
             analyzer: Analyzer::new(),
@@ -2211,6 +2220,11 @@ impl App {
         steps as i32
     }
 
+    /// Nothing written when the window goes, as in a crash (tests).
+    pub fn forget_on_drop(&mut self) {
+        self.forget = true;
+    }
+
     /// The monitors connected (as last asked).
     pub fn monitors(&self) -> Vec<crate::display::Monitor> {
         self.monitors.lock().map(|m| m.clone()).unwrap_or_default()
@@ -2265,6 +2279,7 @@ impl App {
             monitor: monitor.clone(),
             with_sound: false,
             moving: None,
+            cancel: Arc::new(AtomicBool::new(false)),
             told: String::new(),
             told_at: f64::NEG_INFINITY,
         };
@@ -2284,10 +2299,12 @@ impl App {
                 let target = monitor.clone();
                 let all = monitors.clone();
                 let wake = self.ctx.clone();
+                let dir = self.config_dir.clone();
+                let cancel = external.cancel.clone();
                 let _ = std::thread::Builder::new()
                     .name("amp-display-sound".into())
                     .spawn(move || {
-                        let _ = tx.send(crate::display::move_sound(&target, &all));
+                        let _ = tx.send(crate::display::move_sound(&target, &all, &dir, &cancel));
                         wake.request_repaint();
                     });
                 external.moving = Some(rx);
@@ -2321,9 +2338,13 @@ impl App {
     /// back on the output it was on and the card on its profile (`why`:
     /// said, as when it was unplugged).
     pub fn close_display(&mut self, why: Option<String>) {
-        let Some(_external) = self.external.take() else {
+        let Some(external) = self.external.take() else {
             return;
         };
+        // (a switch under way: undone on its thread when it comes)
+        external
+            .cancel
+            .store(true, std::sync::atomic::Ordering::Relaxed);
         self.restore_sound();
         self.viz_state.flash.screen_is = None;
         if why.is_none() {
@@ -2341,7 +2362,11 @@ impl App {
             self.apply(crate::mixer_ui::PlayerChange::Output(previous));
             self.amp_dirty = true;
         }
-        if let Some((card, profile)) = self.amp.display_restore_profile.take() {
+        // (the card's profile: kept in a file of its own before it was
+        // switched; else, from an older version, in the settings)
+        let kept = crate::display::take_profile(&self.config_dir)
+            .or(self.amp.display_restore_profile.take());
+        if let Some((card, profile)) = kept {
             self.amp_dirty = true;
             let _ = std::thread::Builder::new()
                 .name("amp-display-profile".into())
@@ -2366,18 +2391,15 @@ impl App {
         match result {
             Ok(moved) => {
                 external.with_sound = true;
-                if let Some(switched) = moved.switched
-                    && self.amp.display_restore_profile.is_none()
-                {
-                    self.amp.display_restore_profile = Some(switched);
-                }
+                // (the card's profile before: kept already, in its file)
+                let _ = moved.switched;
                 self.amp_dirty = true;
                 self.apply(crate::mixer_ui::PlayerChange::Output(moved.sink));
                 self.notice = format!("Showing the pictures on {label}, with the sound");
             }
             Err(why) => {
                 // (nothing moved: nothing to put back)
-                if self.amp.display_restore_profile.is_none() {
+                if !crate::display::restore_file(&self.config_dir).exists() {
                     self.amp.display_restore_output = None;
                     self.amp_dirty = true;
                 }
@@ -5125,6 +5147,15 @@ impl Drop for App {
     /// The last changes are kept also when the window ends without
     /// `on_exit` (a test harness, a platform that skips it).
     fn drop(&mut self) {
+        // (as in a crash: nothing done - the next start puts back what
+        // was kept)
+        if self.forget {
+            return;
+        }
+        // (a switch of the sound under way: undone on its thread)
+        if let Some(e) = &self.external {
+            e.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
         self.save(true);
     }
 }
