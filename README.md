@@ -56,6 +56,9 @@ The Python program this one replaces is on the `python` branch.
   were taken out. At 12 frames a second all read at most 5, and every
   other reading (one frame, 34 ms, the field's mean, red) at most 6
   everywhere.
+- The flash guard dims the line face in very fast music more often than
+  needed (it over-estimates the moving fill); nothing flashes, the picture is
+  just darker at times.
 - Not signed or notarised on macOS and Windows.
 
 <sub>The track in the picture is a demo synthesized for it (`docs/make_demo.py`); the

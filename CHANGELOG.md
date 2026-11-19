@@ -73,6 +73,9 @@ second on the shape-heavy faces (see *Known limitations*).
 - By a review's stricter 100 ms reading (motion over a field counted too),
   34 of 196 cases at 60 frames a second in Classic and Fire read over 6
   (the wave ribbon most, 41); at 12 frames a second none.
+- The flash guard dims the line face in very fast music more often than
+  needed (it over-estimates the moving fill); nothing flashes, the picture is
+  just darker at times.
 - egui-file-dialog is younger than the 14 days the supply-chain gate asks
   until 2026-11-23.
 
