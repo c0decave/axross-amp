@@ -1233,3 +1233,34 @@ fn no_red_flash_in_any_scheme() {
     }
     assert!(failures.is_empty(), "{failures:#?}");
 }
+
+/// At a slow renderer's 12 frames a second, in the schemes the sweep at 12
+/// found: the line in the pure red custom scheme (pale since it is no red:
+/// 7 by the either-way reading), the flow field's standing stripes (40 - 42 %
+/// in a frame).
+#[test]
+fn twelve_frames_a_second_in_every_scheme() {
+    let mut failures = Vec::new();
+    for (key, motion, scheme) in [
+        ("line", Motion::Calm, "redcustom"),
+        ("flowfield", Motion::Intense, "classic"),
+        ("flowfield", Motion::Intense, "fire"),
+        ("flowfield", Motion::Intense, "redcustom"),
+    ] {
+        let r = run(key, motion, scheme, (320.0, 180.0), 1.2, 12.0, |_| {});
+        let line = format!(
+            "{motion:?} {scheme} {key} at 12: transitions/s {} ({}) area {} stripes {:.2} ({} frames) red {}",
+            r.transitions,
+            r.strict,
+            r.area,
+            r.stripes,
+            r.pattern_frames,
+            r.red + r.strict_red + r.red_gamma
+        );
+        println!("{line}");
+        if r.fails() {
+            failures.push(line);
+        }
+    }
+    assert!(failures.is_empty(), "{failures:#?}");
+}

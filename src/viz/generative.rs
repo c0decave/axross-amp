@@ -739,6 +739,15 @@ fn flowfield(f: &Frame<'_>, pen: &mut Pen<'_>, st: &mut State, dt: f32) {
     // full: thousands of white hairs on black lie in rows the eye reads as
     // a moving grating)
     let reach = 1.0 - 0.65 * s.stark();
+    // (at a slow renderer's rate a frame's step of each hair is long and
+    // straight: the hairs lay in rows, standing stripes over 40 % of the
+    // picture at 12 frames a second - there a shade fainter)
+    let slow = if dt > 0.0 {
+        (1.0 / 30.0 / dt).min(1.0)
+    } else {
+        1.0
+    };
+    let reach = reach * (0.6 + 0.4 * slow);
     for (k, q) in st.flow.iter().enumerate() {
         // fading in as it is born and out as it ends
         let life = (q.age / 0.5).min(1.0) * ((q.life - q.age) / 0.8).clamp(0.0, 1.0) * reach;

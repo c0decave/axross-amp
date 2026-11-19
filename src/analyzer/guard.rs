@@ -102,6 +102,17 @@ impl Guard {
         }
         let (rise, fall) = motion.ease();
         let tau = if want > 0.0 { rise } else { fall };
+        // (at a slow renderer's rate - under 40 frames a second - each
+        // frame's step no more than about half the way: at 12 a second a
+        // rise all at once was a quarter of a field changing in one frame,
+        // the line face in a pale scheme 7 times a second by the either-way
+        // reading)
+        // (a stall - a frame of a fifth of a second or more - goes through)
+        let tau = if dt > 1.0 / 40.0 && dt < 0.2 {
+            tau.max(1.5 * dt)
+        } else {
+            tau
+        };
         self.value += want * (1.0 - (-dt / tau).exp());
         self.value
     }

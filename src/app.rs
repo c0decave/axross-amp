@@ -120,6 +120,8 @@ pub struct App {
     config_dir: PathBuf,
     /// A test's crash: nothing written when the window goes.
     forget: bool,
+    /// The layout draws the playlist beside the player, not under it.
+    list_elsewhere: bool,
     /// When the display menu was last drawn (its time; ctx's clock).
     display_menu_at: f64,
     analyzer: Analyzer,
@@ -632,6 +634,7 @@ impl App {
             fonts_mono: None,
             config_dir: setup.config_dir.clone(),
             forget: false,
+            list_elsewhere: false,
             display_menu_at: f64::NEG_INFINITY,
             reopen_display: false,
             analyzer: Analyzer::new(),

@@ -249,7 +249,34 @@ impl App {
 
     /// The player's page in the design shown.
     pub(super) fn design_page(&mut self, ui: &mut Ui) {
-        match design::current().key {
+        let key = design::current().key;
+        // (wide and low - half a laptop's screen tall: the player at the
+        // left, the playlist beside it, not squeezed under it)
+        let room = ui.available_rect_before_wrap();
+        if room.height() < 440.0 && room.width() >= 800.0 && matches!(key, "cassette" | "brutalist")
+        {
+            ui.allocate_rect(room, Sense::hover());
+            // (the playlist's row of switches as wide as it needs: Save…
+            // and Clear in the brutalist's large type)
+            let share = if key == "brutalist" { 0.46 } else { 0.56 };
+            let left = Rect::from_min_size(room.min, vec2(room.width() * share, room.height()));
+            let right = Rect::from_min_max(pos2(left.right() + 12.0, room.top()), room.max);
+            self.list_elsewhere = true;
+            child(ui, egui::UiBuilder::new().max_rect(left), |ui| match key {
+                "cassette" => self.layout_cassette(ui),
+                _ => self.layout_brutalist(ui),
+            });
+            self.list_elsewhere = false;
+            child(ui, egui::UiBuilder::new().max_rect(right), |ui| {
+                if key == "cassette" {
+                    self.cassette_card(ui)
+                } else {
+                    self.lower(ui)
+                }
+            });
+            return;
+        }
+        match key {
             "zen" => self.layout_zen(ui),
             "rack" => self.layout_rack(ui),
             "desktop90" => self.layout_desktop90(ui),
@@ -883,7 +910,15 @@ impl App {
             });
         }
         ui.add_space(4.0);
-        // the card insert: the playlist
+        if self.list_elsewhere {
+            return;
+        }
+        self.cassette_card(ui);
+    }
+
+    /// The cassette's card insert: the playlist.
+    fn cassette_card(&mut self, ui: &mut Ui) {
+        let t = th();
         let rest = ui.available_rect_before_wrap();
         let card = design::list_fill(design::current(), t);
         ui.painter().rect_filled(rest, 2.0, card);
@@ -1164,6 +1199,9 @@ impl App {
         ui.add_space(if low { 0.0 } else { 6.0 });
         if low {
             ui.spacing_mut().item_spacing.y = 2.0;
+        }
+        if self.list_elsewhere {
+            return;
         }
         self.lower(ui);
     }

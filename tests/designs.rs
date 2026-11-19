@@ -416,7 +416,14 @@ fn click_through(h: &mut Harness<'static, App>, what: &str, out: &mut RenderStat
     }
 }
 
-const SIZES: [(f32, f32); 3] = [(420.0, 420.0), (800.0, 600.0), (1920.0, 1080.0)];
+const SIZES: [(f32, f32); 5] = [
+    (420.0, 420.0),
+    (800.0, 600.0),
+    (1920.0, 1080.0),
+    // (wide and low: a laptop's window half the screen tall)
+    (900.0, 400.0),
+    (1600.0, 420.0),
+];
 
 #[test]
 fn every_design_keeps_every_control_at_every_size() {
