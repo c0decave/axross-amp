@@ -603,7 +603,9 @@ impl App {
         // (a marquee: the words scroll slowly where they do not fit - 24
         // points a second; still where the desktop asks for less motion)
         let overflow = galley.size().x - words.width() + 8.0;
-        let shift = if overflow > 0.0 && !self.desktop_reduces_motion() {
+        // (only while it plays: paused or stopped, the words stand and the
+        // window is not woken for them)
+        let shift = if overflow > 0.0 && self.playing() && !self.desktop_reduces_motion() {
             let period = (overflow / 24.0) as f64 + 4.0;
             let phase = (ui.input(|i| i.time) % period) as f32;
             ui.ctx().request_repaint_after(Duration::from_millis(80));

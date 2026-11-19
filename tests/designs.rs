@@ -700,3 +700,48 @@ fn tab_follows_what_is_seen() {
     }
     assert!(failures.is_empty(), "{failures:#?}");
 }
+
+/// The 90s desktop's scrolling title scrolls while it plays only: paused,
+/// it stands (the strip the same a second later).
+#[test]
+fn a_paused_90s_desktop_rests() {
+    let home = Scratch::new("design-90s-idle");
+    // (a title long enough to scroll)
+    let long = home.join("A title far too long to fit in the little window of the strip.wav");
+    write_chord(&long, 30);
+    let mut h = window(
+        &home,
+        vec![long.to_string_lossy().into_owned()],
+        egui::vec2(800.0, 600.0),
+    );
+    assert!(until(&mut h, 5.0, |a| a.is_loaded()));
+    h.state_mut().set_design("desktop90");
+    h.state_mut().set_mode("off");
+    settle(&mut h, 3);
+    if h.state().playing() {
+        h.key_press(egui::Key::Space);
+    }
+    // (the face's name, shown for a moment after it changed, gone)
+    h.run_steps(50);
+    assert!(!h.state().playing());
+    let strip = |h: &mut Harness<'static, App>| {
+        let img = h.render().expect("renders");
+        image::imageops::crop_imm(&img, 0, 80, 800, 120).to_image()
+    };
+    let before = strip(&mut h);
+    h.run_steps(30);
+    let after = strip(&mut h);
+    let moved: Vec<(u32, u32)> = before
+        .enumerate_pixels()
+        .filter(|(x, y, p)| after.get_pixel(*x, *y) != *p)
+        .map(|(x, y, _)| (x, y))
+        .collect();
+    let bbox = moved.iter().fold((u32::MAX, u32::MAX, 0, 0), |b, &(x, y)| {
+        (b.0.min(x), b.1.min(y), b.2.max(x), b.3.max(y))
+    });
+    assert!(
+        moved.is_empty(),
+        "the paused strip moved: {} pixels in {bbox:?}",
+        moved.len()
+    );
+}

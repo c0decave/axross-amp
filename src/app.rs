@@ -2533,6 +2533,16 @@ impl App {
                     .frame(egui::Frame::new().fill(Color32::BLACK))
                     .show(ctx, |ui| {
                         let rect = ui.max_rect();
+                        // (the guard's screen: the view's own, in its own
+                        // points - its monitor's scale, not this window's -
+                        // where it is a window of its own; embedded, as in
+                        // the tests, the display's size as asked)
+                        if !ui.ctx().embed_viewports() {
+                            let screen = ui.ctx().content_rect().size();
+                            if screen.x > 100.0 && screen.y > 100.0 {
+                                self.viz_state.flash.screen_is = Some(screen);
+                            }
+                        }
                         let hover = ui.input(|i| i.pointer.hover_pos());
                         self.draw_face(ui, rect, hover);
                         self.track_words(ui, rect);
