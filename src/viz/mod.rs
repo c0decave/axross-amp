@@ -715,6 +715,35 @@ pub fn unred(c: Color32) -> Color32 {
     out
 }
 
+/// A colour no longer saturated red, its relative luminance kept: towards
+/// a warm grey as light as it is (not towards white - a scheme's red made
+/// lighter moved more light with the music: the line face in Fire, Intense,
+/// at 9 by an independent 100 ms reading where its red had been 7).
+pub fn unred_level(c: Color32) -> Color32 {
+    let red = |c: Color32| red_share(c) >= 0.75;
+    if !red(c) {
+        return c;
+    }
+    // (the grey of the same relative luminance: Y linear, made sRGB)
+    let y = luminance(c).clamp(0.0, 1.0);
+    let v = if y <= 0.003_130_8 {
+        y * 12.92
+    } else {
+        1.055 * y.powf(1.0 / 2.4) - 0.055
+    };
+    let g = (v * 255.0).round().clamp(0.0, 255.0) as u8;
+    // (a little warm: the hue of the fire, not ash)
+    let grey = Color32::from_rgb(g.saturating_add(10), g, g.saturating_sub(12))
+        .gamma_multiply(c.a() as f32 / 255.0);
+    let mut out = c;
+    let mut t = 0.0;
+    while red(out) && t < 1.0 {
+        t += 0.05;
+        out = mix(c, grey, t);
+    }
+    out
+}
+
 pub fn mix(a: Color32, b: Color32, t: f32) -> Color32 {
     let t = t.clamp(0.0, 1.0);
     let m = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t).round() as u8;
@@ -1327,9 +1356,13 @@ pub fn draw(f: &Frame<'_>, key: &str, state: &mut VizState) {
     // Fire's own reds, a cover's, a custom one: every colour taken toward a
     // warm white until it is none by either encoding, the ground darkened
     // and turned from red; no red flash can come of them)
+    let level = |c: Color32| unred_level(c);
     let safe = Scheme {
         background: quiet_ground(f.s.background),
-        ..f.s.unred()
+        low: level(f.s.low),
+        mid: level(f.s.mid),
+        high: level(f.s.high),
+        peak: level(f.s.peak),
     };
     let f = &Frame { s: &safe, ..*f };
     let ppp = f.painter.pixels_per_point();
@@ -1472,6 +1505,24 @@ mod tests {
         let (r, g, b) = (c.r() as f32, c.g() as f32, c.b() as f32);
         let gamma = r + g + b > 0.0 && r / (r + g + b) >= 0.8;
         linear || gamma
+    }
+
+    #[test]
+    fn a_red_turned_from_red_keeps_its_light() {
+        for c in [
+            "#e74c3c", "#8b1a00", "#ff6a00", "#ff0000", "#c0392b", "#ff3030",
+        ] {
+            let before = hex(c);
+            let after = unred_level(before);
+            assert!(!saturated_red_either_way(after), "{c} -> {after:?}");
+            let (a, b) = (luminance(before), luminance(after));
+            assert!(
+                (a - b).abs() <= 0.03 + 0.1 * a,
+                "{c}: luminance {a:.3} -> {b:.3}"
+            );
+        }
+        // (no red: as it is)
+        assert_eq!(unred_level(hex("#2ecc71")), hex("#2ecc71"));
     }
 
     #[test]
