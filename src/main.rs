@@ -11,13 +11,17 @@
 
 use axross_amp::app;
 
-const USAGE: &str = "axross-amp [--new-instance] [FILE|FOLDER|PLAYLIST|URL ...]
+const USAGE: &str = "axross-amp [--foreground] [--new-instance] [FILE|FOLDER|PLAYLIST|URL ...]
 
 Play local audio (MP3, FLAC, Ogg Vorbis, Opus, AAC / M4A, ALAC, WAV, AIFF, CAF),
 folders and M3U / PLS playlists, and internet radio by its http(s) URL.
 The Mixer tab drives the sound server (pactl), the Bluetooth tab BlueZ.
 A player already running (Linux) takes the files of a second start;
 --new-instance starts another one anyway.
+
+Started from a terminal it goes to the background and the prompt comes
+back (it writes to ~/.cache/axross-amp/axross-amp.log; a start that fails
+is said there and then); --foreground (-F) keeps it in the terminal.
 
 Keys: Space play / pause, Left / Right seek 5 s (Shift: 30 s), Ctrl+Left /
 Right previous / next, Up / Down or + / - volume, Home the track's start,
@@ -43,7 +47,14 @@ fn main() -> eframe::Result {
         return Ok(());
     }
     let new_instance = args.iter().any(|a| a == "--new-instance");
-    let files: Vec<String> = args.into_iter().filter(|a| !a.starts_with("--")).collect();
+    // (from a terminal: to the background - after the files are handed to a
+    // player already running, where there is one: no process for nothing)
+    let background = axross_amp::detach::wanted(&args);
+    let passed: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
+    let files: Vec<String> = args
+        .into_iter()
+        .filter(|a| !a.starts_with("--") && a != "-F")
+        .collect();
     // one player: a second start (a file opened from the file manager) hands
     // its files to the one running and ends
     // (the name on the session bus is taken here, before the window is made:
@@ -53,12 +64,35 @@ fn main() -> eframe::Result {
         use axross_amp::mpris::{Claim, Mpris};
         match Mpris::claim(None, (!new_instance).then_some(&files[..])) {
             Claim::Handed => return Ok(()),
+            // (going to the background: the name let go - the child takes it)
+            Claim::Mine(mpris) if background => drop(mpris),
             Claim::Mine(mpris) => Mpris::prepare(*mpris),
             Claim::NoBus(_) => {}
         }
     }
     #[cfg(not(target_os = "linux"))]
     let _ = new_instance;
+    if background {
+        match axross_amp::detach::spawn(&passed) {
+            axross_amp::detach::Start::Exit(0) => return Ok(()),
+            axross_amp::detach::Start::Exit(code) => std::process::exit(code),
+            // (it could not go: here then)
+            axross_amp::detach::Start::Run => {}
+        }
+    }
+    // (the tests' stand-in for the window: up at once, then N seconds of
+    // nothing - so going to the background can be tested without a display)
+    if let Some(secs) = std::env::var("AXROSS_AMP_FAKE_WINDOW")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+    {
+        if let Some(path) = std::env::var_os("AXROSS_AMP_FAKE_PIDFILE") {
+            let _ = std::fs::write(path, std::process::id().to_string());
+        }
+        axross_amp::detach::signal_ready();
+        std::thread::sleep(std::time::Duration::from_secs(secs));
+        return Ok(());
+    }
     // the window as large as it was left
     let size = axross_amp::state::read_amp(
         &axross_amp::state::config_dir().join(axross_amp::state::AMP_FILE),
@@ -77,6 +111,11 @@ fn main() -> eframe::Result {
     eframe::run_native(
         "axross-amp",
         options,
-        Box::new(move |cc| Ok(Box::new(app::App::new(cc, files)))),
+        Box::new(move |cc| {
+            let app = app::App::new(cc, files);
+            // (in the background: the window is up - the terminal may go)
+            axross_amp::detach::signal_ready();
+            Ok(Box::new(app))
+        }),
     )
 }

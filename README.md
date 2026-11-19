@@ -564,7 +564,20 @@ axross-amp                          # the last playlist
 axross-amp ~/Music/album/           # add a folder and play it
 axross-amp list.m3u song.flac
 axross-amp https://example.org/radio.mp3
+axross-amp --foreground song.flac   # stays in the terminal (-F)
 ```
+
+Started from a terminal (Linux, macOS) the player goes to the background:
+the prompt comes back at once and the player goes on after the terminal is
+closed (a session of its own, no hang-up; what it says goes to
+`~/.cache/axross-amp/axross-amp.log`). A start that fails - no display, say -
+is not lost: the terminal waits up to two seconds for the window and prints
+the log's last lines and exits with 1 where it did not come. `--foreground`
+(`-F`) keeps it in the terminal, as before; `--help` and `--version` never
+go; started from a desktop entry, a file manager or the AppImage it just
+runs; a second start that hands its files to the player already running
+starts nothing. On Windows nothing of this: it runs as a console program,
+as before.
 
 Keys (on the Player tab, not while typing in a field):
 

@@ -10,6 +10,7 @@ pub mod bluetooth_ui;
 pub mod cover;
 pub mod design;
 pub mod desktop_theme;
+pub mod detach;
 pub mod display;
 pub mod engine;
 pub mod eq;

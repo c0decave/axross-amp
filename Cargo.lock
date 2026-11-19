@@ -453,6 +453,7 @@ dependencies = [
  "egui-file-dialog",
  "egui_kittest",
  "image",
+ "libc",
  "rustfft",
  "serde",
  "serde_json",

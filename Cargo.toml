@@ -32,6 +32,11 @@ lto = "thin"
 codegen-units = 1
 strip = true
 
+[target.'cfg(unix)'.dependencies]
+# (already in the lock through the sound and window crates: setsid and fcntl
+# for going to the background)
+libc = "0.2.191"
+
 [target.'cfg(target_os = "linux")'.dependencies]
 # BlueZ over D-Bus (the Bluetooth tab); already in the tree through accesskit
 zbus = "5.19"
