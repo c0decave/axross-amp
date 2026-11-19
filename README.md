@@ -162,9 +162,11 @@ picture is made by `AMP_DEMO_TRACK=… cargo test --test ui -- --ignored`.</sub>
   frame for all faces, and neither that nor most faces allocate in a frame; the
   pictures move alike at any frame rate. In axross's colour schemes (Classic, Fire,
   Ice, Neon, Mono, Follow the theme, Custom - edited here; a saturated red ground is
-  shown darker and turned from red, as on it whatever moves flashes red, and
-  a custom colour that is saturated red - in linear light or as the screen's
-  values - is taken toward a warm white), with its options (bars,
+  shown darker and turned from red, as on it whatever moves flashes red;
+  **no face shows a saturated red in any scheme** - Classic's and Fire's own
+  reds, a cover's, a custom one: each is taken toward a warm white until it
+  is none, in linear light or as the screen's values; an independent review
+  had counted red transitions in Classic and Fire, now none), with its options (bars,
   smoothing - no less than 75 % -, peak fall - no faster than 100 % a second: at
   their extremes the faces flashed -, frame rate). A click shows the next face (Shift+V the one
   before), a double-click makes it large (its title kept above it, with "Show the
@@ -509,10 +511,14 @@ What axross-amp does about it:
   reading: 6, red 6 (14 cases at the limit, 13 of them in *Intense*); by
   the either-way reading: 4, red 4; red by the gamma-encoded reading 6
   (the Julia set, Intense, Fire); moving stripes in no frame; standing
-  stripes at most 35 % (40 % allowed). At 30 and 12 frames a second (a
-  slow renderer's) every face passes too - the ring's near bars at 12
-  frames came to 7 by the either-way reading until they followed by
-  150 ms there. `AMP_FLASH_OPTIONS=extreme` runs it
+  stripes at most 35 % (40 % allowed). At 12 frames a second (a slow
+  renderer's) the whole sweep again - every face and option, both motions,
+  all nine schemes, 936 cases - **all pass all four readings, and not one
+  red transition by any reading in any case** (the most 4, strict 5,
+  either-way 6; standing stripes at most 36 %): at that rate the pictures
+  step at most about half the way a frame (the ring's near bars, the line
+  in a pale scheme came to 7 by the either-way reading before), the flow
+  field's hairs a shade fainter. `AMP_FLASH_OPTIONS=extreme` runs it
   with the Options at their extremes (Smoothing 0 asked, its
   floor given - 85 % at 128 bars; 128 bars; peaks falling at 300 % a second asked, 100 %
   given): in Classic, Neon, white on black, black on white and the colour
