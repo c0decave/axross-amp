@@ -1202,3 +1202,34 @@ fn red_by_the_gamma_encoded_reading_too() {
     }
     assert!(failures.is_empty(), "{failures:#?}");
 }
+
+/// No red flash at all, in any scheme: Classic's and Fire's own reds
+/// (#e74c3c, #8b1a00, #ff6a00) were saturated red - an independent review
+/// counted red transitions in 59 of 519 cases, the isometric view in Fire
+/// at 12 frames a second 8. Every face's colours are no saturated red by
+/// either encoding now, whatever the scheme: not one red transition.
+#[test]
+fn no_red_flash_in_any_scheme() {
+    let mut failures = Vec::new();
+    for (key, motion, scheme, fps) in [
+        ("line", Motion::Intense, "fire", FPS),
+        ("bells", Motion::Intense, "fire", FPS),
+        ("spectrum", Motion::Intense, "fire", 12.0),
+        ("line", Motion::Intense, "fire", 12.0),
+        ("polar", Motion::Intense, "fire", 12.0),
+        ("isometric", Motion::Intense, "fire", 12.0),
+        ("spectrum", Motion::Intense, "classic", FPS),
+        ("isometric", Motion::Calm, "classic", 12.0),
+    ] {
+        let r = run(key, motion, scheme, (320.0, 180.0), 1.2, fps, |_| {});
+        let line = format!(
+            "{motion:?} {scheme} {key} at {fps}: red {} ({}) area red {} gamma red {}",
+            r.red, r.strict_red, r.area_red, r.red_gamma
+        );
+        println!("{line}");
+        if r.red + r.strict_red + r.area_red + r.red_gamma > 0 {
+            failures.push(line);
+        }
+    }
+    assert!(failures.is_empty(), "{failures:#?}");
+}

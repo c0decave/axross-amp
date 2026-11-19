@@ -1323,6 +1323,15 @@ pub struct Frame<'a> {
 /// One frame of face `key`: a change of face fades over CROSSFADE seconds
 /// from the one before.
 pub fn draw(f: &Frame<'_>, key: &str, state: &mut VizState) {
+    // (no saturated red in any face, whatever its scheme - Classic's and
+    // Fire's own reds, a cover's, a custom one: every colour taken toward a
+    // warm white until it is none by either encoding, the ground darkened
+    // and turned from red; no red flash can come of them)
+    let safe = Scheme {
+        background: quiet_ground(f.s.background),
+        ..f.s.unred()
+    };
+    let f = &Frame { s: &safe, ..*f };
     let ppp = f.painter.pixels_per_point();
     state.canvas.begin(ppp);
     // (the shapes drawn from here on - the ground too - and the shader
