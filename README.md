@@ -402,13 +402,23 @@ What axross-amp does about it:
   half after. Seven, not six: the veil's own coming is a change too, and
   at six it would make the seventh. So the guard does not by itself hold a
   face to six; it caps what the faces do not foresee. On ordinary music - pop,
-  house, drum and bass - it does not come (a test). It costs about 1.5 - 3.5
-  ms of the CPU a frame (`--release`, `tests/frame_cost.rs`, the faces with
-  and without it: the spectrum 1.6, the cover 1.9, the plasma 1.5); more for
-  the faces of thousands of pieces: the spirograph 4 - 6 ms, the particles
-  7 - 9 ms at 1920 x 1080 and 3840 x 2160, the skyline 5.5 ms at 3840 x
-  2160 - over the 2 ms an independent review asked for, not yet met. The frame rate's cap on a
-  software renderer counts it in.
+  house, drum and bass - it does not come (a test). It costs the CPU
+  about 1.5 - 2 ms a frame on most faces at 1920 x 1080 (`--release`, an
+  independent review's bench, the face with and without it: the spectrum
+  1.7, the plasma 1.5, the cover 2.0), and more on the faces of thousands of
+  pieces: the spirograph 5.1 ms, the particles 7.1 ms at 1920 x 1080 and 9.1
+  at 3840 x 2160, the skyline 5.6 at 3840 x 2160. **Not met**: an independent review asked for about 2 ms on
+  the shape-heavy faces. The guard lays every piece the face drew on its
+  grid (about 0.6 µs a piece, and 0.5 ms whatever the face); laying only one
+  piece in so many was tried and undone - one dot of the particles in two,
+  counted twice, made a grating of the estimate and the pattern stage
+  softened the face. A coarse picture of the face rendered on the GPU and
+  read back would be the way; it is not done. So the particles, the
+  spirograph and the skyline (at 3840 x 2160) do not hold 60 frames a
+  second on a laptop's CPU with the guard on: 60 frames a second is not
+  supported for them. With a GPU a frame of theirs simply takes as long as
+  the guard does; on a software renderer the frame-rate governor lowers
+  their rate (it counts the guard in). The guard is never dropped.
 - **A pattern stage in the guard** (ITU-R BT.1702), for stripes no face
   foresaw - a cover of checks, a striped custom scheme: regular stripes
   in the estimate (five light-dark pairs or more in a row or column of
@@ -447,12 +457,18 @@ What axross-amp does about it:
   option, Calm and Intense, in Classic, Neon, Mono, Fire and five extreme
   custom schemes - white on black, pure red (#ff0000, peak #ff3030) on
   black, black on white, black on a pure red ground, and the colour
-  editor's own defaults - at 320 x 180: 936 cases, **all pass all three
-  readings** (each face last measured after its last change). The most by
-  the normal reading: 4 transitions a second, red 4; by the strict
+  editor's own defaults - at 320 x 180: 936 cases, **all pass all four
+  readings** (the whole sweep run again with the gamma reading in it; the
+  ring, changed after it, swept again in all nine schemes, Calm and Intense: 18 cases, all
+  pass - at most 5 by the strict reading, 3 by the either-way one). The
+  most by the normal reading: 4 transitions a second, red 4; by the strict
   reading: 6, red 6 (14 cases at the limit, 13 of them in *Intense*); by
-  the either-way reading: 4, red 4; moving stripes in no frame; standing
-  stripes at most 35 % (40 % allowed). `AMP_FLASH_OPTIONS=extreme` runs it
+  the either-way reading: 4, red 4; red by the gamma-encoded reading 6
+  (the Julia set, Intense, Fire); moving stripes in no frame; standing
+  stripes at most 35 % (40 % allowed). At 30 and 12 frames a second (a
+  slow renderer's) every face passes too - the ring's near bars at 12
+  frames came to 7 by the either-way reading until they followed by
+  150 ms there. `AMP_FLASH_OPTIONS=extreme` runs it
   with the Options at their extremes (Smoothing 0 asked, its
   floor given - 85 % at 128 bars; 128 bars; peaks falling at 300 % a second asked, 100 %
   given): in Classic, Neon, white on black, black on white and the colour

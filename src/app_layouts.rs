@@ -142,6 +142,35 @@ impl App {
     /// The volume (a slider, or a knob of `knob` points), mute and the ⋯
     /// menu, left to right; the sleep timer's words after them.
     pub(super) fn volume_group(&mut self, ui: &mut Ui, knob: Option<f32>, slider: f32) {
+        // (left to right as they are seen: the sleep timer's words, ⋯,
+        // mute, the volume at the end)
+        if let Some(label) = self.sleep_label() {
+            ui.label(RichText::new(label).small().color(self.accent));
+        }
+        egui::containers::menu::MenuButton::from_button(
+            egui::Button::new(RichText::new("⋯").size(16.0)).min_size(vec2(24.0, 24.0)),
+        )
+        .ui(ui, |ui| self.more_menu(ui))
+        .0
+        .accessible_name("More")
+        .on_hover_text("Sleep timer, ReplayGain, track details, mixer");
+        let icon = if self.muted || self.volume == 0 {
+            "🔇"
+        } else {
+            "🔊"
+        };
+        if ui
+            .add(
+                egui::Button::new(RichText::new(icon).size(16.0))
+                    .frame(false)
+                    .min_size(vec2(24.0, 24.0)),
+            )
+            .accessible_name("Mute")
+            .on_hover_text("Mute (M)")
+            .clicked()
+        {
+            self.set_muted(!self.muted);
+        }
         let mut volume = self.volume;
         let response = match knob {
             Some(side) => design::knob(ui, &mut volume, "Volume", side),
@@ -162,33 +191,6 @@ impl App {
         let notches = self.wheel_steps(ui, &response);
         if notches != 0 {
             self.set_volume((self.volume as i32 + 5 * notches).clamp(0, 100) as u32);
-        }
-        let icon = if self.muted || self.volume == 0 {
-            "🔇"
-        } else {
-            "🔊"
-        };
-        if ui
-            .add(
-                egui::Button::new(RichText::new(icon).size(16.0))
-                    .frame(false)
-                    .min_size(vec2(24.0, 24.0)),
-            )
-            .accessible_name("Mute")
-            .on_hover_text("Mute (M)")
-            .clicked()
-        {
-            self.set_muted(!self.muted);
-        }
-        egui::containers::menu::MenuButton::from_button(
-            egui::Button::new(RichText::new("⋯").size(16.0)).min_size(vec2(24.0, 24.0)),
-        )
-        .ui(ui, |ui| self.more_menu(ui))
-        .0
-        .accessible_name("More")
-        .on_hover_text("Sleep timer, ReplayGain, track details, mixer");
-        if let Some(label) = self.sleep_label() {
-            ui.label(RichText::new(label).small().color(self.accent));
         }
     }
 

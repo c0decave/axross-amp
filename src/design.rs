@@ -694,18 +694,7 @@ pub fn panel(p: &Painter, rect: Rect, d: &Design, t: &Theme, fill: Color32, seed
                 Stroke::new(3.0, t.strong),
                 egui::StrokeKind::Inside,
             );
-            // the slab's offset block below right: a hard shadow
-            let block = rect.translate(vec2(6.0, 6.0));
-            p.rect_filled(
-                Rect::from_min_max(pos2(rect.right(), block.top()), block.right_bottom()),
-                0.0,
-                t.strong,
-            );
-            p.rect_filled(
-                Rect::from_min_max(pos2(block.left(), rect.bottom()), block.right_bottom()),
-                0.0,
-                t.strong,
-            );
+            // (no shadow: a brutalist slab is flat - its weight is its frame)
         }
         Panel::Paper => {
             // a sheet behind, turned a little (still: no motion), the card
