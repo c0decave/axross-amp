@@ -288,7 +288,7 @@ pub fn sound_on_among(m: &Monitor, monitors: &[Monitor], s: &Snapshot) -> Option
                 let on_port = hdmi_sinks
                     .iter()
                     .find(|d| of_card(d, card) && d.active_port == port.name);
-                let active = port.profiles.iter().any(|p| *p == card.active_profile);
+                let active = port.profiles.contains(&card.active_profile);
                 let sink = on_port.or_else(|| {
                     active
                         .then(|| hdmi_sinks.iter().find(|d| of_card(d, card)))
