@@ -20,11 +20,11 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: axross's gate, its scanners' lock and their reviewed baseline
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: c0decave/axross
           path: .axross
@@ -33,7 +33,7 @@ jobs:
           sparse-checkout: |
             /security/
             /build/requirements-scan-tools.txt
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12"
       - name: Downloads and crates.io's answers of earlier runs (by checksum; nothing is trusted from it unchecked)
@@ -52,7 +52,7 @@ jobs:
           python -I .axross/security/supply_chain_gate.py --config security/scan-tools-gate.toml verify-env --python "$RUNNER_TEMP/scan-venv/bin/python" --lock .axross/build/requirements-scan-tools.txt
       - name: Gate with the scanners (YARA over every member)
         run: python -I .axross/security/supply_chain_cargo.py --config security/supply-chain-cargo.toml check --require-osv --scan-python "$RUNNER_TEMP/scan-venv/bin/python" --report supply-chain-report
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: supply-chain-report
@@ -67,10 +67,9 @@ jobs:
         os: [ubuntu-24.04, macos-14, windows-2022]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy, rustfmt
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Rust (rustup, stable, with clippy and rustfmt)
+        run: rustup toolchain install stable --profile minimal --component clippy,rustfmt && rustup default stable
       - name: Linux libraries (ALSA headers; Mesa's software Vulkan for the window test; CMake builds libopus)
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libasound2-dev pkg-config mesa-vulkan-drivers
@@ -83,7 +82,7 @@ jobs:
         if: runner.os != 'Linux'
         run: cargo test --lib --bins
       - run: cargo build --release
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: axross-amp-${{ runner.os }}
           path: |

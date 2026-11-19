@@ -4,6 +4,50 @@ axross's Media Player as a program of its own - written in Rust.
 
 ![The window](docs/window.png)
 
+> **Photosensitivity warning.** The visualizations move with the music. They
+> are calmed at their source and guarded at the output against flashes, red
+> flashes and patterns (WCAG 2.3.1 / 2.3.2, ITU-R BT.1702 - see
+> [Photosensitivity](#photosensitivity) for exactly what is measured and what
+> is not claimed), but the pictures are not guaranteed safe for everyone. If you
+> or anyone watching has epilepsy or feels unwell, turn the pictures off (⚙ →
+> Off). *Calm* motion is the default; *Intense* asks first.
+
+## Install
+
+Each [release](https://github.com/c0decave/axross-amp/releases) has the files
+below and their `SHA256SUMS` (check with `sha256sum -c SHA256SUMS
+--ignore-missing`).
+
+- **Linux (x86_64)** - `axross-amp-VERSION-x86_64.AppImage`: `chmod +x` it and
+  run it. Or `axross-amp-VERSION-linux-x86_64.tar.gz`: the binary alone (into
+  `~/.local/bin`; the desktop entry and icon as under [Build](#build)). Built on
+  Ubuntu 22.04: it needs glibc 2.35 or later and ALSA's `libasound.so.2`;
+  PulseAudio / PipeWire is spoken natively; the window needs Vulkan or OpenGL
+  (any desktop has one of them; without a GPU, Mesa's software drivers).
+- **macOS** - `axross-amp-VERSION-macos-universal.tar.gz` (Apple silicon and
+  Intel; `...-macos-arm64.tar.gz` where the Intel build was left out): the
+  binary, not signed or notarised - after unpacking, `xattr -d
+  com.apple.quarantine axross-amp` once, then run it from a terminal.
+- **Windows (x64)** - `axross-amp-VERSION-windows-x64.zip`: `axross-amp.exe`,
+  not signed (SmartScreen asks once).
+- **From source** - see [Build](#build) (a recent stable Rust; the releases are built with the current one).
+
+The Python program this one replaces is on the `python` branch.
+
+## Known limitations
+
+- The flash guard costs the CPU about 1.5 - 2 ms a frame, and 5 - 9 ms on the
+  particles, the spirograph and the skyline at 4K: **60 frames a second is not
+  supported for those faces** on a laptop's CPU (see
+  [Photosensitivity](#photosensitivity)).
+- The designs Glass, Soft and Zen share the Modern design's arrangement
+  (Zen in one narrow column); their difference is their surfaces.
+- **Show on display** with the sound has been tested against a fake sound
+  server only - not on real HDMI or DisplayPort hardware; on Wayland the
+  compositor decides where the full-screen view goes; macOS and Windows list
+  no monitors.
+- Not signed or notarised on macOS and Windows.
+
 <sub>The track in the picture is a demo synthesized for it (`docs/make_demo.py`); the
 picture is made by `AMP_DEMO_TRACK=… cargo test --test ui -- --ignored`.</sub>
 

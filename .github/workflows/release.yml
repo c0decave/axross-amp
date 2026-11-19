@@ -1,0 +1,180 @@
+# A release: on a tag vX.Y.Z the program is built for Linux (x86_64: a
+# binary built on Ubuntu 22.04's glibc 2.35, and an AppImage), macOS (arm64,
+# and x86_64 cross-built where that works) and Windows (x64), the files'
+# SHA-256 sums written, and a GitHub release made with the CHANGELOG's notes
+# for that version - with this workflow's own GITHUB_TOKEN, no stored
+# secret. Third-party actions are pinned by commit, as axross pins them; the
+# Rust toolchain comes from rustup, which the runners carry; the AppImage
+# tools are fetched by scripts/fetch_appimagetool.sh and checked against
+# their pinned SHA-256.
+
+name: release
+
+on:
+  push:
+    tags: ["v*.*.*"]
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: The tag, Cargo.toml and the CHANGELOG name one version
+        id: version
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          VERSION="${TAG#v}"
+          CARGO=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          if [ "$VERSION" != "$CARGO" ]; then
+            echo "::error::tag $TAG but Cargo.toml says $CARGO"; exit 1
+          fi
+          grep -q "^## $VERSION " CHANGELOG.md || { echo "::error::no '## $VERSION' in CHANGELOG.md"; exit 1; }
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+  linux:
+    needs: check
+    # (an old enough glibc: the binary runs on 2.35 and later)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    env:
+      VERSION: ${{ needs.check.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: ALSA headers, pkg-config, CMake (libopus is built from source)
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libasound2-dev pkg-config cmake
+      - name: Rust (rustup, stable)
+        run: rustup toolchain install stable --profile minimal && rustup default stable
+      - name: Build
+        run: cargo build --release --locked
+      - name: The binary, packed
+        run: |
+          mkdir -p dist
+          strip target/release/axross-amp
+          tar -C target/release -czf "dist/axross-amp-$VERSION-linux-x86_64.tar.gz" axross-amp
+      - name: The AppImage (appimagetool and its runtime pinned by SHA-256)
+        run: scripts/build_appimage.sh target/release/axross-amp "$VERSION" dist "$RUNNER_TEMP/appimage-tools"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: linux
+          path: |
+            dist/*.tar.gz
+            dist/*.AppImage
+          if-no-files-found: error
+
+  macos:
+    needs: check
+    runs-on: macos-14
+    timeout-minutes: 60
+    env:
+      VERSION: ${{ needs.check.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Rust (rustup, stable; Apple silicon and Intel)
+        run: |
+          rustup toolchain install stable --profile minimal && rustup default stable
+          rustup target add aarch64-apple-darwin x86_64-apple-darwin
+      - name: Build (arm64)
+        run: cargo build --release --locked --target aarch64-apple-darwin
+      - name: Build (x86_64, cross-built - left out of the release where it fails)
+        id: intel
+        continue-on-error: true
+        env:
+          CMAKE_OSX_ARCHITECTURES: x86_64
+        run: cargo build --release --locked --target x86_64-apple-darwin
+      - name: Packed (a universal binary where both built)
+        env:
+          INTEL: ${{ steps.intel.outcome }}
+        run: |
+          mkdir -p dist pack
+          ARM=target/aarch64-apple-darwin/release/axross-amp
+          if [ "$INTEL" = success ]; then
+            lipo -create -output pack/axross-amp "$ARM" target/x86_64-apple-darwin/release/axross-amp
+            NAME="axross-amp-$VERSION-macos-universal.tar.gz"
+          else
+            cp "$ARM" pack/axross-amp
+            NAME="axross-amp-$VERSION-macos-arm64.tar.gz"
+          fi
+          strip pack/axross-amp || true
+          tar -C pack -czf "dist/$NAME" axross-amp
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: macos
+          path: dist/*.tar.gz
+          if-no-files-found: error
+
+  windows:
+    needs: check
+    runs-on: windows-2022
+    timeout-minutes: 60
+    env:
+      VERSION: ${{ needs.check.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Rust (rustup, stable)
+        run: rustup toolchain install stable --profile minimal; rustup default stable
+      - name: Build
+        run: cargo build --release --locked
+      - name: Zipped
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Compress-Archive -Path target/release/axross-amp.exe -DestinationPath "dist/axross-amp-$env:VERSION-windows-x64.zip"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: windows
+          path: dist/*.zip
+          if-no-files-found: error
+
+  release:
+    needs: [check, linux, macos, windows]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.check.outputs.version }}
+      TAG: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          path: artifacts
+      - name: The files and their SHA-256 sums
+        run: |
+          mkdir -p release
+          find artifacts -type f -exec cp {} release/ \;
+          (cd release && sha256sum -- * > SHA256SUMS)
+          cat release/SHA256SUMS
+      - name: The notes, from the CHANGELOG's section for this version
+        run: |
+          awk -v v="$VERSION" '
+            $0 ~ "^## " v " " { on = 1; next }
+            on && /^## / { exit }
+            on { print }
+          ' CHANGELOG.md > notes.md
+          test -s notes.md
+          printf '\n**Photosensitivity warning**: the visualizations move with the music. They are guarded against flashes and patterns (see the README), but the pictures are not guaranteed safe for everyone; if you or anyone watching has epilepsy, turn them off.\n' >> notes.md
+      - name: The GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --title "axross-amp $VERSION" --notes-file notes.md release/*
