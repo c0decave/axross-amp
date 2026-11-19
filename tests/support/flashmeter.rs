@@ -139,6 +139,13 @@ pub struct Meter {
     strict_red_events: Vec<Vec<usize>>,
     strict_lum_over: Vec<[bool; 2]>,
     strict_red_over: Vec<[bool; 2]>,
+    /// The swept reading (review 9's 100 ms one): a field's pixels newly
+    /// transiting one way, summed over the last 100 ms since its last
+    /// transition that way; a quarter of the field is one, and the sum
+    /// starts again. It counts a curve moving over a field quickly too.
+    swept_new: Vec<[std::collections::VecDeque<(usize, usize)>; 2]>,
+    swept_since: Vec<[usize; 2]>,
+    swept_events: Vec<Vec<usize>>,
     /// Red from the gamma-encoded values (R, G and B as sent to the
     /// screen, 0..1) instead of linear light: the reading of a review that
     /// found a dark saturated red ground (#330000) under 20 linear, but at
@@ -210,6 +217,9 @@ impl Meter {
             strict_red_events: vec![Vec::new(); n],
             strict_lum_over: vec![[false; 2]; n],
             strict_red_over: vec![[false; 2]; n],
+            swept_new: vec![Default::default(); n],
+            swept_since: vec![[0; 2]; n],
+            swept_events: vec![Vec::new(); n],
         }
     }
 
@@ -326,6 +336,20 @@ impl Meter {
             }
             s
         };
+        // (this frame's new transitions, each way)
+        let new_way = |dir: i8| {
+            let mut s = vec![0u32; (w + 1) * (h + 1)];
+            for y in 0..h {
+                let mut row = 0u32;
+                for x in 0..w {
+                    let i = y * w + x;
+                    row += u32::from(self.lum_at[i] == f && self.lum_dir[i] == dir);
+                    s[(y + 1) * (w + 1) + x + 1] = s[y * (w + 1) + x + 1] + row;
+                }
+            }
+            s
+        };
+        let swept = [new_way(1), new_way(-1)];
         let (lu, ld) = (
             integral(&self.lum_at, &self.lum_dir, 1),
             integral(&self.lum_at, &self.lum_dir, -1),
@@ -360,6 +384,20 @@ impl Meter {
                 }
             }
             self.red_over[k] = over;
+            // (the swept reading)
+            for j in 0..2 {
+                let ring = &mut self.swept_new[k][j];
+                ring.push_back((f, sum(&swept[j], *field)));
+                while ring.len() > strict_at_once {
+                    ring.pop_front();
+                }
+                let since = self.swept_since[k][j];
+                let n: usize = ring.iter().filter(|(g, _)| *g >= since).map(|r| r.1).sum();
+                if n >= quarter {
+                    self.swept_events[k].push(f);
+                    self.swept_since[k][j] = f + 1;
+                }
+            }
             // (the strict reading: every rise, either way)
             for (lu, ld, overs, events) in [
                 (
@@ -523,6 +561,21 @@ impl Meter {
                 .unwrap_or(0)
         };
         (worst(&self.lum_events), worst(&self.red_events))
+    }
+
+    /// The most luminance transitions in any second over any field by the
+    /// swept reading.
+    pub fn most_swept(&self) -> usize {
+        self.swept_events
+            .iter()
+            .map(|e| {
+                (0..e.len())
+                    .map(|k| e[k..].iter().take_while(|&&f| f < e[k] + self.fps).count())
+                    .max()
+                    .unwrap_or(0)
+            })
+            .max()
+            .unwrap_or(0)
     }
 
     /// The same by the strict reading (100 ms at once, every rise).

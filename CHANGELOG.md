@@ -34,6 +34,12 @@ second on the shape-heavy faces (see *Known limitations*).
 - **No saturated red in any face**, whatever the colour scheme: Classic's
   and Fire's reds, a cover's, a custom one are taken toward a warm white,
   a red ground darkened and turned from red.
+  The faces still move as calmly as the scheme as chosen asks (Fire as
+  red): the ridges in Fire had come to 11 - 12 by a 100 ms reading, as
+  before 0 again.
+- The line spectrum's peaks are drawn faint and its curve falls eased: the
+  peaks falling all along the width with the edge swept a field ten times
+  a second by a 100 ms reading (Fire, Intense 7, Classic 10; now 3 and 6).
 - A focused control keeps its keys (the arrows move a focused volume
   slider, not the position too).
 - Paused stays paused: Next, Previous and seeks past the end (keys, MPRIS).
@@ -64,6 +70,9 @@ second on the shape-heavy faces (see *Known limitations*).
 - "Show on display" with the sound has been tested against a fake pactl
   only, not on real HDMI hardware; on Wayland the compositor places the
   view.
+- By a review's stricter 100 ms reading (motion over a field counted too),
+  34 of 196 cases at 60 frames a second in Classic and Fire read over 6
+  (the wave ribbon most, 41); at 12 frames a second none.
 - egui-file-dialog is younger than the 14 days the supply-chain gate asks
   until 2026-11-23.
 

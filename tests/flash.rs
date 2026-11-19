@@ -45,6 +45,8 @@ struct Report {
     /// Red by the gamma-encoded reading: the most of its normal, strict
     /// and either-way counts.
     red_gamma: usize,
+    /// By the swept reading (review 9's 100 ms one: see the meter).
+    swept: usize,
     pattern_frames: usize,
     stripes: f32,
     /// The share of frames the guard's veil was on (over 0.3).
@@ -261,6 +263,7 @@ fn measure(
             .1
             .max(gamma.most_strict().1)
             .max(gamma.area_red),
+        swept: meter.most_swept(),
         pattern_frames: meter.pattern_frames,
         stripes: meter.stripes,
         veiled: veiled as f32 / frames.max(1) as f32,
@@ -1238,6 +1241,28 @@ fn no_red_flash_in_any_scheme() {
 /// found: the line in the pure red custom scheme (pale since it is no red:
 /// 7 by the either-way reading), the flow field's standing stripes (40 - 42 %
 /// in a frame).
+/// The line in Fire, Intense, read 7 to 10 by review 9's 100 ms reading
+/// (its curve sweeping over a field quickly); with Classic's colours 9 and
+/// 10 (as since review 9's lighter colours took the reds out).
+#[test]
+fn the_line_sweeps_no_field_too_often() {
+    let mut failures = Vec::new();
+    for (motion, scheme) in [
+        (Motion::Intense, "fire"),
+        (Motion::Calm, "fire"),
+        (Motion::Intense, "classic"),
+        (Motion::Calm, "classic"),
+    ] {
+        let r = run("line", motion, scheme, (320.0, 180.0), 1.2, 60.0, |_| {});
+        let line = format!("{motion:?} {scheme} line: swept {}", r.swept);
+        println!("{line}");
+        if r.swept > 6 || r.fails() {
+            failures.push(line);
+        }
+    }
+    assert!(failures.is_empty(), "{failures:#?}");
+}
+
 #[test]
 fn twelve_frames_a_second_in_every_scheme() {
     let mut failures = Vec::new();

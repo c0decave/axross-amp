@@ -492,12 +492,40 @@ pub fn from_oklch(l: f32, c: f32, hue: f32) -> Color32 {
     Color32::from_rgb(r, g, b)
 }
 
+thread_local! {
+    /// While a face draws: how calm its scheme as chosen asks it to be
+    /// (before its reds were taken out - a red scheme stays calmed as red).
+    static CALM_AS_CHOSEN: std::cell::Cell<Option<f32>> = const { std::cell::Cell::new(None) };
+}
+
+/// The calm of scheme `s` as chosen, for faces drawn until this is dropped
+/// (then the one before again, however the drawing ends).
+struct CalmAsChosen(Option<f32>);
+
+impl CalmAsChosen {
+    fn of(s: &Scheme) -> CalmAsChosen {
+        CalmAsChosen(CALM_AS_CHOSEN.with(|c| c.replace(Some(scheme_calm_of(s)))))
+    }
+}
+
+impl Drop for CalmAsChosen {
+    fn drop(&mut self) {
+        CALM_AS_CHOSEN.with(|c| c.set(self.0));
+    }
+}
+
 /// How much calmer the pictures move in a scheme of strong contrast or of
 /// saturated red (1 to 1.6: what drives them turns that much less often).
 /// White on black, or a red that is red, turns a picture's every change
 /// into a flash by the strict reading - bars of four turns a second, eight
 /// rises and falls; in such a scheme they turn at most two and a half times.
+/// While a face draws, at least as calm as the scheme chosen asks.
 pub fn scheme_calm(s: &Scheme) -> f32 {
+    let chosen = CALM_AS_CHOSEN.with(|c| c.get()).unwrap_or(1.0);
+    scheme_calm_of(s).max(chosen)
+}
+
+fn scheme_calm_of(s: &Scheme) -> f32 {
     let ground = luminance(s.background);
     // (the colours of the faces' bodies - the peak's thin marks aside)
     let colours = [s.low, s.mid, s.high];
@@ -1356,6 +1384,9 @@ pub fn draw(f: &Frame<'_>, key: &str, state: &mut VizState) {
     // Fire's own reds, a cover's, a custom one: every colour taken toward a
     // warm white until it is none by either encoding, the ground darkened
     // and turned from red; no red flash can come of them)
+    // (calmed as the scheme chosen asks - a red one as red - though its
+    // reds are taken out here: faces ask scheme_calm of what they draw with)
+    let _calm = CalmAsChosen::of(f.s);
     let level = |c: Color32| unred_level(c);
     let safe = Scheme {
         background: quiet_ground(f.s.background),
@@ -1741,5 +1772,32 @@ mod scheme_calm_tests {
         let red = scheme("custom", &red);
         assert!(red_share(red.low) < 0.75 && red_share(red.peak) < 0.75);
         assert!(scheme_calm(&scheme("classic", &Default::default())) < 1.3);
+    }
+    /// Fire's reds are taken out before a face draws, but the face still
+    /// moves as calmly as Fire asks (its lighter colours alone ask less:
+    /// the ridges read 11 and 12 by a 100 ms reading that way, not 0).
+    #[test]
+    fn a_scheme_turned_from_red_moves_as_calmly_as_chosen() {
+        let fire = scheme("fire", &Default::default());
+        let safe = Scheme {
+            background: quiet_ground(fire.background),
+            low: unred_level(fire.low),
+            mid: unred_level(fire.mid),
+            high: unred_level(fire.high),
+            peak: unred_level(fire.peak),
+        };
+        let chosen = scheme_calm(&fire);
+        assert!(scheme_calm(&safe) < chosen - 0.05, "the reds were its calm");
+        {
+            let _calm = CalmAsChosen::of(&fire);
+            assert_eq!(scheme_calm(&safe), chosen);
+            assert_eq!(safe.stark(), fire.stark());
+            {
+                let _inner = CalmAsChosen::of(&safe);
+                assert!(scheme_calm(&safe) < chosen);
+            }
+            assert_eq!(scheme_calm(&safe), chosen);
+        }
+        assert!(scheme_calm(&safe) < chosen - 0.05);
     }
 }

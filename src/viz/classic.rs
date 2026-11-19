@@ -95,6 +95,10 @@ pub struct State {
     /// Their columns' heights, falling no faster than `fallen` lets them.
     led_level: Vec<f32>,
     particles_level: Vec<f32>,
+    /// The line's curve, falling so too (falling as the analyzer's bars
+    /// fall, it swept a quarter of a third of the screen in a tenth of a
+    /// second, again and again: review 9's 100 ms reading 7 to 10).
+    line_level: Vec<f32>,
     /// The ribbon's height along it, eased; its twist (the onsets' phase,
     /// followed at Calm's pace, slower in the starkest schemes).
     ribbon_height: Vec<f32>,
@@ -175,7 +179,7 @@ pub fn draw(f: &Frame<'_>, key: &str, state: &mut VizState) {
     match key {
         "mirror" => mirror(f, g, cv),
         "radial" => radial(f, g, cv),
-        "line" => line(f, g, cv),
+        "line" => line(f, g, cv, st),
         "led" => led(f, g, cv, st),
         "particles" => particles(f, g, cv, st),
         "polar" => polar(f, g, cv),
@@ -354,9 +358,11 @@ fn gradient_under(pen: &mut Pen<'_>, s: &Scheme, base: f32, quiet_y: f32, loud_y
     }
 }
 
-fn line(f: &Frame<'_>, g: Area, cv: &mut Canvas) {
+fn line(f: &Frame<'_>, g: Area, cv: &mut Canvas, st: &mut State) {
     let (a, s) = (f.a, f.s);
-    let n = a.bars.len().max(1);
+    fallen(&mut st.line_level, &a.bars, s, f.dt);
+    let bars = &st.line_level;
+    let n = bars.len().max(1);
     let (w, h) = (g.w, g.h);
     let grid = [(100.0, "100"), (1000.0, "1k"), (10000.0, "10k")];
     let reach = h - 4.0;
@@ -366,12 +372,12 @@ fn line(f: &Frame<'_>, g: Area, cv: &mut Canvas) {
             pen.rect(g.r(x - 0.5, 0.0, 1.0, h), s.grid());
         }
         pen.points.clear();
-        pen.points.push(g.p(0.0, h - a.bars[0] * reach));
+        pen.points.push(g.p(0.0, h - bars[0] * reach));
         for i in 0..n {
             pen.points
-                .push(g.p((i as f32 + 0.5) / n as f32 * w, h - a.bars[i] * reach));
+                .push(g.p((i as f32 + 0.5) / n as f32 * w, h - bars[i] * reach));
         }
-        pen.points.push(g.p(w, h - a.bars[n - 1] * reach));
+        pen.points.push(g.p(w, h - bars[n - 1] * reach));
         gradient_under(pen, s, g.y0 + h, g.y0 + h, g.y0);
         // the edge in the colour of its height
         let top = pen.points.iter().map(|p| p.y).fold(f32::MAX, f32::min);
@@ -383,7 +389,10 @@ fn line(f: &Frame<'_>, g: Area, cv: &mut Canvas) {
                 h - a.peaks[i] * reach - 2.0,
             ));
         }
-        pen.line(TRACE, s.peak);
+        // (faint: the peaks falling all along the width, with the edge,
+        // swept a quarter of a third of the screen in a tenth of a second
+        // ten times a second - review 9's 100 ms reading 7 to 10)
+        pen.line(TRACE, faint(s.peak, s.background));
     });
     // over the curve: the axis stays readable
     for (hz, label) in grid {
@@ -396,6 +405,17 @@ fn line(f: &Frame<'_>, g: Area, cv: &mut Canvas) {
             s.text(),
         );
     }
+}
+
+/// `c` taken toward the ground until its light is within 0.09 of the
+/// ground's: a thin line of it moving transits no pixel (a change of light
+/// of 0.1 is a transition), however fast it moves.
+fn faint(c: Color32, ground: Color32) -> Color32 {
+    let g = super::luminance(ground);
+    (0..=20)
+        .map(|k| super::mix(c, ground, k as f32 / 20.0))
+        .find(|m| (super::luminance(*m) - g).abs() < 0.09)
+        .unwrap_or(ground)
 }
 
 /// How many of `cells` a level lights, with a hysteresis of 0.35 of a

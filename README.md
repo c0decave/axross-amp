@@ -46,6 +46,16 @@ The Python program this one replaces is on the `python` branch.
   server only - not on real HDMI or DisplayPort hardware; on Wayland the
   compositor decides where the full-screen view goes; macOS and Windows list
   no monitors.
+- By an independent review's stricter 100 ms reading (a field's pixels
+  newly changing one way, summed over a tenth of a second - it counts a
+  curve or small shapes moving over a field quickly too), 34 of 196 cases at
+  60 frames a second in Classic and Fire, Calm and Intense, read more than 6
+  a second - the wave ribbon most (40 - 41), then the galaxy, morph,
+  isometric, milkdrop, ridges, typography, terrain, particles, beat rings
+  (10 - 30), a few spectra (7 - 9); none of them more than before the reds
+  were taken out. At 12 frames a second all read at most 5, and every
+  other reading (one frame, 34 ms, the field's mean, red) at most 6
+  everywhere.
 - Not signed or notarised on macOS and Windows.
 
 <sub>The track in the picture is a demo synthesized for it (`docs/make_demo.py`); the
