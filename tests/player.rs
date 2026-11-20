@@ -70,6 +70,54 @@ fn a_track_that_cannot_be_played_is_marked_and_skipped() {
     );
 }
 
+/// A WAV whose header says `rate` samples a second (0 and 1 Hz: review
+/// 11's hostile files), with a second of 16-bit mono silence after it.
+fn wav_at(path: &std::path::Path, rate: u32) {
+    let frames = 48_000u32;
+    let mut b = b"RIFF".to_vec();
+    b.extend((36 + frames * 2).to_le_bytes());
+    b.extend(b"WAVEfmt ");
+    b.extend(16u32.to_le_bytes());
+    b.extend(1u16.to_le_bytes());
+    b.extend(1u16.to_le_bytes());
+    b.extend(rate.to_le_bytes());
+    b.extend((rate * 2).to_le_bytes());
+    b.extend(2u16.to_le_bytes());
+    b.extend(16u16.to_le_bytes());
+    b.extend(b"data");
+    b.extend((frames * 2).to_le_bytes());
+    b.resize(b.len() + frames as usize * 2, 0);
+    std::fs::write(path, b).unwrap();
+}
+
+/// A WAV of 0 Hz or 1 Hz: said, marked and skipped - it showed "Playing
+/// 0:00" for ever (the 1 Hz one took 560 MB), the next track never came.
+#[test]
+fn a_track_of_no_sample_rate_is_skipped() {
+    let dir = folder("player-rate");
+    let mut files = tracks(&dir, &["1.wav"], 0.4);
+    let (zero, one) = (dir.join("zero.wav"), dir.join("one.wav"));
+    wav_at(&zero, 0);
+    wav_at(&one, 1);
+    files.push(zero.to_string_lossy().into_owned());
+    files.push(one.to_string_lossy().into_owned());
+    files.extend(tracks(&dir, &["4.wav"], 0.4));
+    let mut h = harness(&dir, files);
+    assert!(until(&mut h, 5.0, |a| a.is_loaded()));
+    let mut output = RenderState::default();
+    for _ in 0..40 {
+        listen(&mut h, &mut output, 0.1);
+        if h.state().snapshot().current == 3 {
+            break;
+        }
+    }
+    assert_eq!(h.state().snapshot().current, 3, "{}", h.state().status());
+    for bad in [&zero, &one] {
+        let why = h.state().broken(&bad.to_string_lossy());
+        assert!(why.is_some(), "{} is not marked", bad.display());
+    }
+}
+
 /// A radio on a local port: ICY titles, a station's name; how many
 /// connections it had.
 fn radio() -> (String, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
@@ -197,4 +245,29 @@ fn previous_on_a_radio_goes_to_the_track_before() {
     assert!(h.state().engine().shared.position() > 3.0);
     h.key_press(egui::Key::P);
     assert!(until(&mut h, 3.0, |a| a.snapshot().current == 0));
+}
+
+/// Playing with the pictures off, the window wakes once a second (the
+/// clock): it woke every half second, the whole window drawn again for
+/// nothing to see - 13 % of a core on a software renderer (review 11).
+#[test]
+fn with_the_pictures_off_the_window_wakes_once_a_second() {
+    let dir = folder("player-off");
+    let files = tracks(&dir, &["1.wav"], 30.0);
+    let mut h = harness(&dir, files);
+    assert!(until(&mut h, 5.0, |a| a.is_loaded() && a.playing()));
+    let mut output = RenderState::default();
+    h.state_mut().set_mode("off");
+    listen(&mut h, &mut output, 1.2);
+    assert!(h.state().playing());
+    assert_eq!(
+        h.state().heartbeat(),
+        Some(std::time::Duration::from_secs(1))
+    );
+    h.state_mut().set_mode("spectrum");
+    listen(&mut h, &mut output, 1.2);
+    assert_eq!(
+        h.state().heartbeat(),
+        Some(std::time::Duration::from_millis(500))
+    );
 }

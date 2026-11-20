@@ -11,6 +11,7 @@ mod player;
 use axross_amp::analyzer::loudness::Meter;
 use axross_amp::app::{App, Setup};
 use axross_amp::engine::RenderState;
+use axross_amp::meters::Readings;
 use eframe::App as _;
 use player::*;
 use std::io::Write;
@@ -84,40 +85,62 @@ fn setup(dir: &Path) -> Setup {
     }
 }
 
-/// Play to the end, `frame_ms` of sound taken between two frames of the
-/// window (`frame` draws or only runs its logic).
+/// How long a test may take at most to play its few seconds (a busy
+/// machine: what counts is the sound, not the clock).
+const AT_MOST: Duration = Duration::from_secs(90);
+
+/// Play until the meters have read all of the track (`frames`): `frame_ms`
+/// of sound taken between two frames of the window (`frame` draws or only
+/// runs its logic, and says what the meters read). By the sound, not the
+/// clock: a time limit played less of it on a busy machine (1.6 - 1.9 s of
+/// 3.5, the loud end unheard: -21.4 LUFS for -14.2).
 fn play_through(
-    app: &mut impl FnMut() -> bool,
+    frame: &mut impl FnMut() -> Readings,
     render: &mut impl FnMut(&mut [f32]),
     frame_ms: u64,
-    secs: f32,
-) {
-    let end = Instant::now() + Duration::from_secs_f32(secs);
+    frames: u64,
+) -> Readings {
+    let end = Instant::now() + AT_MOST;
     let mut buf = vec![0.0f32; 480 * 2];
-    while Instant::now() < end {
-        let frames = frame_ms / 10;
-        for _ in 0..frames.max(1) {
+    loop {
+        for _ in 0..(frame_ms / 10).max(1) {
             render(&mut buf);
             std::thread::sleep(Duration::from_millis(10));
         }
-        if !app() {
-            break;
+        let r = frame();
+        if r.frames + r.lost >= frames || Instant::now() > end {
+            return r;
         }
     }
+}
+
+/// All of it read, nothing lost, and the loudness of all of it.
+fn assert_heard_whole(case: &str, r: &Readings, frames: u64, want: f32) {
+    assert_eq!(r.lost, 0, "{case}: {} frames lost ({r:?})", r.lost);
+    assert_eq!(
+        r.frames, frames,
+        "{case}: {} of {frames} frames read",
+        r.frames
+    );
+    assert!(
+        (r.integrated - want).abs() < 0.1,
+        "{case}: {:.2} LUFS, all of it heard reads {want:.2}",
+        r.integrated
+    );
 }
 
 #[test]
 fn the_loudness_is_the_same_shown_off_hidden_and_at_three_frames_a_second() {
     let dir = folder("meters-loudness");
     let sound = programme();
+    let total = (sound.len() / 2) as u64;
     let file = dir.join("programme.wav");
     write_wav(&file, &sound);
     let want = expected(&sound);
     let args = vec![file.to_string_lossy().into_owned()];
-    let mut results = Vec::new();
     for case in ["shown", "off", "hidden", "3 fps"] {
         let dir = dir.join(case.replace(' ', "-"));
-        let integrated = if case == "hidden" {
+        let r = if case == "hidden" {
             let ctx = egui::Context::default();
             let cc = eframe::CreationContext::_new_kittest(ctx.clone());
             let mut app = App::with_setup(&cc, args.clone(), setup(&dir));
@@ -127,11 +150,9 @@ fn the_loudness_is_the_same_shown_off_hidden_and_at_three_frames_a_second() {
             let mut render = |buf: &mut [f32]| engine.render(buf, 2, &mut out);
             let mut step = || {
                 let _ = ctx.run_logic(&egui::RawInput::default(), |ctx| app.logic(ctx, &mut frame));
-                true
+                app.meter_readings()
             };
-            play_through(&mut step, &mut render, 20, 4.5);
-            std::thread::sleep(Duration::from_millis(200));
-            app.meter_readings().integrated
+            play_through(&mut step, &mut render, 20, total)
         } else {
             let mut h = harness(&dir, args.clone());
             if case == "off" {
@@ -141,26 +162,70 @@ fn the_loudness_is_the_same_shown_off_hidden_and_at_three_frames_a_second() {
             let mut out = RenderState::default();
             let mut render = |buf: &mut [f32]| shared.render(buf, 2, &mut out);
             let frame_ms = if case == "3 fps" { 330 } else { 20 };
-            let h = std::cell::RefCell::new(h);
             let mut step = || {
-                h.borrow_mut().run_steps(1);
-                true
+                h.run_steps(1);
+                h.state().meter_readings()
             };
-            play_through(&mut step, &mut render, frame_ms, 4.5);
-            std::thread::sleep(Duration::from_millis(200));
-            h.borrow().state().meter_readings().integrated
+            play_through(&mut step, &mut render, frame_ms, total)
         };
-        results.push((case, integrated));
-    }
-    for (case, integrated) in &results {
-        assert!(
-            (integrated - want).abs() < 0.1,
-            "{case}: {integrated:.2} LUFS, all of it heard reads {want:.2} ({results:?})"
-        );
+        assert_heard_whole(case, &r, total, want);
     }
 }
 
-/// A note with its harmonics (each a little quieter, as a plucked string).
+/// Slow readers hear it all: the sound taken at its own pace on a thread of
+/// its own (as an output's callback) while the window draws a frame a
+/// second; and the meters' thread held up for three seconds mid-track (its
+/// turn late on a busy machine - within what the tap keeps, 5.5 s at
+/// 48 kHz; with the tap of 1.4 s it lost 73,728 frames). Every frame is
+/// read and the loudness is that of all of it.
+#[test]
+fn slow_readers_hear_all_of_it() {
+    let dir = folder("meters-slow");
+    let sound = programme();
+    let total = (sound.len() / 2) as u64;
+    let file = dir.join("programme.wav");
+    write_wav(&file, &sound);
+    let want = expected(&sound);
+    let args = vec![file.to_string_lossy().into_owned()];
+    for case in ["a frame a second", "the meters held up"] {
+        let mut h = harness(&dir.join(case.replace(' ', "-")), args.clone());
+        let shared = h.state().engine().shared.clone();
+        let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let output = {
+            let (shared, done) = (shared.clone(), done.clone());
+            std::thread::spawn(move || {
+                let mut out = RenderState::default();
+                let mut buf = vec![0.0f32; 480 * 2];
+                while !done.load(std::sync::atomic::Ordering::Relaxed) {
+                    shared.render(&mut buf, 2, &mut out);
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+            })
+        };
+        let end = Instant::now() + AT_MOST;
+        let mut stalled = false;
+        let r = loop {
+            h.run_steps(1);
+            let r = h.state().meter_readings();
+            if r.frames + r.lost >= total || Instant::now() > end {
+                break r;
+            }
+            if case == "the meters held up" {
+                if !stalled && r.frames > 0 {
+                    h.state().stall_meters(3000);
+                    stalled = true;
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            } else {
+                std::thread::sleep(Duration::from_secs(1));
+            }
+        };
+        done.store(true, std::sync::atomic::Ordering::Relaxed);
+        output.join().unwrap();
+        assert_heard_whole(case, &r, total, want);
+    }
+}
+
 fn note(midi: f32, secs: f32, gain: f32) -> Vec<f32> {
     let f = 440.0 * 2f32.powf((midi - 69.0) / 12.0);
     (0..(secs * RATE as f32) as usize)
@@ -297,22 +362,31 @@ fn a_new_track_is_counted_from_its_first_sound() {
         ],
     );
     // the window at two frames a second (busy, or hidden): the track's
-    // change reaches it late - the meters must not wait for it
+    // change reaches it late - the meters must not wait for it. Played
+    // until the meters have read all of the second track (by the sound,
+    // not the clock: six seconds of it was too few on a busy machine).
     let mut out = RenderState::default();
     let shared = h.state().engine().shared.clone();
     let mut buf = vec![0.0f32; 480 * 2];
-    let end = Instant::now() + Duration::from_secs(6);
+    let total = (second.len() / 2) as u64;
+    let end = Instant::now() + AT_MOST;
     let mut k = 0;
-    while Instant::now() < end {
+    loop {
         shared.render(&mut buf, 2, &mut out);
         if k % 50 == 0 {
             h.run_steps(1);
+            let r = h.state().meter_readings();
+            if (h.state().snapshot().current == 1 && r.frames + r.lost >= total)
+                || Instant::now() > end
+            {
+                break;
+            }
         }
         k += 1;
         std::thread::sleep(Duration::from_millis(10));
     }
-    std::thread::sleep(Duration::from_millis(300));
     let r = h.state().meter_readings();
+    assert_eq!(r.lost, 0, "{} frames lost", r.lost);
     assert!(
         (r.integrated - want).abs() < 0.1,
         "the second track reads {:.2} LUFS, all of it {want:.2}",

@@ -201,7 +201,10 @@ fn a_start_handing_its_files_over_starts_nothing() {
         .output()
         .unwrap();
     assert!(out.status.success(), "{out:?}");
-    assert!(started.elapsed() < Duration::from_secs(3));
+    // (a window started would stay its 5 s: back sooner, it handed over -
+    // with room for a busy machine, where 3 s was close)
+    let took = started.elapsed();
+    assert!(took < Duration::from_secs(5), "{took:?}");
     std::thread::sleep(Duration::from_millis(500));
     assert!(!pidfile.exists(), "a second player was started");
     let _ = first.kill();

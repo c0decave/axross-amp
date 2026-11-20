@@ -2,34 +2,6 @@
 
 axross's Media Player as a program of its own - written in Rust.
 
-- **Plays almost anything** - MP3, FLAC, Ogg Vorbis, Opus, AAC / M4A, ALAC, WAV, AIFF, CAF, folders, M3U / PLS and internet radio
-- **Truly gapless** - not a sample of silence between an album's tracks; an optional crossfade that never cuts into an album
-- **Bit for bit at unity gain** - ReplayGain, a ten-band equalizer, true-peak limiters, a band-limited resampler
-- **49 visualizations** - all eighteen of axross's classic faces, eight analysis tools, 23 generative ones
-- **Guarded against flashes** - every face measured by WCAG 2.3.1 / 2.3.2 and ITU-R BT.1702, a flash guard at the output
-- **Ten designs** - Modern, Zen, Hi-fi rack, 90s desktop, Cassette deck, Terminal, Brutalist, Glass, Soft, Collage
-- **Twelve themes** - design tokens, contrast tested to WCAG AA (AAA in High contrast), follows the desktop's light or dark
-- **Show on display** - the pictures full screen on a TV or projector, the sound moved to its HDMI or DisplayPort output
-- **Mixer and Bluetooth built in** - the sound server's devices and applications, pairing and connecting headsets
-- **At home on the desktop** - MPRIS media keys (Linux), one instance, and the state shared with axross
-
-> **Photosensitivity warning.** The visualizations move with the music. They
-> are guarded against flashes, red flashes and patterns, but the pictures are
-> not guaranteed safe for everyone. If you or anyone watching has epilepsy or
-> feels unwell, turn the pictures off (⚙ → Off). *Calm* motion is the default;
-> *Intense* asks first. What is measured and what is not claimed:
-> [Photosensitivity](docs/FLASH_SAFETY.md).
-
-## Contents
-
-- **Everything in detail: [Extended README](docs/README-extended.md)**
-- [Screenshots](#screenshots)
-- [Install](#install)
-- [Quick start](#quick-start)
-- [Documentation](#documentation)
-- [Building](#building)
-- [Licence](#licence)
-
 ## Screenshots
 
 ![The window](docs/window.png)
@@ -53,17 +25,46 @@ axross's Media Player as a program of its own - written in Rust.
 how each picture is made: [Extended README](docs/README-extended.md),
 [Faces](docs/FACES.md#the-face-sheets), [Themes](docs/THEMES.md), [Designs](docs/DESIGNS.md).</sub>
 
+- **Plays almost anything** - MP3, FLAC, Ogg Vorbis, Opus, AAC / M4A, ALAC, WAV, AIFF, CAF, folders, M3U / PLS and internet radio
+- **Truly gapless** - not a sample of silence between an album's tracks; an optional crossfade that never cuts into an album
+- **Bit for bit at unity gain** - ReplayGain, a ten-band equalizer, true-peak limiters, a band-limited resampler
+- **49 visualizations** - all eighteen of axross's classic faces, eight analysis tools, 23 generative ones
+- **Guarded against flashes** - every face measured by WCAG 2.3.1 / 2.3.2 and ITU-R BT.1702, a flash guard at the output
+- **Ten designs** - Modern, Zen, Hi-fi rack, 90s desktop, Cassette deck, Terminal, Brutalist, Glass, Soft, Collage
+- **Twelve themes** - design tokens, contrast tested to WCAG AA (AAA in High contrast), follows the desktop's light or dark
+- **Show on display** - the pictures full screen on a TV or projector, the sound moved to its HDMI or DisplayPort output
+- **Mixer and Bluetooth built in** - the sound server's devices and applications, pairing and connecting headsets
+- **At home on the desktop** - MPRIS media keys (Linux), one instance, and the state shared with axross
+
+## Contents
+
+- **Everything in detail: [Extended README](docs/README-extended.md)**
+- [Screenshots](#screenshots)
+- [Install](#install)
+- [Quick start](#quick-start)
+- [Documentation](#documentation)
+- [Building](#building)
+- [Licence](#licence)
+
+> **Photosensitivity warning.** The visualizations move with the music. They
+> are guarded against flashes, red flashes and patterns, but the pictures are
+> not guaranteed safe for everyone. If you or anyone watching has epilepsy or
+> feels unwell, turn the pictures off (⚙ → Off). *Calm* motion is the default;
+> *Intense* asks first. What is measured and what is not claimed:
+> [Photosensitivity](docs/FLASH_SAFETY.md).
+
 ## Install
 
 Each [release](https://github.com/c0decave/axross-amp/releases) has the files
 and their `SHA256SUMS`:
 
-- **Linux (x86_64)** - `axross-amp-VERSION-x86_64.AppImage` (`chmod +x` it and run it) or the `linux-x86_64.tar.gz`
-- **macOS** - `axross-amp-VERSION-macos-universal.tar.gz` (not notarised: `xattr -d com.apple.quarantine axross-amp` once)
+- **Linux (x86_64)** - `axross-amp-VERSION-x86_64.AppImage` (`chmod +x` it and run it; from a terminal it goes to the background, `--foreground` keeps it there) or the `linux-x86_64.tar.gz`
+- **macOS** - `axross-amp-VERSION-macos-universal.dmg` (the app, Apple silicon and Intel) or the `.tar.gz` (not notarised: right-click → Open the first time)
 - **Windows (x64)** - `axross-amp-VERSION-windows-x64.zip` (not signed: SmartScreen asks once)
 - **From source** - see [Building](#building)
 
-Requirements and details: [Install](docs/README-extended.md#install). What changed:
+Each archive carries `LICENSE`, `THIRD_PARTY_LICENSES.md` and (Linux) the
+desktop entry and icon. Requirements and details: [Install](docs/README-extended.md#install). What changed:
 [CHANGELOG](CHANGELOG.md).
 
 ## Quick start

@@ -1,9 +1,10 @@
 //! The playlist never vanishes: with 3, 30 and 300 tracks, from the
 //! smallest window to 2560 x 1440, its list keeps at least three rows'
-//! height inside the window and the playing track's row is in sight; with
-//! the picture large (double-click, F11) the playlist is a click away and
-//! so is the way back. Every case is rendered to
-//! `target/screenshots/layout/` to be looked at.
+//! height inside the window and the playing track's row is in sight (a
+//! very large window used, four fifths of it); with the picture large
+//! (double-click, F11) the playlist is a click away and so is the way
+//! back. Every case is rendered to `target/screenshots/layout/` to be
+//! looked at.
 
 #[path = "support/player.rs"]
 mod player;
@@ -99,19 +100,22 @@ fn the_playlist_stays_in_sight_at_every_size() {
                 Some(r) => failures.push(format!("{name}: the playing row at {r:?}")),
                 None => failures.push(format!("{name}: the playing row is not shown")),
             }
-            // a wide window: a column of a readable width in the middle (not
-            // a card stretched across it)
+            // a wide window: a column in the middle (not a card stretched
+            // across it) - 1180 points, or four fifths of a very large
+            // window (2200 points and more), the playlist in sight either way
             if w > 1240.0 {
                 let picture = win.get_by_label_contains("Visualization: ").rect();
-                if picture.width() > 1190.0 || (picture.center().x - w / 2.0).abs() > 4.0 {
+                let column = if w >= 2200.0 { w * 0.8 } else { 1180.0 };
+                if picture.width() > column + 10.0 || (picture.center().x - w / 2.0).abs() > 4.0 {
                     failures.push(format!("{name}: the picture {picture:?} not in a column"));
                 }
-                // (and the toolbar over the column, not across the screen)
+                // (and the toolbar over the column, not across the screen nor
+                // narrower than it)
                 let left = win
                     .query_all_by_label_contains("Files")
                     .map(|n| n.rect().left())
                     .fold(f32::MAX, f32::min);
-                if left == f32::MAX || left < picture.left() - 8.0 {
+                if left == f32::MAX || left < picture.left() - 8.0 || left > picture.left() + 24.0 {
                     failures.push(format!(
                         "{name}: the toolbar's Files at {left:.0}, the column at {:.0}",
                         picture.left()

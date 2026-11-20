@@ -508,12 +508,31 @@ pub fn move_sound(
 }
 
 /// The monitor remembered (its connector, else its name), among those
-/// connected now; else None.
+/// connected now; else None - also where its connector is gone and two or
+/// more are of its name (no guess: the view opened on the first of two
+/// alike monitors, as the sound would have, and is not).
 pub fn find<'a>(monitors: &'a [Monitor], connector: &str, name: &str) -> Option<&'a Monitor> {
-    monitors
+    if let Some(m) = monitors
         .iter()
         .find(|m| !connector.is_empty() && m.connector == connector)
-        .or_else(|| monitors.iter().find(|m| !name.is_empty() && m.name == name))
+    {
+        return Some(m);
+    }
+    let mut named = monitors
+        .iter()
+        .filter(|m| !name.is_empty() && m.name == name);
+    match (named.next(), named.next()) {
+        (Some(m), None) => Some(m),
+        _ => None,
+    }
+}
+
+/// Whether the monitor remembered is not found only because two or more are
+/// of its name (its connector gone).
+pub fn ambiguous(monitors: &[Monitor], connector: &str, name: &str) -> bool {
+    find(monitors, connector, name).is_none()
+        && !name.is_empty()
+        && monitors.iter().filter(|m| m.name == name).count() > 1
 }
 
 /// The monitors connected: asked when the window opens, then every two
@@ -973,5 +992,27 @@ XWAYLAND1 connected 3840x2160+1920+0 (normal left inverted right x axis y axis) 
             Some("DP-3")
         );
         assert_eq!(find(&ms, "HDMI-9", "nope"), None);
+        // two of that name, its connector gone: no guess (review 10: the
+        // view opened on the first of two "DELL U2723QE"s)
+        let two = vec![
+            Monitor {
+                connector: "DP-1".into(),
+                name: "DELL U2723QE".into(),
+                ..Default::default()
+            },
+            Monitor {
+                connector: "DP-2".into(),
+                name: "DELL U2723QE".into(),
+                ..Default::default()
+            },
+        ];
+        assert_eq!(find(&two, "HDMI-3", "DELL U2723QE"), None);
+        assert!(ambiguous(&two, "HDMI-3", "DELL U2723QE"));
+        // its connector still there: that one, whatever the names
+        assert_eq!(
+            find(&two, "DP-2", "DELL U2723QE").map(|m| m.connector.as_str()),
+            Some("DP-2")
+        );
+        assert!(!ambiguous(&two, "DP-2", "DELL U2723QE"));
     }
 }

@@ -250,8 +250,21 @@ fn tunnel(p: vec2<f32>) -> vec3<f32> {
     let rib = exp(-rib_d / 0.008);
     // the walls between: dark, a checker of the scheme's tint
     let checker = fract((floor(depth * 1.5) + floor(turn * 10.0)) * 0.5) * 2.0;
+    // (and panels in each - a grain of the walls - and one side of the
+    // tunnel lit, turning slowly: it was plain; a fifth and a quarter of the
+    // wall's light, no flash of their own: the walls are dark)
+    // (but on a light ground the walls are light: there the checker's rows,
+    // jumped on by the bass, flip a pixel by more than a tenth of the
+    // light - black on white, Intense: strict 7 of 6. As the ground is
+    // light the panels and the lit side fade out and the checker keeps a
+    // fifth of its contrast: strict 4; a dark ground keeps them all)
+    let light = smoothstep(0.35, 0.9, dot(colour(0), vec3<f32>(0.2126, 0.7152, 0.0722)));
+    let relief = 1.0 - light;
+    let grain = 1.0 - relief * 0.2 * (1.0 - sin(turn * TAU * 20.0) * sin(depth * TAU * 3.0));
+    let side = 1.0 - relief * 0.25 * (1.0 - cos(a - t * 0.2));
+    let tiles = 1.0 - 0.25 * (1.0 - 0.8 * light) * (1.0 - checker);
     let wall = mix(colour(0), cycle(floor(depth * 1.5) * 0.04 + fold * 0.4), 0.10 + 0.22 * level)
-        * (0.75 + 0.25 * checker);
+        * tiles * grain * side;
     let line_colour = cycle(floor(depth * 1.5) * 0.04 + fold * 0.4 + 0.15);
     // (the beat a touch on the lines, not a flash of them all together)
     let glow = ring * (0.45 + 0.85 * level + 0.12 * u.t.y) + rib * (0.25 + 0.6 * level);

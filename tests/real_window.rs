@@ -247,3 +247,76 @@ fn in_a_real_window_it_keeps_its_frame_rate_and_rests_when_the_music_stops() {
     }
     println!("{}", report.join("\n"));
 }
+
+/// SIGTERM (a logout, `kill`) closes the window as its close button does -
+/// the program ends of itself, its settings kept and what a display view
+/// took put back (`on_exit`) - not cut off by the signal.
+#[test]
+#[cfg(unix)]
+fn sigterm_closes_the_window_as_its_close_button_does() {
+    let xvfb = ["/usr/bin/Xvfb", "/usr/local/bin/Xvfb"]
+        .into_iter()
+        .map(PathBuf::from)
+        .find(|p| p.exists());
+    let Some(xvfb) = xvfb else {
+        let message = "SKIPPED: no Xvfb - the signal was not tried";
+        assert!(std::env::var_os("AMP_REQUIRE_X").is_none(), "{message}");
+        eprintln!("\n*** {message} ***\n");
+        return;
+    };
+    let home = player::Scratch::new("real-window-sigterm");
+    let display = 40 + (std::process::id() + 7) % 50;
+    let _x = Killed(
+        Command::new(xvfb)
+            .arg(format!(":{display}"))
+            .args(["-screen", "0", "1280x1024x24"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("Xvfb starts"),
+    );
+    std::thread::sleep(Duration::from_secs(1));
+    let runtime = home.join("runtime");
+    std::fs::create_dir_all(&runtime).unwrap();
+    let mut command = Command::new(env!("CARGO_BIN_EXE_axross-amp"));
+    command
+        .args(["--new-instance", "--foreground"])
+        .env("DISPLAY", format!(":{display}"))
+        .env("HOME", &home)
+        .env("XDG_CONFIG_HOME", home.join(".config"))
+        .env("XDG_RUNTIME_DIR", &runtime)
+        .env_remove("DBUS_SESSION_BUS_ADDRESS")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    let syslib = Path::new("/root/venvs/syslib/usr/lib/x86_64-linux-gnu");
+    if syslib.exists() {
+        let old = std::env::var("LD_LIBRARY_PATH").unwrap_or_default();
+        command.env("LD_LIBRARY_PATH", format!("{old}:{}", syslib.display()));
+    }
+    let mut app = Killed(command.spawn().expect("the player starts"));
+    // (the window up: its settings written once)
+    let own = home.join(".config/axross/axross-amp.json");
+    let started = Instant::now();
+    while !own.exists() && started.elapsed() < Duration::from_secs(30) {
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    std::thread::sleep(Duration::from_secs(2));
+    // SAFETY: a signal to our own child
+    unsafe { libc::kill(app.0.id() as libc::pid_t, libc::SIGTERM) };
+    let ended = Instant::now();
+    let status = loop {
+        if let Some(s) = app.0.try_wait().unwrap() {
+            break Some(s);
+        }
+        if ended.elapsed() > Duration::from_secs(15) {
+            break None;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    let status = status.expect("it did not end within 15 s of SIGTERM");
+    assert_eq!(
+        status.code(),
+        Some(0),
+        "cut off by the signal, not closed ({status:?})"
+    );
+}

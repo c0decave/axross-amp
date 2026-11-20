@@ -182,7 +182,8 @@ impl Capture {
 }
 
 /// The frequency of `signal` (its strongest, from an FFT with a Hann window
-/// and parabolic interpolation between bins) and its RMS level.
+/// and parabolic interpolation between bins) and its level as RMS (see
+/// [`steady_level`]).
 fn tone_of(signal: &[f32], rate: u32) -> (f32, f32) {
     // the middle, away from the edges of the track
     let edge = (signal.len() / 20).min(4096);
@@ -211,8 +212,24 @@ fn tone_of(signal: &[f32], rate: u32) -> (f32, f32) {
     let (y0, y1, y2) = (mags[k - 1].ln(), mags[k].ln(), mags[k + 1].ln());
     let offset = 0.5 * (y0 - y2) / (y0 - 2.0 * y1 + y2);
     let hz = (k as f32 + offset) * rate as f32 / n as f32;
-    let rms = (body.iter().map(|s| (*s as f64).powi(2)).sum::<f64>() / n as f64).sqrt();
-    (hz, rms as f32)
+    (hz, steady_level(body))
+}
+
+/// The tone's level (as RMS) where it plays steadily: the median of the
+/// peaks of its 50 ms pieces over the square root of 2 (a sine's). Not
+/// the RMS of the whole: the null device has no clock and takes the sound
+/// at once, so a decoder that cannot keep up (an MP3, a busy machine) runs
+/// the output dry again and again, and each time it fades out and in over
+/// 8 ms - the capture's RMS fell with the machine's load (tone.mp3 0.167 -
+/// 0.209 from one run to the next; ReplayGain's -6 dB read x0.446 - 0.532).
+/// A fade never raises a peak, and every piece reaches the tone's own.
+fn steady_level(body: &[f32]) -> f32 {
+    let mut peaks: Vec<f32> = body
+        .chunks_exact(2400)
+        .map(|c| c.iter().fold(0.0f32, |m, s| m.max(s.abs())))
+        .collect();
+    peaks.sort_by(f32::total_cmp);
+    peaks[peaks.len() / 2] / std::f32::consts::SQRT_2
 }
 
 fn near(value: f32, want: f32, tolerance: f32) -> bool {

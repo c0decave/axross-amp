@@ -807,3 +807,31 @@ fn no_face_writes_smaller_than_11_px_nor_text_over_text() {
     }
     assert!(small.is_empty(), "{small:#?}");
 }
+
+/// The kinetic typography: a word going as the next comes stays in the
+/// picture (it went up and out, cut by the top edge - review 11's
+/// "clips"), and no bright letter lies in the picture's top rows at any
+/// moment of a word's change.
+#[test]
+fn the_kinetic_typography_keeps_its_words_in_the_picture() {
+    let mut h = faces::harness("typography", vec2(620.0, 300.0), false, 8.0);
+    let mut worst = 0usize;
+    for frame in 0..240 {
+        faces::frame(&mut h);
+        if frame % 3 != 0 {
+            continue;
+        }
+        let img = h.render().unwrap();
+        let ground = *img.get_pixel(2, 2);
+        let lum = |p: &image::Rgba<u8>| (p[0] as u32 + p[1] as u32 * 2 + p[2] as u32) / 4;
+        let bright = (8..img.width() - 8)
+            .flat_map(|x| (2..5).map(move |y| (x, y)))
+            .filter(|&(x, y)| lum(img.get_pixel(x, y)) > lum(&ground) + 20)
+            .count();
+        worst = worst.max(bright);
+    }
+    assert!(
+        worst < 10,
+        "{worst} bright pixels in the picture's top rows"
+    );
+}

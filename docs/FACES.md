@@ -53,8 +53,10 @@ pictures move alike at any frame rate. In axross's colour schemes (Classic, Fire
 Ice, Neon, Mono, Follow the theme, Custom - edited here; a saturated red ground is
 shown darker and turned from red, as on it whatever moves flashes red;
 **no face shows a saturated red in any scheme** - Classic's and Fire's own
-reds, a cover's, a custom one: each is taken toward a warm white until it
-is none, in linear light or as the screen's values; an independent review
+reds, a cover's, a custom one: each colour of the scheme is turned toward
+a warm grey as light as it is until it is none, in linear light or as the
+screen's values (a custom scheme's red, the colours some faces mix from the
+scheme as they draw and the shader faces' cells toward a warm white); an independent review
 had counted red transitions in Classic and Fire, now none), with its options (bars,
 smoothing - no less than 75 % -, peak fall - no faster than 100 % a second: at
 their extremes the faces flashed -, frame rate). A click shows the next face (Shift+V the one

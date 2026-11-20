@@ -1713,10 +1713,12 @@ fn typography(f: &Frame<'_>, pen: &mut Pen<'_>, st: &mut State, dt: f32) {
         .painter
         .layout_no_wrap(format!("{}  ·  ", f.title), small, Color32::WHITE);
     let lw = line.size().x.max(40.0);
-    // (whole rows only: none cut by the picture's edge)
+    // (whole rows only: none cut by the picture's edge, and none over the
+    // spectrum's line at its foot - they lay across it)
     let pitch = line.size().y * 1.3;
-    let rows = ((r.height() / pitch).floor() as i32).max(1);
-    let top = r.center().y - (rows as f32 - 1.0) * pitch / 2.0;
+    let room = (r.height() - 16.0).max(pitch);
+    let rows = ((room / pitch).floor() as i32).max(1);
+    let top = r.top() + room / 2.0 - (rows as f32 - 1.0) * pitch / 2.0;
     for row in 0..rows {
         let y = top + row as f32 * pitch;
         let way = if row % 2 == 0 { 1.0 } else { -1.0 };
@@ -1751,8 +1753,10 @@ fn typography(f: &Frame<'_>, pen: &mut Pen<'_>, st: &mut State, dt: f32) {
             font.clone(),
             Color32::WHITE,
         );
-        let at = c - vec2(0.0, ease * height * 1.1);
-        let colour = mix(s.background, s.mid, 1.0 - ease);
+        // (up by half its height, gone by half the way: it went up and out
+        // of the picture, cut by its edge, and lay over the new word)
+        let at = c - vec2(0.0, ease * height * 0.45);
+        let colour = mix(s.background, s.mid, (1.0 - 2.0 * ease).max(0.0));
         put_text(pen, &old, uv, at, fit(&old), 0.0, colour, 0.0, 1);
     }
     let tilt = (t * 0.6).sin() * 0.025;

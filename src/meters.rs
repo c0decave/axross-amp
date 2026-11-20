@@ -70,6 +70,8 @@ pub struct Meters {
     readings: Arc<Mutex<Readings>>,
     track: Arc<AtomicU64>,
     stop: Arc<AtomicBool>,
+    /// A stall asked of the meters' thread (ms; tests).
+    stall: Arc<AtomicU64>,
 }
 
 impl Drop for Meters {
@@ -86,15 +88,24 @@ impl Meters {
         let readings = Arc::new(Mutex::new(Readings::default()));
         let track = Arc::new(AtomicU64::new(0));
         let stop = Arc::new(AtomicBool::new(false));
-        let (r, t, s) = (readings.clone(), track.clone(), stop.clone());
+        let stall = Arc::new(AtomicU64::new(0));
+        let (r, t, s, st) = (readings.clone(), track.clone(), stop.clone(), stall.clone());
         let _ = std::thread::Builder::new()
             .name("amp-meters".into())
-            .spawn(move || run(&shared, &r, &t, &s));
+            .spawn(move || run(&shared, &r, &t, &s, &st));
         Meters {
             readings,
             track,
             stop,
+            stall,
         }
+    }
+
+    /// As when the meters' thread gets no turn for `ms` (a busy machine):
+    /// it sleeps that long before its next read (tests).
+    #[doc(hidden)]
+    pub fn stall(&self, ms: u64) {
+        self.stall.store(ms, Ordering::Relaxed);
     }
 
     /// The latest readings.
@@ -160,7 +171,13 @@ pub fn key_of(chroma: &[f64; 12]) -> (usize, bool, f32) {
     (best.0, best.1, sure)
 }
 
-fn run(shared: &Shared, readings: &Mutex<Readings>, track: &AtomicU64, stop: &AtomicBool) {
+fn run(
+    shared: &Shared,
+    readings: &Mutex<Readings>,
+    track: &AtomicU64,
+    stop: &AtomicBool,
+    stall: &AtomicU64,
+) {
     let mut rate = 0u32;
     let mut meter = Meter::new(48_000);
     let mut beat = Beat::new();
@@ -178,6 +195,10 @@ fn run(shared: &Shared, readings: &Mutex<Readings>, track: &AtomicU64, stop: &At
     let mut lost = 0u64;
     let mut key = (0usize, false, 0.0f32);
     while !stop.load(Ordering::Relaxed) {
+        let stalled = stall.swap(0, Ordering::Relaxed);
+        if stalled > 0 {
+            std::thread::sleep(Duration::from_millis(stalled));
+        }
         let device = shared.device_rate.load(Ordering::Relaxed).max(8_000);
         if device != rate {
             rate = device;

@@ -10,7 +10,7 @@ in the faces' menu) or choose the cover.
 
 What axross-amp does about it:
 
-- **Three readings; all are enforced.** Every rendered frame is read as
+- **Four readings; all are enforced.** Every rendered frame is read as
   WCAG 2.3.1 / 2.3.2 have it - a field changing over a quarter of its area
   the same way within 34 ms is a transition, a flash a pair of opposing
   ones -; by a stricter reading an independent review applies - within
@@ -20,13 +20,17 @@ What axross-amp does about it:
   transits with it - which sees flicker in antiphase (a checker whose
   tiles each change the other way from their neighbours never has a
   quarter of a field changing the same way: the first two readings saw 2
-  of it at 15 Hz, this one 30). A face passes only where all three count at
-  most six transitions in every second (saturated red too) and no pattern
-  hazard; `tests/flash.rs` fails otherwise. (Thin lines moving are
+  of it at 15 Hz, this one 30) - three readings of light, each of
+  saturated red too; and a fourth, saturated red from the gamma-encoded
+  values (see *Measured*). A face passes only where all four count at most
+  six transitions in every second and no pattern hazard, through the
+  project's own test music; `tests/flash.rs` fails otherwise. (Through an
+  independent review's harsher music - see *What does not hold* - some
+  faces read more by the strict reading; by WCAG's reading none does.) (Thin lines moving are
   motion, not flicker: at no moment is a quarter of a field changing - the
   third reading counts only what transits together, and a test holds it
   to that.)
-- **Calm faces.** Each face is meant to stay within both readings by
+- **Calm faces.** Each face is meant to stay within the readings by
   itself, without the guard below. What drives the pictures' brightness
   (the bars, the beat's pulse, the bass, the energy, the middle, the
   treble, the VU meter, the oscilloscope's height, every band of the
@@ -107,13 +111,15 @@ What axross-amp does about it:
   sent to the screen, the way a review found a red ground darkened to
   #330000 still red: 64 by it, 10 linear),
   any field a third of the picture each way (the picture taken as the
-  whole screen: the strictest case), both readings above; regular stripes
+  whole screen: the strictest case), the readings above; regular stripes
   (five light-dark pairs or more, full periods alike, uneven gratings too)
   over a quarter of the picture while they move or drift (within a tenth
   of a second), or 40 % standing. `tests/flash.rs` renders every face and
   its options through music made to provoke them - kicks at 120 and 240
   BPM, gated noise, bass and treble in turn, fast sweeps, left and right
-  in turn, bursts, silence and full scale - at 60, 30 and 12 frames a
+  in turn, bursts, silence and full scale; since 0.14.2 also stereo unlike
+  left and right - noise different in each channel, a chord in antiphase
+  at 8 Hz, 30 ms bursts nine times a second - at 60, 30 and 12 frames a
   second; the faces with history through ten seconds each of steady music;
   the default faces through pop, house and drum and bass (the veil must
   stay off); the feedback face's every look, Intense, white on black and
@@ -147,7 +153,8 @@ What axross-amp does about it:
   given): in Classic, Neon, white on black, black on white and the colour
   editor's defaults, every face and option, Calm and Intense (552 cases,
   the three faces changed for it - terrain, beat rings, the starfield's
-  trails - in all nine schemes), **all pass all three readings**: the most
+  trails - in all nine schemes), **all pass the three readings of light and
+  red it was run with** (it was run before the gamma reading): the most
   by the normal reading 6 (synthwave, Intense, Neon), by the strict reading
   6 (6 cases), by the either-way reading 6, red 4, moving stripes in no
   frame, standing stripes at most 30 %. It first found the terrain at 8 to
@@ -174,13 +181,42 @@ transitions a second, normal reading in brackets):
 
 **What does not hold, or is not claimed.** The guard by itself does not
 hold a face to six transitions a second by the strict reading: it veils at
-seven (at six its own veil would be the seventh); the faces pass by
-themselves, the guard is the backstop. Twelve cases sit at six, the limit.
-The pattern stage acts after a tenth of a second (up to 10 frames of a
-pattern first) and does not see stripes finer than about 1 % of the
-picture's width. Measured on our music at 320 x 180 (the sweep), 384 x 216
+seven (at six its own veil would be the seventh) - or, a field flickering
+eight times a second or more, at its fourth transition (within the first
+three flashes); the faces pass by themselves, the guard is the backstop.
+Through independent review 11's music (chords gated at 6 - 10 Hz, stereo
+noise, sweeps; `tests/support/music11.rs`) the faces it found over the
+project's limits now pass (`review_11s_cases_keep_within_the_limits`),
+except, in *Intense*: by the strict reading the spectrum in pure red
+reads 8 (a sweep's peak passing its high bars, each rising in turn) and
+the Julia set in black on white 8 (by WCAG's reading both 1); the flow
+field in pure red and the reaction-diffusion in black on white show a
+pattern for one frame. In *Calm* all of them keep within (4, 4, 0, 0). In the sweep 14 cases sit at six by
+the strict reading, the limit (13 of them in *Intense*).
+The pattern stage acts in the frame it sees a pattern (it eased in over
+0.05 s: up to six frames first) and does not see stripes finer than
+about 1 % of the picture's width. Measured on our music at 320 x 180 (the sweep), 384 x 216
 (the suite) and up to 1920 x 1080 (some faces), on Mesa's lavapipe, not a
 real GPU.
+
+**By a 100 ms reading of motion.** Independent review 9 also reads a
+field's pixels newly changing one way, summed over a tenth of a second
+since that field's last event - a reading that counts thin lines and
+small shapes moving over a field quickly, not only areas flashing; the
+project's meter has it as well (the swept reading). Over every face in
+Classic and Fire, Calm and Intense, at 320 x 180 (review 9's meter, 392
+cases): at 12 frames a second all read at most 5; at 60 frames a second
+34 of 196 read over six - the wave ribbon most (Classic 41, Fire 24), the
+galaxy (21 - 30), morph (10 - 22), isometric (21), milkdrop (12 - 20), the
+ridges in Classic (15 - 16), typography (8 - 14), terrain and particles
+(10 - 12), the beat rings (11 - 12), a few spectra (7 - 9). Reviews 8 and
+9 judged these motion, not flashing (blurred and field-mean meters read
+them within the rule), and none rose when the reds were taken out; the
+review's other readings (one frame, 34 ms, the field's mean, red) read at
+most 6 everywhere. The line spectrum (7 - 10 before 0.14.1) reads 3 - 6,
+and the wave ribbon in black on white at 960 x 540 (review 10's reading:
+40) 4; `the_line_sweeps_no_field_too_often` and
+`the_ribbon_in_black_on_white_is_no_grating` hold them.
 
 What is not claimed: the guard estimates the picture; the test's music and
 sizes are ours, not every song or screen. It is a strong precaution, not a

@@ -309,3 +309,64 @@ fn paused_stays_paused_and_seeks_add_up() {
     let at = h.state_mut().shown_position();
     assert!((at - 30.0).abs() < 1.0, "two Seek(+15 s) came to {at:.1}");
 }
+
+/// Seek(i64::MAX) on the first of two tracks goes on to the second, playing
+/// (review 11: it stopped - asked as the player came up, while the track
+/// was still opening, it was dropped); Seek(i64::MIN) goes to the track's
+/// start.
+///
+/// The seek is asked while the first track opens, every time: from the
+/// second track playing, Previous (the first opened anew) and the seek are
+/// on the bus before the player's next frame, which takes them in
+/// together. (Asked as the player came up, the track had sometimes opened
+/// already in the harness's first frames on a busy machine: the case went
+/// untested.)
+#[test]
+fn the_largest_seeks_go_to_the_next_track_or_the_start() {
+    let dir = folder("mpris-seek-max");
+    let Some(bus) = daemon(&dir) else {
+        eprintln!("no dbus-daemon: the MPRIS test is skipped");
+        return;
+    };
+    let files = tracks(&dir, &["first.wav", "second.wav"], 40.0);
+    let mut h = app_on(&dir, &bus.1, files);
+    let client = zbus::blocking::connection::Builder::address(bus.1.as_str())
+        .unwrap()
+        .build()
+        .unwrap();
+    let dbus = zbus::blocking::fdo::DBusProxy::new(&client).unwrap();
+    let name = "org.mpris.MediaPlayer2.axross_amp";
+    assert!(until(&mut h, 5.0, |_| dbus
+        .name_has_owner(name.try_into().unwrap())
+        .unwrap_or(false)));
+    assert!(until(&mut h, 5.0, |a| a.is_loaded()
+        && a.playing()
+        && a.snapshot().current == 0));
+    let p = player(&client, name);
+    let _: () = p.call("Next", &()).unwrap();
+    assert!(until(&mut h, 5.0, |a| a.is_loaded()
+        && a.playing()
+        && a.snapshot().current == 1));
+    // (no frame between them: the player takes the two in one)
+    let _: () = p.call("Previous", &()).unwrap();
+    let _: () = p.call("Seek", &(i64::MAX,)).unwrap();
+    h.run_steps(1);
+    // (the seek was asked with the first track opening anew)
+    assert_eq!(h.state().snapshot().current, 0, "Previous");
+    assert!(
+        !h.state().is_loaded(),
+        "the first track open within the frame that asked it"
+    );
+    settle(&mut h, 6);
+    assert!(until(&mut h, 3.0, |a| a.is_loaded() && a.snapshot().current == 1));
+    settle(&mut h, 3);
+    assert!(h.state().playing(), "Seek(i64::MAX) stopped it");
+    let _: () = p.call("Seek", &(10_000_000i64,)).unwrap();
+    settle(&mut h, 6);
+    let _: () = p.call("Seek", &(i64::MIN,)).unwrap();
+    settle(&mut h, 6);
+    assert_eq!(h.state().snapshot().current, 1);
+    let at = h.state_mut().shown_position();
+    assert!(at < 1.0, "Seek(i64::MIN) came to {at:.1}");
+    assert!(h.state().playing());
+}

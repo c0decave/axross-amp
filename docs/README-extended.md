@@ -29,18 +29,29 @@ Each [release](https://github.com/c0decave/axross-amp/releases) has the files
 below and their `SHA256SUMS` (check with `sha256sum -c SHA256SUMS
 --ignore-missing`).
 
+Every archive unpacks into a folder of its own, `axross-amp-VERSION-...`,
+with the program, its `LICENSE` (Apache-2.0), `THIRD_PARTY_LICENSES.md` (the
+licences of every crate it is built from, egui's fonts' too - made from
+Cargo.lock for that platform) and the `README.md`.
+
 - **Linux (x86_64)** - `axross-amp-VERSION-x86_64.AppImage`: `chmod +x` it and
-  run it. Or `axross-amp-VERSION-linux-x86_64.tar.gz`: the binary alone (into
-  `~/.local/bin`; the desktop entry and icon as under [Build](#build)). Built on
-  Ubuntu 22.04: it needs glibc 2.35 or later and ALSA's `libasound.so.2`;
+  run it (its licences are inside, in `usr/share/doc/axross-amp`; from a
+  terminal it goes to the background, as said under [Use](#use)). Or
+  `axross-amp-VERSION-linux-x86_64.tar.gz`: the binary, `axross-amp.desktop`
+  and `axross-amp.svg` beside it - the binary into `~/.local/bin`, the entry
+  into `~/.local/share/applications`, the icon into
+  `~/.local/share/icons/hicolor/scalable/apps` (as under [Build](#build)). Built in
+  AlmaLinux 9: it needs glibc 2.34 or later (AlmaLinux / RHEL 9, Ubuntu 22.04,
+  Debian 12 and later - the release checks it) and ALSA's `libasound.so.2`;
   PulseAudio / PipeWire is spoken natively; the window needs Vulkan or OpenGL
   (any desktop has one of them; without a GPU, Mesa's software drivers).
-- **macOS** - `axross-amp-VERSION-macos-universal.tar.gz` (Apple silicon and
-  Intel; `...-macos-arm64.tar.gz` where the Intel build was left out): the
-  binary, not signed or notarised - after unpacking, `xattr -d
-  com.apple.quarantine axross-amp` once, then run it from a terminal.
-- **Windows (x64)** - `axross-amp-VERSION-windows-x64.zip`: `axross-amp.exe`,
-  not signed (SmartScreen asks once).
+- **macOS** (Apple silicon and Intel: one universal program) -
+  `axross-amp-VERSION-macos-universal.dmg`: `axross-amp.app` to drag to
+  Applications; or `axross-amp-VERSION-macos-universal.tar.gz`: the binary.
+  Not signed or notarised: the first time, right-click the app → Open (or
+  `xattr -d com.apple.quarantine` on it once).
+- **Windows (x64)** - `axross-amp-VERSION-windows-x64.zip`: `axross-amp.exe`
+  (a GUI program: no console window), not signed (SmartScreen asks once).
 - **From source** - see [Build](#build) (a recent stable Rust; the releases are built with the current one).
 
 The Python program this one replaces is on the `python` branch.
@@ -206,14 +217,22 @@ axross-amp --foreground song.flac   # stays in the terminal (-F)
 Started from a terminal (Linux, macOS) the player goes to the background:
 the prompt comes back at once and the player goes on after the terminal is
 closed (a session of its own, no hang-up; what it says goes to
-`~/.cache/axross-amp/axross-amp.log`). A start that fails - no display, say -
-is not lost: the terminal waits up to two seconds for the window and prints
-the log's last lines and exits with 1 where it did not come. `--foreground`
-(`-F`) keeps it in the terminal, as before; `--help` and `--version` never
-go; started from a desktop entry, a file manager or the AppImage it just
-runs; a second start that hands its files to the player already running
-starts nothing. On Windows nothing of this: it runs as a console program,
-as before.
+`~/.cache/axross-amp/axross-amp.log`, on macOS
+`~/Library/Caches/axross-amp/axross-amp.log`). A start that fails - no
+display, say - is not lost: the terminal waits up to two seconds for the
+window; where the player ended without it, the log's last lines are printed
+and the exit status is 1; where it is still starting after two seconds, it
+goes on in the background, the terminal says so ("starting in the
+background", with the log's path) and the exit status is 0 - whether it then
+came up is in the log. `--foreground` (`-F`) keeps it in the terminal, as
+before; `--help` and `--version` never go; started from a desktop entry or a
+file manager (no terminal) it simply runs; the AppImage started from a
+terminal goes to the background as the binary does (from a file manager it
+simply runs); a second start that hands its files to the player already running
+starts nothing. On Windows it is a GUI program: no console window opens
+beside it, and started from a terminal (cmd, PowerShell) the prompt comes
+back at once; `--help`, `--version` and a start that fails write to that
+terminal.
 
 Keys (on the Player tab, not while typing in a field):
 

@@ -30,8 +30,9 @@ const STATUS_FOR: Duration = Duration::from_secs(8);
 /// The frame rate's cap on a slow (software) renderer.
 const SLOW_FPS: f32 = 12.0;
 /// On a slow renderer, the share of a core the window may take while it
-/// plays: the frame rate is lowered (to MIN_SLOW_FPS) to keep within it.
-const SLOW_BUDGET_CORES: f64 = 0.6;
+/// plays: the frame rate is lowered (to MIN_SLOW_FPS) to keep within it
+/// (0.6 left the spectrum at 55 % of a core on lavapipe: review 11).
+const SLOW_BUDGET_CORES: f64 = 0.35;
 const MIN_SLOW_FPS: f32 = 3.0;
 /// A calm face (the cover) needs few frames: its glow moves slowly.
 const CALM_FPS: f32 = 8.0;
@@ -97,6 +98,9 @@ pub struct App {
     /// Where each design panel lay last frame (the card, the playlist):
     /// painted there under what lies on it; and the reels' turn.
     panel_rects: [egui::Rect; 2],
+    /// The glass design's pane of what plays and the soft design's raised
+    /// card of keys, as laid out last frame (painted under them).
+    pane_rect: egui::Rect,
     /// Where the position and the buttons lay last frame (zen quiets them
     /// while the pointer is elsewhere).
     controls_rect: egui::Rect,
@@ -175,6 +179,11 @@ pub struct App {
     /// The last generation handed out (the current track's or the queued one's).
     generations: u64,
     loaded: Option<u64>,
+    /// A seek asked while the track was still opening (MPRIS as the player
+    /// comes up): done once it is open.
+    seek_pending: Option<f64>,
+    /// The picture in a window of its own (the Python player's Detach).
+    detached: bool,
     /// The track asked for is still opening (a stream connects).
     opening: bool,
     /// Stopped (by Stop, or at the end of the list) rather than paused.
@@ -619,6 +628,7 @@ impl App {
             cover_art: None,
             haze: None,
             panel_rects: [egui::Rect::NOTHING; 2],
+            pane_rect: egui::Rect::NOTHING,
             controls_rect: egui::Rect::NOTHING,
             reels_turn: 0.0,
             theme_preview: None,
@@ -669,6 +679,8 @@ impl App {
             generation: 0,
             generations: 0,
             loaded: None,
+            seek_pending: None,
+            detached: false,
             opening: false,
             stopped: true,
             failures: 0,
@@ -780,6 +792,22 @@ impl App {
     }
 
     /// The visualization shown.
+    /// How often the window wakes while something goes on (saves, the sleep
+    /// timer, the desktop's MPRIS), else None. With the pictures off, while
+    /// it plays, once a second - the clock's own pace: every half second,
+    /// the whole window drawn again cost 13 % of a core on a software
+    /// renderer for nothing to see (review 11).
+    pub fn heartbeat(&self) -> Option<Duration> {
+        let busy = self.playing() || self.sleep.is_some() || !self.adding.is_empty() || self.dirty;
+        busy.then(|| {
+            if self.mode == "off" && self.playing() {
+                Duration::from_secs(1)
+            } else {
+                Duration::from_millis(500)
+            }
+        })
+    }
+
     pub fn mode(&self) -> &'static str {
         self.mode
     }
@@ -1106,6 +1134,8 @@ impl App {
             return;
         };
         self.generation = self.new_generation();
+        // (a seek asked for the track before is not this one's)
+        self.seek_pending = None;
         self.automatic = false;
         self.opening = true;
         self.stopped = false;
@@ -1232,11 +1262,21 @@ impl App {
             self.status.clear();
         }
         self.dirty = true;
+        // (a seek asked while it opened: now)
+        if let Some(secs) = self.seek_pending.take() {
+            self.seek(secs);
+        }
     }
 
     /// Seek in the track playing (past its end: the next one, as at its end).
     fn seek(&mut self, secs: f64) {
-        if !(self.info.seekable && self.loaded == Some(self.generation)) {
+        // (still opening: kept for when it is open - asked as the player
+        // came up, Seek(i64::MAX) was dropped and it stayed Stopped)
+        if self.loaded != Some(self.generation) && self.playlist.current.is_some() {
+            self.seek_pending = Some(secs);
+            return;
+        }
+        if !self.info.seekable {
             return;
         }
         let secs = secs.max(0.0);
@@ -1998,19 +2038,30 @@ impl App {
             } else {
                 self.refresh_monitors();
                 let monitors = self.monitors();
-                let chosen = crate::display::find(
-                    &monitors,
-                    &self.amp.display_connector,
-                    &self.amp.display_name,
-                )
-                .or_else(|| monitors.iter().find(|m| !m.primary))
-                .map(|m| m.connector.clone());
+                let (connector, name) = (&self.amp.display_connector, &self.amp.display_name);
+                // (two of the one remembered's name, its connector gone:
+                // no guess - asked to choose)
+                let chosen = if crate::display::ambiguous(&monitors, connector, name) {
+                    None
+                } else {
+                    crate::display::find(&monitors, connector, name)
+                        .or_else(|| monitors.iter().find(|m| !m.primary))
+                        .map(|m| m.connector.clone())
+                };
                 match chosen {
                     Some(c) => {
                         let sound = self.amp.display_sound;
                         if let Err(why) = self.show_on(&c, sound) {
                             self.notice = why;
                         }
+                    }
+                    None if crate::display::ambiguous(
+                        &monitors,
+                        &self.amp.display_connector,
+                        &self.amp.display_name,
+                    ) =>
+                    {
+                        self.notice = two_named(&self.amp.display_name);
                     }
                     None => self.notice = "No other display is connected".into(),
                 }
@@ -2379,6 +2430,35 @@ impl App {
         }
     }
 
+    /// Quitting with the display view open: the sound and the card's
+    /// profile put back now, while there is still a program to do it (left
+    /// to the next start, the card stayed on HDMI and its analog output
+    /// gone for every program meanwhile). The view stays "open" in the
+    /// settings: the next start opens it again and switches once more.
+    fn put_back_on_quit(&mut self) {
+        let Some(external) = self.external.as_mut() else {
+            return;
+        };
+        external
+            .cancel
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        // (a switch under way: its end waited for - it undoes itself)
+        if let Some(rx) = external.moving.take() {
+            let _ = rx.recv_timeout(std::time::Duration::from_secs(8));
+        }
+        if let Some(previous) = self.amp.display_restore_output.take() {
+            self.apply(crate::mixer_ui::PlayerChange::Output(previous));
+            self.amp_dirty = true;
+        }
+        let kept = crate::display::take_profile(&self.config_dir)
+            .or(self.amp.display_restore_profile.take());
+        if let Some((card, profile)) = kept {
+            self.amp_dirty = true;
+            // (here, not on a thread: the program ends after this)
+            let _ = crate::display::set_profile(&card, &profile);
+        }
+    }
+
     /// The sound moved to the display, as it comes: its output taken, the
     /// card's profile before kept; or why not, said. A view closed in the
     /// meantime: what was switched is put back.
@@ -2444,8 +2524,15 @@ impl App {
                     let c = m.connector.clone();
                     let _ = self.show_on(&c, sound);
                 }
-                // (that display gone since: the sound back where it was)
-                None => self.restore_sound(),
+                // (that display gone since, or two of its name and its
+                // connector gone - no guess: the sound back where it was,
+                // and said)
+                None => {
+                    if crate::display::ambiguous(&monitors, &connector, &name) {
+                        self.notice = two_named(&name);
+                    }
+                    self.restore_sound();
+                }
             }
         }
     }
@@ -2555,6 +2642,67 @@ impl App {
         if close {
             self.close_display(None);
         }
+    }
+
+    /// The picture in a window of its own (Detach): resizable, 640 x 360 at
+    /// first; V / Shift+V the face, Space play and pause; closed or Escape,
+    /// the picture is back in the main window.
+    fn detached_view(&mut self, ctx: &egui::Context) {
+        let builder = egui::ViewportBuilder::default()
+            .with_title("axross-amp - Visualization")
+            .with_inner_size(vec2(640.0, 360.0))
+            .with_min_inner_size(vec2(160.0, 90.0));
+        let mut close = false;
+        ctx.show_viewport_immediate(
+            egui::ViewportId::from_hash_of("amp-detached"),
+            builder,
+            |ctx, _class| {
+                if ctx.input(|i| i.viewport().close_requested() || i.key_pressed(Key::Escape)) {
+                    close = true;
+                }
+                if ctx.input(|i| i.key_pressed(Key::V)) {
+                    let back = ctx.input(|i| i.modifiers.shift);
+                    self.mode = if back {
+                        viz::previous(self.mode)
+                    } else {
+                        viz::next(self.mode)
+                    };
+                    self.dirty = true;
+                }
+                if ctx.input(|i| i.key_pressed(Key::Space)) {
+                    self.toggle_play();
+                }
+                egui::CentralPanel::default()
+                    .frame(egui::Frame::new().fill(Color32::BLACK))
+                    .show(ctx, |ui| {
+                        let rect = ui.max_rect();
+                        let (_, response) = ui.allocate_exact_size(rect.size(), Sense::hover());
+                        let name = viz::name(self.mode);
+                        response.widget_info(|| {
+                            egui::WidgetInfo::labeled(
+                                egui::accesskit::Role::Image,
+                                true,
+                                format!("Visualization: {name}"),
+                            )
+                        });
+                        let hover = ui.input(|i| i.pointer.hover_pos());
+                        self.draw_face(ui, rect, hover);
+                    });
+            },
+        );
+        if close {
+            self.detached = false;
+        }
+    }
+
+    /// The picture in a window of its own, or back (tests; ⚙).
+    pub fn set_detached(&mut self, on: bool) {
+        self.detached = on;
+    }
+
+    /// Whether the picture is in a window of its own.
+    pub fn detached(&self) -> bool {
+        self.detached
     }
 
     /// The track's title and artist over the display view's picture, for
@@ -2822,6 +2970,14 @@ impl App {
             });
         ui.separator();
         let mut full = self.fullscreen;
+        let mut detached = self.detached;
+        if ui
+            .checkbox(&mut detached, "The picture in a window of its own")
+            .changed()
+        {
+            self.detached = detached;
+            ui.close();
+        }
         if ui.checkbox(&mut full, "Full screen (F11)").changed() {
             self.set_fullscreen(ui.ctx(), full);
             ui.close();
@@ -3746,6 +3902,12 @@ impl App {
         self.meters.read()
     }
 
+    /// The meters' thread without a turn for `ms` (tests: a busy machine).
+    #[doc(hidden)]
+    pub fn stall_meters(&self, ms: u64) {
+        self.meters.stall(ms);
+    }
+
     /// Frames the analysis ran (tests: none with the picture off).
     pub fn analyzer_frames(&self) -> u64 {
         self.analyzer_frames
@@ -3911,6 +4073,25 @@ impl App {
             );
             return;
         }
+        // (in a window of its own: here where it is, a click brings it back)
+        if self.detached {
+            let said = "The picture is in a window of its own - click to bring it back";
+            response.widget_info(|| {
+                egui::WidgetInfo::labeled(egui::accesskit::Role::Button, true, said)
+            });
+            ui.painter().rect_filled(rect, 8.0, th().surface);
+            ui.painter().text(
+                rect.center(),
+                egui::Align2::CENTER_CENTER,
+                "The picture is in a window of its own\nClick here or Escape there brings it back",
+                egui::FontId::proportional(15.0),
+                th().muted,
+            );
+            if response.clicked() {
+                self.detached = false;
+            }
+            return;
+        }
         let scheme = self.scheme();
         self.draw_face(ui, rect, response.hover_pos());
         crate::design::bezel(ui.painter(), rect, crate::design::current(), th());
@@ -4067,9 +4248,46 @@ impl App {
     /// the playlist's page offers beside it).
     fn lower_switch(&mut self, ui: &mut Ui) {
         let total: u64 = self.playlist.tracks.iter().map(|t| t.duration_ms).sum();
+        let n = self.playlist.tracks.len();
+        let list = format!("Playlist  {} · {}", n, length(total as f64 / 1000.0));
+        let eq = if self.eq.enabled {
+            "Equalizer"
+        } else {
+            "Equalizer (off)"
+        };
+        // (where the switches and Save, Undo, Clear do not fit in one row -
+        // the terminal's monospace at 420 points - the actions go to a row
+        // of their own: in one, Clear and the rows' durations were pushed
+        // out past the playlist's box)
+        // (first the playlist's switch shorter - its length left out)
+        let actions = !self.eq_page && self.playlist_open;
+        let (list, one_row) = if !actions {
+            (list, true)
+        } else {
+            let font = egui::TextStyle::Button.resolve(ui.style());
+            let pad = ui.spacing().button_padding.x * 2.0 + ui.spacing().item_spacing.x;
+            let width = |s: &str| {
+                ui.painter()
+                    .layout_no_wrap(s.to_owned(), font.clone(), Color32::WHITE)
+                    .size()
+                    .x
+                    + pad
+            };
+            let mut rest = width(eq) + width("Save…") + width("Clear");
+            if !self.undo.is_empty() {
+                rest += width("↶ Undo");
+            }
+            let room = ui.available_width();
+            let short = format!("Playlist  {n}");
+            if width(&list) + rest <= room {
+                (list, true)
+            } else if width(&short) + rest <= room {
+                (short, true)
+            } else {
+                (list, false)
+            }
+        };
         ui.horizontal(|ui| {
-            let n = self.playlist.tracks.len();
-            let list = format!("Playlist  {} · {}", n, length(total as f64 / 1000.0));
             if ui
                 .selectable_label(self.playlist_open && !self.eq_page, list)
                 .on_hover_text("The playlist")
@@ -4080,11 +4298,6 @@ impl App {
                     self.show_playlist(ui.ctx(), true);
                 }
             }
-            let eq = if self.eq.enabled {
-                "Equalizer"
-            } else {
-                "Equalizer (off)"
-            };
             if ui
                 .selectable_label(self.eq_page, eq)
                 .on_hover_text("The ten-band equalizer")
@@ -4092,12 +4305,19 @@ impl App {
             {
                 self.eq_page = !self.eq_page;
             }
-            if !self.eq_page && self.playlist_open {
+            if actions && one_row {
                 layouts::right_aligned(ui, egui::Id::unique("playlist-actions"), |ui| {
                     self.playlist_actions(ui);
                 });
             }
         });
+        if actions && !one_row {
+            ui.horizontal(|ui| {
+                layouts::right_aligned(ui, egui::Id::unique("playlist-actions"), |ui| {
+                    self.playlist_actions(ui);
+                });
+            });
+        }
     }
 
     /// The equalizer: on or off, a preset, ten bands on a dB scale with
@@ -4698,7 +4918,9 @@ impl App {
         // rows leave (a short list leaves more), at least 45 % of it
         // (what lies between the picture and the list, as tall as
         // it was last laid out - not a guess)
-        let lower = self.playlist_open || self.eq_page;
+        // (the list beside, in a wide and low window: the picture takes the
+        // height the controls leave)
+        let lower = (self.playlist_open || self.eq_page) && !self.list_elsewhere;
         let room = ui.available_height() - self.controls_height;
         let picture = if lower {
             let list = if self.eq_page {
@@ -4722,6 +4944,10 @@ impl App {
         let top = ui.cursor().top();
         ui.add_space(6.0);
         self.controls(ui);
+        if self.list_elsewhere {
+            self.controls_height = ui.cursor().top() - top;
+            return;
+        }
         ui.add_space(6.0);
         self.lower_switch(ui);
         self.controls_height = ui.cursor().top() - top;
@@ -4978,8 +5204,8 @@ impl eframe::App for App {
         self.window_title(ctx);
         self.save(false);
         // a heartbeat while something goes on: saves, the timer, the desktop
-        if self.playing() || self.sleep.is_some() || !self.adding.is_empty() || self.dirty {
-            ctx.request_repaint_after(Duration::from_millis(500));
+        if let Some(beat) = self.heartbeat() {
+            ctx.request_repaint_after(beat);
         }
     }
 
@@ -5009,8 +5235,10 @@ impl eframe::App for App {
         // (a wide window: the bars above and below as wide as the player's
         // column, over and under it - not across the whole screen)
         // (zen: the bars as narrow as its column - one column top to bottom)
+        // (and a very large window: the bars over the same four fifths as
+        // the player below them)
         let narrow = crate::design::current().column;
-        let bar = if narrow > 0.0 { narrow - 4.0 } else { 1176.0 };
+        let bar = player_column(narrow, ui.available_width(), false) - 4.0;
         let wide = ui.available_width() > bar + 64.0 && self.tab == Tab::Player && !self.big_visual;
         let column = move |ui: &mut Ui, inner: &mut dyn FnMut(&mut Ui)| {
             if wide {
@@ -5101,8 +5329,13 @@ impl eframe::App for App {
                 let room = ui.available_rect_before_wrap();
                 // (zen: a narrow column whatever the window - one thing at
                 // a time, much air either side)
+                // (but wide and low - its list beside it there - as the
+                // others; and a very large window - 2200 points and more -
+                // used, four fifths of it: at 3000 x 1600 a column of 1180
+                // left most of it empty)
                 let narrow = crate::design::current().column;
-                let width = if narrow > 0.0 { narrow } else { 1180.0 };
+                let low = room.height() < 440.0 && room.width() >= 800.0;
+                let width = player_column(narrow, room.width(), low);
                 if room.width() > width + 60.0 && !self.big_visual {
                     let column =
                         egui::Rect::from_center_size(room.center(), vec2(width, room.height()));
@@ -5127,6 +5360,8 @@ impl eframe::App for App {
         // the pictures on a display of their own
         if self.external.is_some() {
             self.external_view(&ctx);
+        } else if self.detached {
+            self.detached_view(&ctx);
         }
         self.govern();
         let fps = self.fps_cap();
@@ -5150,6 +5385,7 @@ impl eframe::App for App {
     }
 
     fn on_exit(&mut self) {
+        self.put_back_on_quit();
         self.save(true);
         #[cfg(target_os = "linux")]
         self.saver.save(crate::saver::Job::Cover(None));
@@ -5171,6 +5407,55 @@ impl Drop for App {
         }
         self.save(true);
     }
+}
+
+/// Said where the display remembered is one of two or more of its name.
+fn two_named(name: &str) -> String {
+    format!(
+        "Two displays are named {name}: the pictures stay here - choose one in ⚙ → Show on display"
+    )
+}
+
+/// Set by SIGTERM / SIGINT: the window is to close as if its close button
+/// were pressed (so `on_exit` puts back what the display view took).
+#[cfg(unix)]
+static ASKED_TO_END: AtomicBool = AtomicBool::new(false);
+
+#[cfg(unix)]
+extern "C" fn asked_to_end(_: libc::c_int) {
+    // (asked a second time - the window not closing: ended at once)
+    if ASKED_TO_END.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        // SAFETY: _exit is async-signal-safe
+        unsafe { libc::_exit(130) };
+    }
+}
+
+/// SIGTERM and SIGINT (a logout, `kill`, Ctrl+C in the terminal it runs in)
+/// close the window as its close button does: the settings kept, the sound
+/// and the card put back from a display view - not the process cut off
+/// with the card left on HDMI. (The program's own start, not the tests'.)
+#[cfg(unix)]
+pub fn close_on_signals(ctx: &egui::Context) {
+    let handler = asked_to_end as extern "C" fn(libc::c_int) as libc::sighandler_t;
+    // SAFETY: the handler only stores to an atomic (or _exits)
+    unsafe {
+        libc::signal(libc::SIGTERM, handler);
+        libc::signal(libc::SIGINT, handler);
+    }
+    let ctx = ctx.clone();
+    let _ = std::thread::Builder::new()
+        .name("amp-signals".into())
+        .spawn(move || {
+            loop {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+                if ASKED_TO_END.load(std::sync::atomic::Ordering::SeqCst) {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    ctx.request_repaint();
+                    // (asked again each second, should a frame not come)
+                    std::thread::sleep(std::time::Duration::from_secs(1));
+                }
+            }
+        });
 }
 
 /// Which keys of the player the window takes (see [`App::key_gate`]).
@@ -5207,15 +5492,7 @@ fn band_name(hz: f32) -> String {
 /// A local path as a file:// URL (what is not plain, percent-encoded).
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 fn file_url(path: &str) -> String {
-    let mut out = String::from("file://");
-    for b in path.bytes() {
-        if b.is_ascii_alphanumeric() || b"/-._~".contains(&b) {
-            out.push(b as char);
-        } else {
-            out.push_str(&format!("%{b:02X}"));
-        }
-    }
-    out
+    crate::playlist::file_url(path)
 }
 
 /// An album's head in the playlist: its cover, its name and who made it,
@@ -5827,6 +6104,20 @@ fn faces_list(ui: &mut Ui, mode: &mut &'static str) {
         }
         last = Some(face.group);
         ui.selectable_value(mode, face.key, face.name);
+    }
+}
+
+/// The width of the player's column in a window `room` points wide: the
+/// design's own narrow column (Zen) unless the window is wide and `low`;
+/// four fifths of a very large window (2200 points and more); else 1180.
+/// The bars above and below take the same width.
+fn player_column(narrow: f32, room: f32, low: bool) -> f32 {
+    if narrow > 0.0 && !low {
+        narrow
+    } else if room >= 2200.0 {
+        room * 0.8
+    } else {
+        1180.0
     }
 }
 

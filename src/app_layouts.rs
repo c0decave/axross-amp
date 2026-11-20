@@ -13,6 +13,10 @@ use super::*;
 use crate::design::{self, KeyLook};
 use egui::{Pos2, Rect, Shape, pos2};
 
+/// What the glass and the soft designs leave the playlist at least (its
+/// switch, the filter and three rows).
+const LEAST_LIST_GLASS: f32 = 170.0;
+
 /// The transport keys' sizes and words.
 #[derive(Clone, Copy)]
 pub(super) struct Keys {
@@ -253,26 +257,50 @@ impl App {
         // (wide and low - half a laptop's screen tall: the player at the
         // left, the playlist beside it, not squeezed under it)
         let room = ui.available_rect_before_wrap();
-        if room.height() < 440.0 && room.width() >= 800.0 && matches!(key, "cassette" | "brutalist")
-        {
+        // (the modern arrangement and its kin, the rack and the collage too:
+        // under a low window's list their picture was a strip 10 points tall)
+        let beside = matches!(
+            key,
+            "cassette"
+                | "brutalist"
+                | "modern"
+                | "glass"
+                | "soft"
+                | "rack"
+                | "collage"
+                | "terminal"
+                | "zen"
+        );
+        if room.height() < 440.0 && room.width() >= 800.0 && beside {
             ui.allocate_rect(room, Sense::hover());
             // (the playlist's row of switches as wide as it needs: Save…
             // and Clear in the brutalist's large type)
-            let share = if key == "brutalist" { 0.46 } else { 0.56 };
+            let share = match key {
+                "brutalist" => 0.46,
+                "cassette" => 0.56,
+                _ => 0.55,
+            };
             let left = Rect::from_min_size(room.min, vec2(room.width() * share, room.height()));
             let right = Rect::from_min_max(pos2(left.right() + 12.0, room.top()), room.max);
             self.list_elsewhere = true;
             child(ui, egui::UiBuilder::new().max_rect(left), |ui| match key {
                 "cassette" => self.layout_cassette(ui),
-                _ => self.layout_brutalist(ui),
+                "brutalist" => self.layout_brutalist(ui),
+                "rack" => self.layout_rack(ui),
+                "collage" => self.layout_collage(ui),
+                "glass" => self.layout_glass(ui),
+                "soft" => self.layout_soft(ui),
+                "terminal" => self.layout_terminal(ui),
+                "zen" => self.layout_zen(ui),
+                _ => self.layout_modern(ui),
             });
             self.list_elsewhere = false;
-            child(ui, egui::UiBuilder::new().max_rect(right), |ui| {
-                if key == "cassette" {
-                    self.cassette_card(ui)
-                } else {
-                    self.lower(ui)
-                }
+            child(ui, egui::UiBuilder::new().max_rect(right), |ui| match key {
+                "cassette" => self.cassette_card(ui),
+                "rack" => self.rack_changer(ui),
+                "collage" => self.collage_page(ui),
+                "terminal" => self.terminal_list(ui),
+                _ => self.lower(ui),
             });
             return;
         }
@@ -284,14 +312,342 @@ impl App {
             "terminal" => self.layout_terminal(ui),
             "brutalist" => self.layout_brutalist(ui),
             "collage" => self.layout_collage(ui),
+            "glass" => self.layout_glass(ui),
+            "soft" => self.layout_soft(ui),
             _ => self.layout_modern(ui),
         }
+    }
+
+    /// Glass: two columns - a tall frosted pane of what plays (the cover
+    /// large, the words, the position, the keys, the volume) at the left,
+    /// the picture and the playlist's pane at the right - over the cover's
+    /// haze. Narrow: the pane across (the cover small beside the words),
+    /// the picture, the list.
+    fn layout_glass(&mut self, ui: &mut Ui) {
+        let d = design::current();
+        let t = th();
+        let room = ui.available_rect_before_wrap();
+        let fill = design::card_fill(d, t, self.accent);
+        if room.width() >= 760.0 && !self.list_elsewhere {
+            ui.allocate_rect(room, Sense::hover());
+            let left_w = (room.width() * 0.34).clamp(300.0, 430.0);
+            let left = Rect::from_min_size(room.min, vec2(left_w, room.height()));
+            let right = Rect::from_min_max(pos2(left.right() + 14.0, room.top()), room.max);
+            design::panel(ui.painter(), left, d, t, fill, 3);
+            child(
+                ui,
+                egui::UiBuilder::new().max_rect(left.shrink(16.0)),
+                |ui| self.glass_pane(ui, true),
+            );
+            child(ui, egui::UiBuilder::new().max_rect(right), |ui| {
+                let lower = self.playlist_open || self.eq_page;
+                let h = ui.available_height();
+                let picture = if lower {
+                    (h * 0.5).clamp(80.0, (h - LEAST_LIST_GLASS).max(80.0))
+                } else {
+                    h
+                };
+                let (r, _) =
+                    ui.allocate_exact_size(vec2(ui.available_width(), picture), Sense::hover());
+                self.visual_in(ui, r);
+                if lower {
+                    ui.add_space(10.0);
+                    self.lower(ui);
+                }
+            });
+            return;
+        }
+        // narrow (or the list beside, in a wide and low window): the pane
+        // across, its rect from the last frame painted under it
+        if self.pane_rect.is_positive() {
+            design::panel(ui.painter(), self.pane_rect, d, t, fill, 3);
+        }
+        // (a low window: the pane closer, the list its first rows)
+        let compact = room.height() < 520.0;
+        let shown = egui::Frame::new()
+            .inner_margin(if compact { 6.0 } else { 12.0 })
+            .show(ui, |ui| {
+                ui.set_min_width(ui.available_width());
+                self.glass_pane(ui, false);
+            });
+        self.pane_rect = shown.response.rect;
+        ui.add_space(if compact { 4.0 } else { 8.0 });
+        let lower = (self.playlist_open || self.eq_page) && !self.list_elsewhere;
+        let h = ui.available_height();
+        let least = if compact { 130.0 } else { LEAST_LIST_GLASS };
+        let picture = if lower {
+            (h - least).clamp(24.0, (h * 0.5).max(24.0))
+        } else {
+            (h - 4.0).max(24.0)
+        };
+        let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), picture), Sense::hover());
+        self.visual_in(ui, r);
+        if lower {
+            ui.add_space(8.0);
+            self.lower(ui);
+        }
+    }
+
+    /// The glass pane's contents: `tall` - a column (the cover as wide as
+    /// the pane); else a row of the cover small beside the words, then the
+    /// position and one row of keys.
+    fn glass_pane(&mut self, ui: &mut Ui, tall: bool) {
+        let t = th();
+        let (title, by) = self.now_playing_text();
+        let w = ui.available_width();
+        if tall {
+            let side = w.min(ui.available_height() - 250.0).max(0.0);
+            if side >= 80.0 {
+                ui.vertical_centered(|ui| {
+                    let (rect, _) = ui.allocate_exact_size(vec2(side, side), Sense::hover());
+                    self.cover_in(ui, rect, 14);
+                });
+                ui.add_space(12.0);
+            }
+            ui.add(
+                egui::Label::new(RichText::new(&title).font(bold(22.0)).color(t.strong)).truncate(),
+            );
+            if !by.is_empty() {
+                ui.add(egui::Label::new(RichText::new(&by).size(14.0).color(t.text)).truncate());
+            }
+            ui.add(
+                egui::Label::new(
+                    RichText::new(card_format(&self.info))
+                        .size(12.0)
+                        .color(t.muted),
+                )
+                .truncate(),
+            );
+            ui.add_space(10.0);
+            self.position(ui);
+            ui.add_space(4.0);
+            let kw = ((w - 6.0 * 4.0) / 7.2).clamp(28.0, 44.0);
+            let k = Keys {
+                look: KeyLook::Plain,
+                size: vec2(kw, 36.0),
+                play: vec2(kw * 1.4, 40.0),
+                gap: 4.0,
+                modes: false,
+            };
+            centred(ui, egui::Id::unique("glass-keys"), |ui| {
+                self.transport_keys(ui, k)
+            });
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                self.mode_keys(ui, KeyLook::Plain, vec2(32.0, 30.0));
+                ui.add_space(6.0);
+                // (⋯, mute and their spacing: some 100 points)
+                let slider = (ui.available_width() - 110.0).clamp(40.0, 160.0);
+                self.volume_group(ui, None, slider);
+            });
+            return;
+        }
+        let low = ui.ctx().content_rect().height() < 520.0;
+        ui.horizontal(|ui| {
+            let side = if low { 36.0 } else { 56.0 };
+            let (rect, _) = ui.allocate_exact_size(vec2(side, side), Sense::hover());
+            self.cover_in(ui, rect, 10);
+            ui.vertical(|ui| {
+                ui.add(
+                    egui::Label::new(RichText::new(&title).font(bold(18.0)).color(t.strong))
+                        .truncate(),
+                );
+                if !by.is_empty() {
+                    ui.add(
+                        egui::Label::new(RichText::new(&by).size(13.0).color(t.text)).truncate(),
+                    );
+                }
+            });
+        });
+        ui.add_space(4.0);
+        self.position(ui);
+        let narrow = w < 560.0;
+        let k = Keys {
+            look: KeyLook::Plain,
+            size: vec2(if narrow { 30.0 } else { 40.0 }, 32.0),
+            play: vec2(if narrow { 40.0 } else { 56.0 }, 36.0),
+            gap: if narrow { 2.0 } else { 4.0 },
+            modes: !narrow,
+        };
+        ui.horizontal(|ui| {
+            self.transport_keys(ui, k);
+            if !narrow {
+                let slider = (ui.available_width() - 110.0).clamp(30.0, 140.0);
+                self.volume_group(ui, None, slider);
+            }
+        });
+        if narrow {
+            // (narrow: the switches and the volume a row of their own)
+            ui.horizontal(|ui| {
+                self.mode_keys(ui, KeyLook::Plain, vec2(30.0, 28.0));
+                let slider = (ui.available_width() - 110.0).clamp(30.0, 140.0);
+                self.volume_group(ui, None, slider);
+            });
+        }
+    }
+
+    /// Soft: everything pressed out of one material and centred - the
+    /// picture pressed in at the top, under it a raised card with the
+    /// words in the middle, the position and the keys around a large
+    /// play key, the volume; then the playlist's card.
+    fn layout_soft(&mut self, ui: &mut Ui) {
+        let all = ui.available_height();
+        let w = ui.available_width();
+        let low = all < 440.0;
+        let narrow = w < 560.0;
+        let lower = (self.playlist_open || self.eq_page) && !self.list_elsewhere;
+        // the card's height as laid out last frame (a guess the first time)
+        let card_h = if self.pane_rect.is_positive() {
+            self.pane_rect.height()
+        } else if low {
+            150.0
+        } else {
+            210.0
+        };
+        let least = if all < 520.0 { 130.0 } else { LEAST_LIST_GLASS };
+        let picture = if lower {
+            (all - card_h - 16.0 - least).clamp(24.0, (all * 0.38).max(24.0))
+        } else {
+            (all - card_h - 16.0).max(24.0)
+        };
+        // (the list beside, in a wide and low window: the card first, the
+        // picture under it taking the rest - the track's title not under
+        // the list's rows)
+        if self.list_elsewhere {
+            self.soft_card(ui, all, narrow, low);
+            ui.add_space(8.0);
+            let rest = ui.available_height().max(24.0);
+            let (r, _) = ui.allocate_exact_size(vec2(w, rest), Sense::hover());
+            self.visual_in(ui, r);
+            return;
+        }
+        let (r, _) = ui.allocate_exact_size(vec2(w, picture), Sense::hover());
+        self.visual_in(ui, r);
+        ui.add_space(8.0);
+        self.soft_card(ui, all, narrow, low);
+        if lower {
+            ui.add_space(8.0);
+            self.lower(ui);
+        }
+    }
+
+    /// The soft design's raised card: the words in the middle, the
+    /// position, the keys around a large play key, the volume.
+    fn soft_card(&mut self, ui: &mut Ui, all: f32, narrow: bool, low: bool) {
+        let d = design::current();
+        let t = th();
+        if self.pane_rect.is_positive() {
+            design::panel(ui.painter(), self.pane_rect, d, t, t.raised, 4);
+        }
+        let shown = egui::Frame::new()
+            .inner_margin(if all < 520.0 { 6.0 } else { 14.0 })
+            .show(ui, |ui| {
+                ui.set_min_width(ui.available_width());
+                let close = all < 520.0;
+                if close {
+                    // (a low window: the card closer - the list keeps a row)
+                    ui.spacing_mut().item_spacing.y = 3.0;
+                }
+                let (title, by) = self.now_playing_text();
+                ui.vertical_centered(|ui| {
+                    let words = if low || by.is_empty() {
+                        title.clone()
+                    } else {
+                        format!("{title} · {by}")
+                    };
+                    ui.add(
+                        egui::Label::new(
+                            RichText::new(words)
+                                .font(bold(if close { 15.0 } else { 19.0 }))
+                                .color(t.strong),
+                        )
+                        .truncate(),
+                    );
+                });
+                self.position(ui);
+                let k = Keys {
+                    look: KeyLook::Soft,
+                    size: if narrow && close {
+                        vec2(30.0, 30.0)
+                    } else if narrow {
+                        vec2(34.0, 36.0)
+                    } else {
+                        vec2(48.0, 44.0)
+                    },
+                    play: if narrow && close {
+                        vec2(40.0, 34.0)
+                    } else if narrow {
+                        vec2(48.0, 48.0)
+                    } else if low {
+                        vec2(60.0, 48.0)
+                    } else {
+                        vec2(72.0, 64.0)
+                    },
+                    gap: if narrow { 4.0 } else { 12.0 },
+                    modes: false,
+                };
+                if narrow {
+                    // (narrow: the keys, then the switches and the volume)
+                    centred(ui, egui::Id::unique("soft-keys"), |ui| {
+                        self.transport_keys(ui, k)
+                    });
+                    ui.horizontal(|ui| {
+                        self.mode_keys(ui, KeyLook::Soft, vec2(30.0, 28.0));
+                        let slider = (ui.available_width() - 110.0).clamp(30.0, 120.0);
+                        self.volume_group(ui, None, slider);
+                    });
+                } else if low {
+                    ui.horizontal(|ui| {
+                        self.transport_keys(ui, Keys { modes: true, ..k });
+                        let slider = (ui.available_width() - 110.0).clamp(30.0, 120.0);
+                        self.volume_group(ui, None, slider);
+                    });
+                } else {
+                    centred(ui, egui::Id::unique("soft-keys"), |ui| {
+                        self.transport_keys(ui, k)
+                    });
+                    ui.add_space(4.0);
+                    centred(ui, egui::Id::unique("soft-modes"), |ui| {
+                        self.mode_keys(ui, KeyLook::Soft, vec2(36.0, 32.0));
+                        ui.add_space(12.0);
+                        self.volume_group(ui, None, 140.0);
+                    });
+                }
+            });
+        self.pane_rect = shown.response.rect;
     }
 
     /// Zen: one column, the cover large in the middle and what plays under
     /// it, the picture a quiet band, the keys alone without frames.
     fn layout_zen(&mut self, ui: &mut Ui) {
         let all = ui.available_height();
+        // (the list beside, in a wide and low window: what plays, the
+        // position and the keys in one row, the picture the rest)
+        if self.list_elsewhere {
+            self.title_line(ui);
+            ui.add_space(4.0);
+            self.position(ui);
+            let quiet = KeyLook::Quiet;
+            ui.horizontal(|ui| {
+                self.transport_keys(
+                    ui,
+                    Keys {
+                        look: quiet,
+                        size: vec2(30.0, 32.0),
+                        play: vec2(36.0, 34.0),
+                        gap: 2.0,
+                        modes: false,
+                    },
+                );
+                self.mode_keys(ui, quiet, vec2(30.0, 30.0));
+                let slider = (ui.available_width() - 110.0).clamp(36.0, 110.0);
+                self.volume_group(ui, None, slider);
+            });
+            ui.add_space(6.0);
+            let band = (ui.available_height() - 4.0).max(28.0);
+            self.visual(ui, band);
+            return;
+        }
         // (the cover as large as three rows of the playlist leave it)
         let side = (all - 520.0).min(ui.available_width() * 0.42).min(280.0);
         if side >= 96.0 {
@@ -373,8 +729,11 @@ impl App {
         let w = ui.available_width();
         let compact = all < 560.0;
         let t = th();
-        // the display unit
-        let display_h = if all < 440.0 {
+        // the display unit (beside the changer in a wide and low window: as
+        // tall as the transport leaves)
+        let display_h = if self.list_elsewhere {
+            (all - 92.0 - 8.0).max(64.0)
+        } else if all < 440.0 {
             64.0
         } else if compact {
             (all * 0.26).clamp(78.0, 120.0)
@@ -390,7 +749,11 @@ impl App {
         let scope = Rect::from_min_max(pos2(vfd_rect.right() + 12.0, inner.top()), inner.max);
         let track = self.playlist.current.map_or(0, |i| i + 1);
         let (title, by) = self.now_playing_text();
-        let big = (inner.height() * 0.3).clamp(14.0, 34.0);
+        // (the time's line whole in the readout's width: "01  0:00 / 0:40"
+        // is some nine of its type's heights wide)
+        let big = (inner.height() * 0.3)
+            .clamp(14.0, 34.0)
+            .min((vfd_rect.width() / 9.5).max(14.0));
         let times = self.times();
         let lines: Vec<(String, f32)> = if compact {
             vec![(format!("{track:02}  {times}"), big), (title.clone(), 12.0)]
@@ -433,13 +796,10 @@ impl App {
                 });
             });
             ui.add_space(4.0);
-            let rest = ui.available_rect_before_wrap();
-            rack_unit(ui, rest, "CHANGER", t);
-            child(
-                ui,
-                egui::UiBuilder::new().max_rect(rest.shrink2(vec2(14.0, 14.0))),
-                |ui| self.lower(ui),
-            );
+            if self.list_elsewhere {
+                return;
+            }
+            self.rack_changer(ui);
             return;
         }
         // the amplifier
@@ -532,6 +892,18 @@ impl App {
         );
     }
 
+    /// The rack's changer: the playlist (or the equalizer) in a unit of its
+    /// own - under the transport, or beside it in a wide and low window.
+    fn rack_changer(&mut self, ui: &mut Ui) {
+        let rest = ui.available_rect_before_wrap();
+        rack_unit(ui, rest, "CHANGER", th());
+        child(
+            ui,
+            egui::UiBuilder::new().max_rect(rest.shrink2(vec2(14.0, 14.0))),
+            |ui| self.lower(ui),
+        );
+    }
+
     /// The 90s desktop: a small main strip - its title bar, the time in
     /// large digits, the picture as a little spectrum, the track's words,
     /// tiny bevelled keys - and the playlist (or the equalizer) as a panel
@@ -540,7 +912,11 @@ impl App {
         let t = th();
         // (wide: the playlist docked at the strip's right, the picture as a
         // window of its own under the strip)
-        let docked = ui.available_width() >= 1100.0;
+        // (and wide and low - 800 points and more, under 440 tall: the
+        // playlist at the strip's right there too, the picture its own
+        // window under the strip, not a strip of its own)
+        let docked = ui.available_width() >= 1100.0
+            || (ui.available_width() >= 800.0 && ui.available_height() < 440.0);
         let width = ui.available_width().min(620.0);
         let x0 = ui.available_rect_before_wrap().left();
         let column = ui.available_rect_before_wrap();
@@ -718,7 +1094,11 @@ impl App {
         // switches and volume - as a deck has them beside the cassette)
         let wide = w >= 900.0;
         let low = all < 440.0;
-        let deck_h = if low {
+        // (the card beside the deck in a wide and low window: the deck as
+        // tall as the keys under it leave - its window the picture)
+        let deck_h = if self.list_elsewhere {
+            (all - 120.0).clamp(84.0, 300.0)
+        } else if low {
             84.0
         } else if compact {
             (all * 0.36).clamp(110.0, 170.0)
@@ -754,10 +1134,13 @@ impl App {
         );
         let shell = crate::theme::mix(t.surface, Color32::BLACK, if t.dark { 0.35 } else { 0.1 });
         ui.painter().rect_filled(cassette, 10.0, shell);
-        // the label: what plays
+        // the label: what plays (a little taller on a low deck: one line)
         let label = Rect::from_min_size(
             cassette.min + vec2(cassette.width() * 0.06, cassette.height() * 0.07),
-            vec2(cassette.width() * 0.88, cassette.height() * 0.3),
+            vec2(
+                cassette.width() * 0.88,
+                cassette.height() * if low { 0.36 } else { 0.3 },
+            ),
         );
         let paper = crate::theme::mix(t.surface, Color32::WHITE, if t.dark { 0.08 } else { 0.6 });
         ui.painter().rect_filled(label, 3.0, paper);
@@ -770,20 +1153,40 @@ impl App {
         let (title, by) = self.now_playing_text();
         let clip = ui.painter().with_clip_rect(label.shrink(4.0));
         let size = (label.height() * 0.36).clamp(11.0, 26.0);
-        clip.text(
-            label.left_top() + vec2(8.0, 8.0),
-            egui::Align2::LEFT_TOP,
-            &title,
-            bold(size),
-            ink,
-        );
-        clip.text(
-            label.left_bottom() + vec2(8.0, -5.0),
-            egui::Align2::LEFT_BOTTOM,
-            &by,
-            egui::FontId::proportional((size * 0.6).max(10.0)),
-            ink,
-        );
+        let by_size = (size * 0.6).max(10.0);
+        // (two lines where both fit under the label's stripe, else the
+        // title and the artist on one: at 420 x 420 and 1400 x 460 the
+        // label is some 20 points tall, and two lines lay over each other)
+        if label.height() >= 8.0 + (size + by_size) * 1.25 + 5.0 {
+            clip.text(
+                label.left_top() + vec2(8.0, 8.0),
+                egui::Align2::LEFT_TOP,
+                &title,
+                bold(size),
+                ink,
+            );
+            clip.text(
+                label.left_bottom() + vec2(8.0, -5.0),
+                egui::Align2::LEFT_BOTTOM,
+                &by,
+                egui::FontId::proportional(by_size),
+                ink,
+            );
+        } else {
+            let one = ((label.height() - 6.0) / 1.25).clamp(10.0, size);
+            let line = if by.is_empty() {
+                title.clone()
+            } else {
+                format!("{title} · {by}")
+            };
+            clip.text(
+                pos2(label.left() + 8.0, label.center().y + 2.0),
+                egui::Align2::LEFT_CENTER,
+                line,
+                bold(one),
+                ink,
+            );
+        }
         let said = ui.interact(label, ui.scope_id().with("cassette-label"), Sense::hover());
         let words = format!("{title} {by}");
         said.widget_info(|| egui::WidgetInfo::labeled(egui::accesskit::Role::Label, true, &words));
@@ -983,6 +1386,16 @@ impl App {
                 self.ascii_position(ui);
             },
         );
+        // (the list beside, in a wide and low window: the keys first, the
+        // picture the height they leave)
+        if self.list_elsewhere {
+            self.terminal_keys(ui, w);
+            let band = (ui.available_height() - 24.0).max(30.0);
+            let (bx, _) = ui.allocate_exact_size(vec2(w, band + 20.0), Sense::hover());
+            tui_box(ui.painter(), bx, crate::viz::name(self.mode), t);
+            self.visual_in(ui, bx.shrink2(vec2(8.0, 10.0)));
+            return;
+        }
         // the picture
         let band = if all < 440.0 {
             30.0
@@ -994,7 +1407,13 @@ impl App {
         let (bx, _) = ui.allocate_exact_size(vec2(w, band + 20.0), Sense::hover());
         tui_box(ui.painter(), bx, crate::viz::name(self.mode), t);
         self.visual_in(ui, bx.shrink2(vec2(8.0, 10.0)));
-        // the keys
+        self.terminal_keys(ui, w);
+        self.terminal_list(ui);
+    }
+
+    /// The terminal's box of keys, as tall as its keys wrapped in the width.
+    fn terminal_keys(&mut self, ui: &mut Ui, w: f32) {
+        let t = th();
         // (the box as tall as its keys wrapped in the width there is)
         let top = ui.cursor().min;
         let room = Rect::from_min_size(top + vec2(10.0, 11.0), vec2(w - 20.0, 400.0));
@@ -1041,7 +1460,11 @@ impl App {
         let bx = Rect::from_min_size(top, vec2(w, used.height() + 22.0));
         ui.allocate_rect(bx, Sense::hover());
         tui_box(ui.painter(), bx, "keys", t);
-        // the playlist
+    }
+
+    /// The terminal's playlist (or equalizer) box: what is left.
+    fn terminal_list(&mut self, ui: &mut Ui) {
+        let t = th();
         let rest = ui.available_rect_before_wrap();
         tui_box(
             ui.painter(),
@@ -1184,8 +1607,11 @@ impl App {
             self.volume_group(ui, None, (ui.available_width() - 90.0).clamp(40.0, 220.0));
         });
         self.position(ui);
-        // the picture: a band across, framed
-        let band = if low {
+        // the picture: a band across, framed (the list beside it in a wide
+        // and low window: as tall as the rest leaves)
+        let band = if self.list_elsewhere {
+            (ui.available_height() - 4.0).max(16.0)
+        } else if low {
             16.0
         } else if compact {
             (all * 0.16).clamp(36.0, 90.0)
@@ -1299,7 +1725,8 @@ impl App {
             let fill = scraps[k % scraps.len()];
             let ink = crate::theme::ink_on_in(t, fill);
             let mut font = fonts[(k / 2) % fonts.len()].clone();
-            font.size *= [1.0, 0.82, 1.12, 0.9, 1.05][k % 5];
+            // (smaller in a low head: the scraps lay over the artist's line)
+            font.size *= [1.0, 0.82, 1.12, 0.9, 1.05][k % 5] * if low { 0.72 } else { 1.0 };
             let galley = clip.layout_no_wrap(piece.clone(), font, ink);
             let size = galley.size() + vec2(8.0, 4.0);
             if at.x + size.x > words_rect.right() && at.x > words_rect.left() {
@@ -1346,8 +1773,11 @@ impl App {
                 0.25,
             );
         }
-        // the picture on a torn sheet
-        let band = if low {
+        // the picture on a torn sheet (beside the list in a wide and low
+        // window: as tall as the keys and the position leave)
+        let band = if self.list_elsewhere {
+            (ui.available_height() - 22.0 - 48.0 - 34.0).max(14.0)
+        } else if low {
             14.0
         } else if compact {
             (all * 0.2).clamp(40.0, 100.0)
@@ -1405,7 +1835,17 @@ impl App {
             });
         }
         self.position(ui);
-        // the playlist on a ruled page, turned a little
+        if self.list_elsewhere {
+            return;
+        }
+        self.collage_page(ui);
+    }
+
+    /// The collage's playlist (or equalizer) on a ruled page, turned a
+    /// little: under the rest, or beside it in a wide and low window.
+    fn collage_page(&mut self, ui: &mut Ui) {
+        let t = th();
+        let p = ui.painter().clone();
         let rest = ui.available_rect_before_wrap();
         let page = design::list_fill(design::current(), t);
         p.add(Shape::convex_polygon(

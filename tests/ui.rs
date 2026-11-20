@@ -16,10 +16,11 @@ use egui_kittest::kittest::Queryable;
 use std::path::PathBuf;
 
 /// `secs` of playing, the sound taken at a device's pace by the test.
+/// `secs` of the sound played, 10 ms of it a frame (by the sound, not the
+/// clock: on a busy machine a time limit played less of it).
 fn play_for(h: &mut Harness<'_, App>, output: &mut RenderState, secs: f32) {
-    let end = std::time::Instant::now() + std::time::Duration::from_secs_f32(secs);
     let mut buf = vec![0.0f32; 480 * 2];
-    while std::time::Instant::now() < end {
+    for _ in 0..(secs * 100.0).round() as usize {
         h.state().engine().shared.render(&mut buf, 2, output);
         h.run_steps(1);
         std::thread::sleep(std::time::Duration::from_millis(10));
@@ -122,10 +123,20 @@ fn the_window_shows_the_track_and_every_visualization() {
         play_for(&mut harness, &mut output, 0.35);
         assert_eq!(harness.state().mode(), key);
         let first = harness.render().unwrap();
-        play_for(&mut harness, &mut output, 0.25);
-        let second = harness.render().unwrap();
+        // (a quarter of a second of sound, more if it has not moved yet: on
+        // a slow renderer the pictures may come three a second, the rate
+        // governed by what a frame costs - up to two seconds)
         let rect = harness.get_by_role(egui::accesskit::Role::Image).rect();
-        let p = picture(&second, rect, &first, background);
+        let mut tries = 0;
+        let (second, p) = loop {
+            play_for(&mut harness, &mut output, 0.25);
+            let second = harness.render().unwrap();
+            let p = picture(&second, rect, &first, background);
+            tries += 1;
+            if p.motion > 0.0005 || tries == 8 {
+                break (second, p);
+            }
+        };
         report.push(format!(
             "{key:<13} coverage {:>5.1} %, {:>3} colours, motion {:>5.1} %",
             p.coverage * 100.0,

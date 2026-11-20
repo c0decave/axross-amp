@@ -405,16 +405,19 @@ pub fn audio_path() -> PathBuf {
 }
 
 /// The JSON object in `path` (an empty one when it is missing, too big or
-/// no object).
+/// no object). A file there that is not one - broken JSON, too big - is
+/// kept aside first (see [`keep_unreadable_copy`]): the next save would
+/// replace it with what is in memory, and it was lost.
 fn read_object(path: &Path) -> Map<String, Value> {
     let Ok(meta) = fs::metadata(path) else {
         return Map::new();
     };
-    if !meta.is_file() || meta.len() > MAX_FILE_BYTES {
+    if !meta.is_file() {
         return Map::new();
     }
-    fs::read_to_string(path)
-        .ok()
+    let map = (meta.len() <= MAX_FILE_BYTES)
+        .then(|| fs::read_to_string(path).ok())
+        .flatten()
         .and_then(|text| serde_json::from_str::<Value>(&text).ok())
         .and_then(|value| {
             if let Value::Object(map) = value {
@@ -422,8 +425,79 @@ fn read_object(path: &Path) -> Map<String, Value> {
             } else {
                 None
             }
-        })
-        .unwrap_or_default()
+        });
+    match map {
+        Some(map) => map,
+        None => {
+            keep_unreadable_copy(path);
+            Map::new()
+        }
+    }
+}
+
+/// A copy of the unreadable file at `path` beside it, as the Python player
+/// keeps one (core/secure_storage.py): `<name>.unreadable-<YYYYmmdd-HHMMSS>-
+/// <8 hex>`, mode 0600 - once a session for a file (read again before it is
+/// saved, it is not copied again). Where no copy can be made, the file
+/// itself is moved there: the next save then cannot replace it.
+fn keep_unreadable_copy(path: &Path) {
+    static KEPT: std::sync::Mutex<Vec<PathBuf>> = std::sync::Mutex::new(Vec::new());
+    let mut kept = KEPT.lock().unwrap_or_else(|e| e.into_inner());
+    if kept.iter().any(|p| p == path) {
+        return;
+    }
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
+    let secs = now.as_secs() as i64;
+    // (the civil date of the days since 1970, UTC - Howard Hinnant's)
+    let days = secs.div_euclid(86_400);
+    let tod = secs.rem_euclid(86_400);
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + i64::from(month <= 2);
+    let hex = now.subsec_nanos() ^ std::process::id().rotate_left(16);
+    let name = format!(
+        "{}.unreadable-{year:04}{month:02}{day:02}-{:02}{:02}{:02}-{hex:08x}",
+        path.file_name().unwrap_or_default().to_string_lossy(),
+        tod / 3600,
+        tod / 60 % 60,
+        tod % 60
+    );
+    let backup = path.with_file_name(name);
+    let copied = (|| -> std::io::Result<()> {
+        let mut options = fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut out = options.open(&backup)?;
+        std::io::copy(&mut fs::File::open(path)?, &mut out)?;
+        out.sync_all()
+    })();
+    if let Err(e) = copied {
+        eprintln!(
+            "axross-amp: could not keep a copy of the unreadable {} ({e}) - moved aside",
+            path.display()
+        );
+        let _ = fs::remove_file(&backup);
+        let _ = fs::rename(path, &backup);
+    } else {
+        eprintln!(
+            "axross-amp: {} could not be read; kept as {}",
+            path.display(),
+            backup.display()
+        );
+    }
+    kept.push(path.to_path_buf());
 }
 
 /// `object` written to `path` atomically, mode 0600.
@@ -822,6 +896,47 @@ pub fn write_output(path: &Path, id: &str) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A media_player.json that cannot be read is kept aside, as the Python
+    /// player keeps it (`<name>.unreadable-<time>-<hex>`, 0600), before
+    /// anything replaces it - it was wiped by the next save (review 11).
+    #[test]
+    fn an_unreadable_file_is_kept_aside() {
+        let dir = std::env::temp_dir().join(format!("amp-unreadable-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("media_player.json");
+        let broken = r#"{"tracks": [{"path": "/m/a.mp3"}], "volume": 40,, }"#;
+        fs::write(&path, broken).unwrap();
+        assert!(read_object(&path).is_empty());
+        // (read again before it is saved: one copy, not two)
+        assert!(read_object(&path).is_empty());
+        let kept: Vec<PathBuf> = fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| {
+                p.file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .starts_with("media_player.json.unreadable-")
+            })
+            .collect();
+        assert_eq!(kept.len(), 1, "{kept:?}");
+        assert_eq!(fs::read_to_string(&kept[0]).unwrap(), broken);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = fs::metadata(&kept[0]).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600);
+        }
+        // (a good file is not copied)
+        let good = dir.join("audio.json");
+        fs::write(&good, "{}").unwrap();
+        read_object(&good);
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 3);
+        let _ = fs::remove_dir_all(&dir);
+    }
 
     /// A file in a folder of the test's own (removed with the guard).
     fn temp(name: &str) -> (crate::testdir::Scratch, PathBuf) {

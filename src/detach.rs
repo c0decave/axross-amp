@@ -3,15 +3,18 @@
 //! terminal closes; stdin from /dev/null, stdout and stderr into a log
 //! file) and the terminal's prompt comes back. `--foreground` (`-F`) keeps
 //! it attached, as before. Not from a terminal (a desktop entry, a file
-//! manager, the AppImage's launcher) it just runs.
+//! manager - the AppImage too, from one) it simply runs; the AppImage
+//! started from a terminal goes to the background as the binary does.
 //!
 //! The start is not lost silently: the parent waits up to two seconds for
 //! the child's word that its window is up (over a pipe); a child that ends
 //! before that - no display, say - has its log's last lines printed by the
-//! parent, which exits 1.
+//! parent, which exits 1; one still starting after two seconds goes on, the
+//! parent says so and exits 0 (whether it came up is in the log).
 //!
-//! Windows and macOS: on Windows nothing is done here (a console program
-//! as before); macOS as Linux.
+//! Windows and macOS: on Windows nothing is done here (a GUI program,
+//! attached to the terminal it was started in for what it says); macOS as
+//! Linux, its log in ~/Library/Caches.
 
 use std::path::PathBuf;
 
@@ -31,7 +34,8 @@ pub const CHILD: &str = "AXROSS_AMP_DETACHED";
 const READY_FD: &str = "AXROSS_AMP_READY_FD";
 
 /// Where a detached player writes what it says: `~/.cache/axross-amp/
-/// axross-amp.log` (or the temporary directory's).
+/// axross-amp.log` (macOS: `~/Library/Caches/axross-amp/axross-amp.log`; or
+/// the temporary directory's).
 pub fn log_path() -> PathBuf {
     dirs::cache_dir()
         .unwrap_or_else(std::env::temp_dir)

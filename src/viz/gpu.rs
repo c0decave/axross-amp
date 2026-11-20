@@ -1367,13 +1367,25 @@ fn tunnel(u: &Uniforms, p: [f32; 2]) -> V3 {
     let ring = (-ring_d / 0.010).exp() * (1.0 - 0.8 * smoothstep(0.3, 0.85, r));
     let rib = (-rib_d / 0.008).exp();
     let checker = fract(((depth * 1.5).floor() + (turn * 10.0).floor()) * 0.5) * 2.0;
+    // (panels and a lit side, as the shader's; on a light ground they fade
+    // out and the checker keeps a fifth of its contrast, as there)
+    let ground = u.colour(0);
+    let light = smoothstep(
+        0.35,
+        0.9,
+        0.2126 * ground[0] + 0.7152 * ground[1] + 0.0722 * ground[2],
+    );
+    let relief = 1.0 - light;
+    let grain = 1.0 - relief * 0.2 * (1.0 - (turn * TAU * 20.0).sin() * (depth * TAU * 3.0).sin());
+    let side = 1.0 - relief * 0.25 * (1.0 - (a - t * 0.2).cos());
+    let tiles = 1.0 - 0.25 * (1.0 - 0.8 * light) * (1.0 - checker);
     let wall = scale(
         mix3(
             u.colour(0),
             cycle(u, (depth * 1.5).floor() * 0.04 + fold * 0.4),
             0.10 + 0.22 * level,
         ),
-        0.75 + 0.25 * checker,
+        tiles * grain * side,
     );
     let line_colour = cycle(u, (depth * 1.5).floor() * 0.04 + fold * 0.4 + 0.15);
     let glow = ring * (0.45 + 0.85 * level + 0.12 * u.pulse()) + rib * (0.25 + 0.6 * level);

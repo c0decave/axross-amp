@@ -49,6 +49,10 @@ const STEP: f32 = 0.1;
 const RAW_BUDGET: usize = 7;
 /// And from which, seen through the veil, it closes further.
 const SHOWN_BUDGET: usize = 7;
+/// Four transitions within this (seconds): a flicker of eight a second or
+/// more - veiled at once, not after the seventh (review 11: four or five
+/// flashes went through in the first second of a hazard).
+const FAST: f32 = 0.45;
 
 #[derive(Clone, Copy, Default)]
 struct Track {
@@ -339,6 +343,16 @@ impl Watch {
             .len()
             .max(self.events[field][1].len())
             .max(self.either_events[field].len())
+    }
+
+    /// Whether a field flickers fast: four transitions (of one kind) within
+    /// the last FAST seconds - eight or more a second, where a face within
+    /// the rule, at most six evenly, takes half a second for four.
+    fn fast(&self, field: usize, now: f32) -> bool {
+        let quick = |ev: &[f32]| ev.iter().filter(|&&t| now - t < FAST).count() >= 4;
+        quick(&self.events[field][0])
+            || quick(&self.events[field][1])
+            || quick(&self.either_events[field])
     }
 }
 
@@ -906,7 +920,9 @@ impl FlashGuard {
             // (held a second and a half after the last time it was called
             // for - not while the face merely stays near the limit: counted
             // strictly, ordinary music stays there, and was veiled)
-            let want = if shown >= SHOWN_BUDGET || raw >= RAW_BUDGET {
+            let fast = self.raw_watch.fast(k, now)
+                || (!self.shown_is_raw && self.shown_watch.fast(k, now));
+            let want = if shown >= SHOWN_BUDGET || raw >= RAW_BUDGET || fast {
                 0.95
             } else {
                 0.0
@@ -927,7 +943,8 @@ impl FlashGuard {
         target.resize(self.veil.len(), level);
         // (on within a few frames - before the next transition - off over
         // a second)
-        let on = 1.0 - (-dt / 0.08).exp();
+        // (on in a frame or two: at 8 Hz the next transition is 60 ms away)
+        let on = 1.0 - (-dt / 0.03).exp();
         let off = 1.0 - (-dt / 0.9).exp();
         // (the slow picture follows over half a second where there is no
         // veil, and stands nearly still under it: following, in black and
@@ -1092,7 +1109,11 @@ impl FlashGuard {
                 contrast[cy * cols + cx] = (hi - lo).max(0.0);
             }
         }
-        let on = 1.0 - (-dt / 0.05).exp();
+        // (on in the frame it is seen: easing it on over 0.05 s left the
+        // stripes standing for a frame or several - review 11's meter saw
+        // one to six frames of a pattern in the scope, the flow field, the
+        // reaction-diffusion in the starkest schemes)
+        let on = 1.0;
         let off = 1.0 - (-dt / 0.6).exp();
         let mut most = 0.0f32;
         for i in 0..n {
@@ -1389,6 +1410,33 @@ fn lay_parts(acc: &mut Onto<'_>, at: usize) {
     }
 }
 
+/// The part of the segment `a`..`b` within `r`: its range of t (a + (b - a)
+/// t), or None (Liang-Barsky).
+fn within(a: Pos2, b: Pos2, r: Rect) -> Option<(f32, f32)> {
+    let d = b - a;
+    let (mut t0, mut t1) = (0.0f32, 1.0f32);
+    for (p, q) in [
+        (-d.x, a.x - r.left()),
+        (d.x, r.right() - a.x),
+        (-d.y, a.y - r.top()),
+        (d.y, r.bottom() - a.y),
+    ] {
+        if p.abs() < 1e-9 {
+            if q < 0.0 {
+                return None;
+            }
+        } else {
+            let t = q / p;
+            if p < 0.0 {
+                t0 = t0.max(t);
+            } else {
+                t1 = t1.min(t);
+            }
+        }
+    }
+    (t0 < t1).then_some((t0, t1))
+}
+
 /// A tessellated mesh laid onto the cells (sRGB values, premultiplied).
 #[allow(clippy::too_many_arguments)]
 fn lay_mesh(
@@ -1614,14 +1662,22 @@ fn lay_pieces(
                 .into_iter()
                 .max_by(|x, y| (x.1 - x.0).length().total_cmp(&(y.1 - y.0).length()))
                 .unwrap_or((p0, p1, p2));
-            let length = (b - a).length();
+            // (only the part of it within the picture: a line's sharp turn
+            // is tessellated with a miter reaching thousands of points out -
+            // a tangle of them, the stereo scope in uncorrelated noise, was
+            // laid along 14 million cells, 0.17 s a frame at 1080p)
+            let Some((t0, t1)) = within(a, b, rect.expand2(egui::vec2(cw, ch))) else {
+                continue;
+            };
+            let length = (b - a).length() * (t1 - t0);
             // (a cell at a time: half a cell at a time, a bar's thin edges
             // a whole picture tall cost hundreds of blends each)
             let n = ((length / cw.min(ch)).ceil() as usize).max(1);
             let towards = (c - Pos2::new((a.x + b.x) / 2.0, (a.y + b.y) / 2.0)) / 3.0;
-            let share = SPREAD * area.abs() * stride as f32 / n as f32 / (cw * ch);
+            let share = SPREAD * area.abs() * (t1 - t0) * stride as f32 / n as f32 / (cw * ch);
             for k in 0..n {
-                let p = a + (b - a) * ((k as f32 + 0.5) / n as f32) + towards;
+                let t = t0 + (t1 - t0) * ((k as f32 + 0.5) / n as f32);
+                let p = a + (b - a) * t + towards;
                 splat(acc, p, share);
             }
             continue;
@@ -1954,6 +2010,35 @@ mod tests {
             }
         }
         assert_eq!(g.pressure().0, 3, "{:?}", g.pressure());
+    }
+
+    /// A whole-face strobe of 8 Hz (and one of 5 Hz): the veil comes
+    /// within the first three flashes - six transitions at most through it
+    /// in the first second (review 11: four or five flashes went through
+    /// before the veil, at the seventh transition).
+    #[test]
+    fn the_veil_comes_within_the_first_three_flashes() {
+        for hz in [8.0f32, 5.0, 10.0] {
+            let mut g = FlashGuard::default();
+            let rect = Rect::from_min_size(Pos2::ZERO, egui::vec2(384.0, 216.0));
+            g.layout(rect, egui::vec2(384.0, 216.0));
+            let n = g.cols * g.rows;
+            for i in 0..60 {
+                let on = (i as f32 / 60.0 * hz).fract() < 0.5;
+                let v = if on { 0.9 } else { 0.01 };
+                g.raw = vec![[v, v, v]; n];
+                g.raw_big = g.raw.clone();
+                g.time += 1.0 / 60.0;
+                g.frame += 1;
+                g.follow(1.0 / 60.0);
+            }
+            let (raw, shown) = g.pressure();
+            assert!(raw >= 8, "{hz} Hz: the strobe itself {raw}");
+            assert!(
+                shown <= 6,
+                "{hz} Hz: {shown} transitions through the veil in the first second"
+            );
+        }
     }
 
     #[test]

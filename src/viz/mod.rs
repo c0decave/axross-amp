@@ -252,12 +252,6 @@ pub const SCHEMES: [(&str, &str, [&str; 5]); 5] = [
     ),
 ];
 
-/// The window's own colours for "Follow the theme": its background, its
-/// accent, its text.
-const THEME_BASE: &str = "#0d1117";
-const THEME_HIGHLIGHT: &str = "#4c9aff";
-const THEME_TEXT: &str = "#e6edf3";
-
 /// The custom scheme's colours (axross's CUSTOM_COLOURS): key, name, default.
 pub const CUSTOM_COLOURS: [(&str, &str, &str); 4] = [
     ("background", "Background", "#000000"),
@@ -608,7 +602,11 @@ pub fn quiet_ground(c: Color32) -> Color32 {
 
 pub fn scheme(key: &str, custom: &std::collections::BTreeMap<String, String>) -> Scheme {
     if key == "theme" {
-        let (base, light, text) = (hex(THEME_BASE), hex(THEME_HIGHLIGHT), hex(THEME_TEXT));
+        // (the window's theme as it is now - its picture's ground, its
+        // accent, its strongest text: one of the twelve, light or dark;
+        // it was Midnight's three colours whatever the theme)
+        let t = crate::theme::current();
+        let (base, light, text) = (t.sunken, t.accent, t.strong);
         return Scheme {
             background: base,
             low: mix(light, base, 0.45),
@@ -1381,9 +1379,10 @@ pub struct Frame<'a> {
 /// from the one before.
 pub fn draw(f: &Frame<'_>, key: &str, state: &mut VizState) {
     // (no saturated red in any face, whatever its scheme - Classic's and
-    // Fire's own reds, a cover's, a custom one: every colour taken toward a
-    // warm white until it is none by either encoding, the ground darkened
-    // and turned from red; no red flash can come of them)
+    // Fire's own reds, a cover's, a custom one: every colour of the scheme
+    // turned toward a warm grey as light as it is (unred_level) until it is
+    // none by either encoding, the ground darkened and turned from red; no
+    // red flash can come of them)
     // (calmed as the scheme chosen asks - a red one as red - though its
     // reds are taken out here: faces ask scheme_calm of what they draw with)
     let _calm = CalmAsChosen::of(f.s);
@@ -1739,6 +1738,27 @@ mod tests {
 #[cfg(test)]
 mod scheme_calm_tests {
     use super::*;
+
+    /// "Follow the theme" is the theme's: its picture's ground, its accent,
+    /// in every one of the twelve (review 11: it was Midnight's whatever
+    /// the theme).
+    #[test]
+    fn follow_the_theme_follows_every_theme() {
+        let mut grounds = std::collections::BTreeSet::new();
+        for t in crate::theme::THEMES.iter() {
+            crate::theme::set(t.key);
+            let s = scheme("theme", &Default::default());
+            assert_eq!(s.background, t.sunken, "{}", t.key);
+            assert_eq!(s.mid, t.accent, "{}", t.key);
+            grounds.insert(s.background.to_array());
+        }
+        crate::theme::set("midnight");
+        assert!(
+            grounds.len() >= 10,
+            "{} grounds of twelve themes",
+            grounds.len()
+        );
+    }
 
     #[test]
     fn strong_and_red_schemes_move_calmer() {

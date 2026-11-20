@@ -42,6 +42,11 @@ use symphonia::core::units::{Time, TimeBase, Timestamp};
 /// heard this much later), and seconds decoded ahead of that - the margin a
 /// slow disk, a network share or a big cover art has before it is heard
 /// (the next track is opened ahead on a thread of its own besides).
+/// The sample rates a file may have to be played (Hz): telephone's 8 kHz
+/// and lower down to 1 kHz, up to 768 kHz.
+const MIN_RATE: u32 = 1_000;
+const MAX_RATE: u32 = 768_000;
+
 const AHEAD_SECS: f32 = 0.35;
 const STAGE_SECS: f32 = 3.0;
 
@@ -62,8 +67,12 @@ const CUT_MARGIN: u64 = 16_384;
 
 /// How often the output is tried again while there is none.
 const OUTPUT_RETRY: Duration = Duration::from_secs(5);
-/// Stereo frames of the most recent output the visualizations may read.
-pub const TAP_FRAMES: usize = 1 << 16;
+/// Stereo frames of the most recent output the visualizations and the
+/// meters may read: 5.5 s at 48 kHz, 1.4 s at 192 kHz (2 MiB) - the time
+/// the meters' thread may go without a turn on a busy machine and still
+/// hear every frame (it was 1.4 s at 48 kHz, 0.34 s at 192 kHz). The
+/// pictures read at most [`TAP_READ`] of it a frame, the meters 16384.
+pub const TAP_FRAMES: usize = 1 << 18;
 /// The most of the tap the pictures read at a time (the FFT, the scopes).
 pub const TAP_READ: usize = 8192;
 /// The output's buffer asked for (frames): small, so a pause, a seek or a
@@ -351,12 +360,25 @@ pub struct Art {
     pub large: Option<(u32, u32, Vec<u8>)>,
 }
 
+/// A cover's picture decoded, within limits: at most 8192 px a side and 192
+/// MiB to decode it into (an 11000 x 11000 PNG took 552 MB: review 11) - a
+/// larger one is no cover.
+fn decode_cover(bytes: &[u8]) -> image::ImageResult<image::DynamicImage> {
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(8192);
+    limits.max_image_height = Some(8192);
+    limits.max_alloc = Some(192 << 20);
+    let mut reader = image::ImageReader::new(std::io::Cursor::new(bytes)).with_guessed_format()?;
+    reader.limits(limits);
+    reader.decode()
+}
+
 /// The cover of `info` made small, the large one let go.
 fn make_art(info: &mut TrackInfo) {
     let Some(bytes) = info.cover.take() else {
         return;
     };
-    let Ok(image) = image::load_from_memory(&bytes) else {
+    let Ok(image) = decode_cover(&bytes) else {
         return;
     };
     let small = image.thumbnail(256, 256).to_rgba8();
@@ -1454,6 +1476,14 @@ fn open_media(
         .make_audio_decoder(&params, &AudioDecoderOptions::default())
         .map_err(|e| format!("cannot decode it ({e})"))?;
     let rate = params.sample_rate.unwrap_or(44_100);
+    // (a header's rate of 0 or 1 Hz - a broken or hostile file - played
+    // "0:00" for ever, the 1 Hz one resampled into 560 MB: refused here,
+    // said, and the next track played)
+    if !(MIN_RATE..=MAX_RATE).contains(&rate) {
+        return Err(format!(
+            "its sample rate, {rate} Hz, is not one that can be played"
+        ));
+    }
     let mut info = TrackInfo {
         rate,
         channels: params.channels.as_ref().map(|c| c.count()).unwrap_or(2),
@@ -3260,6 +3290,48 @@ mod tests {
         assert!((a + b - 1.0).abs() < 1e-5, "alike: amplitudes add to one");
         let (a, b) = fade_gains(0.5, 0.0);
         assert!((a - b).abs() < 1e-5 && (a * a + b * b - 1.0).abs() < 1e-5);
+    }
+
+    /// A PNG that says it is 11000 x 11000 (its header alone): refused by
+    /// the limits before anything is allocated for it.
+    #[test]
+    fn a_huge_cover_is_refused_before_it_is_decoded() {
+        let mut png = b"\x89PNG\r\n\x1a\n".to_vec();
+        let mut chunk = |kind: &[u8], data: &[u8]| {
+            png.extend((data.len() as u32).to_be_bytes());
+            let mut body = kind.to_vec();
+            body.extend(data);
+            png.extend(&body);
+            // (the CRC-32 of the type and data)
+            let mut crc = 0xffff_ffffu32;
+            for b in &body {
+                crc ^= *b as u32;
+                for _ in 0..8 {
+                    crc = if crc & 1 != 0 {
+                        (crc >> 1) ^ 0xedb8_8320
+                    } else {
+                        crc >> 1
+                    };
+                }
+            }
+            png.extend((!crc).to_be_bytes());
+        };
+        let mut ihdr = Vec::new();
+        ihdr.extend(11_000u32.to_be_bytes());
+        ihdr.extend(11_000u32.to_be_bytes());
+        ihdr.extend([8, 6, 0, 0, 0]);
+        chunk(b"IHDR", &ihdr);
+        chunk(b"IEND", &[]);
+        match decode_cover(&png) {
+            Err(image::ImageError::Limits(_)) => {}
+            other => panic!("not refused by the limits: {:?}", other.map(|i| i.width())),
+        }
+        let mut info = TrackInfo {
+            cover: Some(png),
+            ..Default::default()
+        };
+        make_art(&mut info);
+        assert!(info.art.is_none());
     }
 
     #[test]

@@ -10,7 +10,8 @@
 #            verified by SHA-256, by scripts/fetch_appimagetool.sh)
 #
 # The AppDir holds the binary, the desktop entry and the icon from
-# packaging/. No library is bundled: the binary needs glibc 2.35 or later
+# packaging/, LICENSE and THIRD_PARTY_LICENSES.md (usr/share/doc). No
+# library is bundled: the binary needs glibc 2.35 or later
 # and ALSA's libasound.so.2 (every desktop has it); it opens X11 / Wayland
 # and Vulkan / GL at run time from the system, as any desktop program.
 # AppDirOnly=1 builds the AppDir alone (no download: for a local check).
@@ -29,6 +30,10 @@ mkdir -p -- "$APPDIR/usr/bin" "$APPDIR/usr/share/applications" \
 install -m 0755 -- "$BINARY" "$APPDIR/usr/bin/axross-amp"
 install -m 0644 -- "$HERE/packaging/axross-amp.desktop" "$APPDIR/usr/share/applications/axross-amp.desktop"
 install -m 0644 -- "$HERE/packaging/axross-amp.svg" "$APPDIR/usr/share/icons/hicolor/scalable/apps/axross-amp.svg"
+# (the licences: the program's and those of what it is built from)
+mkdir -p -- "$APPDIR/usr/share/doc/axross-amp"
+install -m 0644 -- "$HERE/LICENSE" "$APPDIR/usr/share/doc/axross-amp/LICENSE"
+install -m 0644 -- "$HERE/THIRD_PARTY_LICENSES.md" "$APPDIR/usr/share/doc/axross-amp/THIRD_PARTY_LICENSES.md"
 # (appimagetool wants the entry and the icon at the AppDir's top as well)
 cp -- "$APPDIR/usr/share/applications/axross-amp.desktop" "$APPDIR/axross-amp.desktop"
 cp -- "$APPDIR/usr/share/icons/hicolor/scalable/apps/axross-amp.svg" "$APPDIR/axross-amp.svg"

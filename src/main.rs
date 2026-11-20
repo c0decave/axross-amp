@@ -9,9 +9,14 @@
 //! (`~/.config/axross/media_player.json`, `audio.json`): the player inside
 //! axross and this program share them.
 
+// (a GUI program on Windows: no console window opened beside it; started in
+// a terminal it attaches to that one for --help and what it says)
+#![cfg_attr(windows, windows_subsystem = "windows")]
+
 use axross_amp::app;
 
 const USAGE: &str = "axross-amp [--foreground] [--new-instance] [FILE|FOLDER|PLAYLIST|URL ...]
+       axross-amp --help | --version
 
 Play local audio (MP3, FLAC, Ogg Vorbis, Opus, AAC / M4A, ALAC, WAV, AIFF, CAF),
 folders and M3U / PLS playlists, and internet radio by its http(s) URL.
@@ -20,18 +25,27 @@ A player already running (Linux) takes the files of a second start;
 --new-instance starts another one anyway.
 
 Started from a terminal it goes to the background and the prompt comes
-back (it writes to ~/.cache/axross-amp/axross-amp.log; a start that fails
-is said there and then); --foreground (-F) keeps it in the terminal.
+back; it writes to ~/.cache/axross-amp/axross-amp.log (macOS:
+~/Library/Caches/axross-amp/axross-amp.log). A start that fails within two
+seconds is said there and then (exit status 1); one still starting after
+two seconds goes on in the background and says so (exit status 0).
+--foreground (-F) keeps it in the terminal. --version says which version
+it is, --help (-h) this.
 
 Keys: Space play / pause, Left / Right seek 5 s (Shift: 30 s), Ctrl+Left /
 Right previous / next, Up / Down or + / - volume, Home the track's start,
 M mute, N next, P previous, V / Shift+V the next / previous visualization,
-J / L back / on 15 s, D the pictures on another display;
+J / L back / on 15 s, D the pictures on another display, F11 full screen,
+Esc out of full screen or the large picture (or closes a dialog, the
+display view), Ctrl+F the playlist's filter;
 in the playlist Ctrl+Up / Down choose a track, Alt+Up / Down move it, Enter
 play it, Delete remove it, Ctrl+Z undo.
 The mouse wheel seeks over the position and sets the volume over its slider.";
 
 fn main() -> eframe::Result {
+    // (Windows: the terminal it was started in, if any, for its output)
+    #[cfg(windows)]
+    attach_to_the_terminal();
     // (args_os: a file name in bytes that are no UTF-8 - "Open with" from a
     // file manager - is kept, not a panic)
     let args: Vec<String> = std::env::args_os()
@@ -113,9 +127,26 @@ fn main() -> eframe::Result {
         options,
         Box::new(move |cc| {
             let app = app::App::new(cc, files);
+            #[cfg(unix)]
+            app::close_on_signals(&cc.egui_ctx);
             // (in the background: the window is up - the terminal may go)
             axross_amp::detach::signal_ready();
             Ok(Box::new(app))
         }),
     )
+}
+
+/// A GUI program on Windows has no console; started from one (cmd,
+/// PowerShell, Windows Terminal) it writes to that one - --help, --version,
+/// a start that fails. Started from Explorer there is none, and nothing is
+/// opened.
+#[cfg(windows)]
+fn attach_to_the_terminal() {
+    use windows_sys::Win32::System::Console::{ATTACH_PARENT_PROCESS, AttachConsole};
+    // SAFETY: no arguments but a constant; fails harmlessly without a parent
+    // console. Rust's stdout and stderr ask for the standard handles at
+    // each write, so they reach the console attached here.
+    unsafe {
+        AttachConsole(ATTACH_PARENT_PROCESS);
+    }
 }

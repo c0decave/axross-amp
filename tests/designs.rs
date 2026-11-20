@@ -752,3 +752,251 @@ fn a_paused_90s_desktop_rests() {
         moved.len()
     );
 }
+
+/// The words each design writes, where they are seen: (text, its rect, the
+/// clip rect it is cut to).
+type Words = Vec<(String, egui::Rect, egui::Rect)>;
+
+fn texts(h: &Harness<'static, App>) -> Words {
+    fn walk(shape: &egui::Shape, clip: egui::Rect, out: &mut Words) {
+        match shape {
+            egui::Shape::Text(t) => {
+                let text = t.galley.job.text.trim().to_owned();
+                let rect = t.galley.rect.translate(t.pos.to_vec2());
+                if !text.is_empty()
+                    && rect.intersect(clip).is_positive()
+                    && t.fallback_color.a() > 0
+                {
+                    out.push((text, rect, clip));
+                }
+            }
+            egui::Shape::Vec(v) => v.iter().for_each(|s| walk(s, clip, out)),
+            _ => {}
+        }
+    }
+    let mut out = Vec::new();
+    for c in &h.output().shapes {
+        walk(&c.shape, c.clip_rect, &mut out);
+    }
+    out
+}
+
+/// Every design at every size (the low and wide ones too): no words written
+/// over other words (the cassette's label at 420 x 420 and 1400 x 460 had
+/// the title over the artist: review 10), and the playlist's Clear and
+/// durations not cut off (the terminal at 420 x 420).
+#[test]
+fn no_design_writes_words_over_words() {
+    let only = std::env::var("AMP_DESIGN_ONLY").ok();
+    let mut failures = Vec::new();
+    for d in DESIGNS.iter().filter(|d| {
+        only.as_deref()
+            .is_none_or(|o| o.split(',').any(|k| k == d.key))
+    }) {
+        for (w, ht) in SIZES
+            .iter()
+            .copied()
+            .chain([(1400.0, 460.0), (1280.0, 800.0)])
+        {
+            let home = Scratch::new(&format!("design-words-{}-{w}", d.key));
+            let tracks = two_tracks(&home);
+            let size = egui::vec2(w, ht);
+            let mut h = window(&home, tracks, size);
+            assert!(until(&mut h, 5.0, |a| a.is_loaded()));
+            h.state_mut().set_design(d.key);
+            // (in the theme it suggests: the terminal's is monospace)
+            h.state_mut().set_theme(d.suggests);
+            // (a track's tags, as a real one has: a title and an artist)
+            let ctx = h.ctx.clone();
+            h.state_mut().show_info(
+                &ctx,
+                axross_amp::engine::TrackInfo {
+                    title: "Night Engines".into(),
+                    artist: "Ada Lovelace Ensemble".into(),
+                    album: "Analytical".into(),
+                    rate: 48_000,
+                    channels: 2,
+                    bits: Some(16),
+                    duration: Some(40.0),
+                    seekable: true,
+                    ..Default::default()
+                },
+            );
+            settle(&mut h, 3);
+            let what = format!("{} at {w} x {ht}", d.name);
+            let words = texts(&h);
+            // (an LCD's unlit segments under its digits: "88:88" under
+            // "01:23" - one picture, not words over words)
+            let ghost = |a: &str, b: &str| {
+                let unlit = |s: &str| -> String {
+                    s.chars()
+                        .map(|c| if c.is_ascii_digit() { '8' } else { c })
+                        .collect()
+                };
+                (a.chars().all(|c| !c.is_ascii_digit() || c == '8')
+                    || b.chars().all(|c| !c.is_ascii_digit() || c == '8'))
+                    && unlit(a).len() == unlit(b).len()
+            };
+            for (i, (a, ra, ca)) in words.iter().enumerate() {
+                for (b, rb, cb) in &words[i + 1..] {
+                    let over = ra.intersect(*ca).intersect(rb.intersect(*cb));
+                    // (more than a sliver: a third of the smaller one's height
+                    // and a few points along)
+                    if over.is_positive()
+                        && !ghost(a, b)
+                        && over.height() > ra.height().min(rb.height()) / 3.0
+                        && over.width() > 4.0
+                    {
+                        failures.push(format!("{what}: {a:?} over {b:?}"));
+                    }
+                }
+            }
+            // the playlist's buttons and durations whole in sight, not cut
+            // by the box they are in
+            let duration = |t: &str| {
+                let (m, sec) = t.split_once(':').unwrap_or(("", ""));
+                !m.is_empty()
+                    && m.chars().all(|c| c.is_ascii_digit())
+                    && sec.len() == 2
+                    && sec.chars().all(|c| c.is_ascii_digit())
+            };
+            for (text, rect, clip) in &words {
+                let whole = ["Clear", "Save…", "Sort ▾", "Equalizer"].contains(&text.as_str())
+                    || duration(text);
+                // (cut along the row by its box - not a row half scrolled
+                // into sight - nor out over the design's own margin)
+                let inside = rect.left() >= clip.left() - 0.5
+                    && rect.right() <= clip.right().min(w - 4.0) + 0.5;
+                if whole && rect.center().y < clip.bottom() && !inside {
+                    failures.push(format!("{what}: {text:?} cut off ({rect:?} in {clip:?})"));
+                }
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{failures:#?}");
+}
+
+/// Wide and low windows (half a laptop's screen tall): the picture is not
+/// squeezed to a strip under the list - the list goes beside it (Modern,
+/// Glass, Soft, the rack and the collage had it about 10 points tall at
+/// 1400 x 460: review 10).
+#[test]
+fn a_wide_and_low_window_keeps_the_picture() {
+    let only = std::env::var("AMP_DESIGN_ONLY").ok();
+    let mut failures = Vec::new();
+    for d in DESIGNS.iter().filter(|d| {
+        only.as_deref()
+            .is_none_or(|o| o.split(',').any(|k| k == d.key))
+    }) {
+        // (the cassette's picture is the window of a cassette; the 90s
+        // desktop's, the terminal's and Zen's were small at 900 x 400 too:
+        // review 11)
+        let least = match d.key {
+            "cassette" => 40.0,
+            _ => 60.0,
+        };
+        for (w, ht) in [(900.0, 400.0), (1600.0, 420.0), (1400.0, 460.0)] {
+            let home = Scratch::new(&format!("design-low-{}-{w}", d.key));
+            let tracks = two_tracks(&home);
+            let mut h = window(&home, tracks, egui::vec2(w, ht));
+            assert!(until(&mut h, 5.0, |a| a.is_loaded()));
+            h.state_mut().set_design(d.key);
+            h.state_mut().set_theme(d.suggests);
+            settle(&mut h, 4);
+            let picture = h
+                .query_all_by_label_contains("Visualization: ")
+                .map(|n| n.rect())
+                .max_by(|a, b| a.height().total_cmp(&b.height()));
+            let tall = picture.map_or(0.0, |r| r.height());
+            println!(
+                "{} at {w} x {ht}: the picture {tall:.0} points tall",
+                d.name
+            );
+            if tall < least {
+                failures.push(format!(
+                    "{} at {w} x {ht}: the picture {tall:.0} points tall",
+                    d.name
+                ));
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{failures:#?}");
+}
+
+/// Glass and Soft are arrangements of their own, not Modern's in other
+/// surfaces (review 10): Glass in two columns - the keys at the left of
+/// the picture -, Soft centred - the play key in the middle, under the
+/// picture.
+#[test]
+fn glass_and_soft_are_not_modern() {
+    let mut failures = Vec::new();
+    let size = egui::vec2(1280.0, 800.0);
+    let shown = |key: &str| {
+        let home = Scratch::new(&format!("design-own-{key}"));
+        let tracks = two_tracks(&home);
+        let mut h = window(&home, tracks, size);
+        assert!(until(&mut h, 5.0, |a| a.is_loaded()));
+        h.state_mut().set_design(key);
+        settle(&mut h, 4);
+        let play = ["Pause", "Play"]
+            .iter()
+            .find_map(|l| h.query_by_label(l).map(|n| n.rect()))
+            .expect("a play key");
+        let picture = h
+            .query_all_by_label_contains("Visualization: ")
+            .map(|n| n.rect())
+            .max_by(|a, b| a.height().total_cmp(&b.height()))
+            .expect("the picture");
+        (play, picture)
+    };
+    let (play, picture) = shown("glass");
+    if play.right() > picture.left() {
+        failures.push(format!(
+            "Glass: the keys not beside the picture ({play:?}, {picture:?})"
+        ));
+    }
+    let (play, picture) = shown("soft");
+    if (play.center().x - picture.center().x).abs() > picture.width() * 0.1
+        || play.top() < picture.bottom()
+    {
+        failures.push(format!(
+            "Soft: the play key not centred under the picture ({play:?}, {picture:?})"
+        ));
+    }
+    assert!(failures.is_empty(), "{failures:#?}");
+}
+
+/// A very large window (3000 x 1600) is used: the picture and the playlist
+/// span most of it, not a column of 1180 points in the middle (review 11:
+/// eight designs stayed a narrow column). Zen alone is one column by its
+/// nature.
+#[test]
+fn a_very_large_window_is_used() {
+    let mut failures = Vec::new();
+    let size = egui::vec2(3000.0, 1600.0);
+    for d in DESIGNS.iter().filter(|d| d.key != "zen") {
+        let home = Scratch::new(&format!("design-large-{}", d.key));
+        let tracks = two_tracks(&home);
+        let mut h = window(&home, tracks, size);
+        assert!(until(&mut h, 5.0, |a| a.is_loaded()));
+        h.state_mut().set_design(d.key);
+        settle(&mut h, 4);
+        let mut span = egui::Rect::NOTHING;
+        for r in h
+            .query_all_by_label_contains("Visualization: ")
+            .map(|n| n.rect())
+            .chain(h.query_by_label("Filter the playlist").map(|n| n.rect()))
+        {
+            span = span.union(r);
+        }
+        if span.width() < size.x * 0.6 {
+            failures.push(format!(
+                "{}: {:.0} points of {}",
+                d.name,
+                span.width(),
+                size.x
+            ));
+        }
+    }
+    assert!(failures.is_empty(), "{failures:#?}");
+}

@@ -28,8 +28,13 @@ the pointer - no rounded corner anywhere); *Brutalist* (an asymmetric hard
 grid: the title huge, the cover square in a 3 px frame, the keys heavy
 blocks with their names, the picture a band across, no corners or
 shadows); *Glass* (light behind frosted, translucent panes, over a haze of
-the cover's colours); *Soft* (neumorphic: panels and keys pressed out of
-the ground, the picture pressed in); *Collage* (a turned photo of the
+the cover's colours: in two columns - a tall pane of what plays, the
+cover large, the words, the position, the keys and the volume, at the left;
+the picture and the playlist's pane at the right; narrow, the pane across
+with the cover small beside the words); *Soft* (neumorphic, centred: the
+picture pressed in at the top, under it a raised card with the words in
+the middle, the position and the keys around a large play key, the
+switches and the volume; then the playlist's card); *Collage* (a turned photo of the
 cover, the title cut letter by letter from other pages in mixed type, a
 sticker, the picture on a torn sheet, the keys on paper scraps along a
 strip of tape, the playlist on a ruled page - turned shapes anti-aliased,
@@ -48,7 +53,14 @@ keys, mute, stop, a double-click on the playlist's row, the two menus);
 and that Tab goes through the controls in the order they are seen (row
 by row, left to right; a column after the one at its left). A low window
 gives the playlist its rows first: the picture shrinks to a strip, the
-rack's amplifier and transport share a unit, the keys share a row. Text
+rack's amplifier and transport share a unit, the keys share a row; a wide
+and low one (at least 800 points wide, under 440 tall) puts the playlist in
+a column beside the player instead (Modern, Glass, Soft, the rack, the
+cassette, the brutalist, the collage), the picture at least 60 points tall
+there (tested at 900 x 400, 1600 x 420 and 1400 x 460). No design writes
+words over words (the cassette's low label on one line), nor cuts the
+playlist's buttons or durations off (tested in every design at seven
+sizes). Text
 keeps 4.5 : 1 (7 : 1 in high contrast) on every design's card and on what
 its playlist lies on (the changer, the 90s panel, the card insert, the
 ruled page) in every theme over 24 cover hues, and on the glass haze and

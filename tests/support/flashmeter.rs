@@ -563,6 +563,14 @@ impl Meter {
         (worst(&self.lum_events), worst(&self.red_events))
     }
 
+    /// The worst field by the swept reading: its events (frames) and place.
+    pub fn worst_field_swept(&self) -> (Vec<usize>, (usize, usize, usize, usize)) {
+        let best = (0..self.fields.len())
+            .max_by_key(|&k| self.swept_events[k].len())
+            .unwrap_or(0);
+        (self.swept_events[best].clone(), self.fields[best])
+    }
+
     /// The most luminance transitions in any second over any field by the
     /// swept reading.
     pub fn most_swept(&self) -> usize {
@@ -664,8 +672,24 @@ pub fn worst_music(part: f32) -> Vec<f32> {
         (seed >> 9) as f32 / (1u32 << 23) as f32 - 0.5
     };
     let tau = std::f32::consts::TAU;
-    let parts = 8.0;
+    // (eight parts; then three in stereo that differs left and right - review
+    // 11's: the stereo scope drew a new tangle every frame of uncorrelated
+    // noise -: noise unlike left and right, a chord in antiphase at 8 Hz,
+    // and full-band bursts of 30 ms nine times a second)
+    let parts = 11.0;
     let n = (part * parts * RATE) as usize;
+    let mut seed2 = 29u32;
+    let mut other = move || {
+        seed2 = seed2.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+        (seed2 >> 9) as f32 / (1u32 << 23) as f32 - 0.5
+    };
+    let chord = |t: f32| {
+        [110.0f32, 164.8, 220.0, 329.6, 440.0, 880.0, 1760.0]
+            .iter()
+            .map(|f| 2.0 * (t * f).fract() - 1.0)
+            .sum::<f32>()
+            / 4.0
+    };
     let mut out = Vec::with_capacity(n * 2);
     let mut phase = 0.0f32;
     for i in 0..n {
@@ -718,6 +742,23 @@ pub fn worst_music(part: f32) -> Vec<f32> {
                     0.0
                 };
                 (v, v)
+            }
+            8 => (noise() * 1.8, other() * 1.8),
+            9 => {
+                let v = chord(tp);
+                if (tp * 8.0).fract() < 0.5 {
+                    (v, 0.0)
+                } else {
+                    (0.0, v)
+                }
+            }
+            10 => {
+                if (tp * 9.0).fract() < 0.27 {
+                    let v = noise() + chord(tp) * 0.5;
+                    (v, other() + chord(tp) * 0.5)
+                } else {
+                    (0.0, 0.0)
+                }
             }
             _ => {
                 let v = if (tp as u32).is_multiple_of(2) {

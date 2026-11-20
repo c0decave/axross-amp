@@ -15,6 +15,27 @@ use axross_amp::state::VisualOptions;
 use axross_amp::viz::{FACES, Group};
 use std::time::Instant;
 
+/// The CPU time this thread has used, in milliseconds: what a frame costs
+/// the thread that draws it, whatever else the machine runs (wall-clock
+/// time on a busy machine counted the other processes' turns: particles at
+/// 1920 x 1080 read 17 - 18 ms of a 16 ms budget with the load at 5 - 30).
+/// (Where there is no thread clock, the wall clock.)
+fn cpu_ms() -> f64 {
+    #[cfg(unix)]
+    {
+        let mut t = libc::timespec {
+            tv_sec: 0,
+            tv_nsec: 0,
+        };
+        // SAFETY: clock_gettime writes the timespec it is given, no more.
+        if unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &mut t) } == 0 {
+            return t.tv_sec as f64 * 1000.0 + t.tv_nsec as f64 / 1e6;
+        }
+    }
+    static START: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+    START.get_or_init(Instant::now).elapsed().as_secs_f64() * 1000.0
+}
+
 fn noise(seconds: f32) -> Vec<f32> {
     let mut seed = 1u32;
     (0..(seconds * faces::RATE as f32) as usize * 2)
@@ -51,9 +72,9 @@ fn every_face_draws_a_frame_in_a_few_milliseconds_at_any_size() {
             let mut total = 0.0;
             let mut worst = 0.0f64;
             for frame in 0..30 {
-                let started = Instant::now();
+                let started = cpu_ms();
                 faces::frame(&mut harness);
-                let took = started.elapsed().as_secs_f64() * 1000.0;
+                let took = cpu_ms() - started;
                 if frame >= 5 {
                     total += took;
                     worst = worst.max(took);
@@ -87,7 +108,7 @@ fn the_analysis_of_a_frame_is_cheap() {
         let frames = 120;
         for k in 0..frames {
             let end = 8192 + k * 800;
-            let started = Instant::now();
+            let started = cpu_ms();
             a.update(
                 &sound[(end - 8192) * 2..end * 2],
                 end as u64,
@@ -97,7 +118,7 @@ fn the_analysis_of_a_frame_is_cheap() {
                 true,
                 needs,
             );
-            total += started.elapsed().as_secs_f64() * 1000.0;
+            total += cpu_ms() - started;
         }
         let mean = total / frames as f64;
         println!("analysis ({name}): {mean:.3} ms a frame (800 new frames each)");
@@ -119,7 +140,7 @@ fn a_design_draws_in_under_a_millisecond_at_full_hd() {
     for d in &DESIGNS {
         let mut total = 0.0;
         for k in 0..40 {
-            let started = Instant::now();
+            let started = cpu_ms();
             let input = egui::RawInput {
                 screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
                 ..Default::default()
@@ -152,7 +173,7 @@ fn a_design_draws_in_under_a_millisecond_at_full_hd() {
             });
             output.textures_delta.clear();
             let _ = ctx.tessellate(output.shapes, output.pixels_per_point);
-            let took = started.elapsed().as_secs_f64() * 1000.0;
+            let took = cpu_ms() - started;
             if k >= 10 {
                 total += took;
             }
@@ -165,4 +186,34 @@ fn a_design_draws_in_under_a_millisecond_at_full_hd() {
     }
     println!("{}", report.join("\n"));
     assert!(slow.is_empty(), "{slow:#?}");
+}
+
+#[path = "support/flashmeter.rs"]
+mod flashmeter;
+
+/// The stereo scope through stereo noise unlike left and right (and the
+/// rest of the flash music) at 1920 x 1080: no slow frame. Its tangle's
+/// sharp turns were tessellated with miters reaching thousands of points
+/// out, and the flash guard laid them along millions of cells: 0.4 - 0.5 s
+/// a frame (review 11), 0.2 s in a release build here.
+#[test]
+fn the_stereo_scope_has_no_slow_frame_in_stereo_noise() {
+    let mut h = faces::harness_cpu("lissajous", egui::vec2(1920.0, 1080.0), 4.0);
+    h.state_mut().sound = flashmeter::worst_music(0.5);
+    h.state_mut().fps = 60.0;
+    let mut worst = (0.0f64, 0);
+    for frame in 0..330 {
+        let started = cpu_ms();
+        faces::frame(&mut h);
+        let took = cpu_ms() - started;
+        if frame >= 5 && took > worst.0 {
+            worst = (took, frame);
+        }
+    }
+    println!(
+        "the stereo scope at 1920 x 1080: its slowest frame {:.1} ms (frame {})",
+        worst.0, worst.1
+    );
+    // (an unoptimised build: several times the release's 5 ms)
+    assert!(worst.0 < 100.0, "{:.1} ms at frame {}", worst.0, worst.1);
 }

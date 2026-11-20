@@ -13,6 +13,8 @@
 mod faces;
 #[path = "support/flashmeter.rs"]
 mod flashmeter;
+#[path = "support/music11.rs"]
+mod music11;
 
 use axross_amp::analyzer::guard::Motion;
 use axross_amp::viz::{FACES, Group};
@@ -248,6 +250,8 @@ fn measure(
         let (at, field) = meter.worst_field_strict();
         println!("{key}: strictly, field {field:?} transits at frames {at:?}");
         println!("{key}: by area over six at frames {:?}", meter.area_at);
+        let (at, field) = meter.worst_field_swept();
+        println!("{key}: swept, field {field:?} at frames {at:?}");
         let (at, field) = meter.worst_red_field_strict();
         println!("{key}: red strictly, field {field:?} transits at frames {at:?}");
     }
@@ -1271,6 +1275,142 @@ fn the_line_sweeps_no_field_too_often() {
         let line = format!("{motion:?} {scheme} line: swept {}", r.swept);
         println!("{line}");
         if r.swept > 6 || r.fails() {
+            failures.push(line);
+        }
+    }
+    assert!(failures.is_empty(), "{failures:#?}");
+}
+
+/// The wave ribbon in black on white at 960 x 540, Intense: its strands
+/// twisting with each onset were a grating oscillating across the picture
+/// (review 10: 40 transitions a second in a third of the screen, 50 ms at
+/// once; the swept reading here 10 and more). In the starkest schemes its
+/// twist and its height follow slower.
+#[test]
+fn the_ribbon_in_black_on_white_is_no_grating() {
+    let mut failures = Vec::new();
+    for scheme in ["wb", "bw"] {
+        let r = run(
+            "ribbon",
+            Motion::Intense,
+            scheme,
+            (960.0, 540.0),
+            0.6,
+            60.0,
+            |_| {},
+        );
+        let line = format!(
+            "ribbon {scheme} 960 x 540: swept {} strict {} area {} stripes {:.2}",
+            r.swept, r.strict, r.area, r.stripes
+        );
+        println!("{line}");
+        if r.swept > 6 || r.fails() {
+            failures.push(line);
+        }
+    }
+    assert!(failures.is_empty(), "{failures:#?}");
+}
+
+/// The stereo scope through stereo that differs left and right (noise
+/// unlike in each channel, a chord in antiphase, 30 ms bursts): it drew a
+/// new tangle every frame - review 11: 33 transitions a second in Classic,
+/// Calm, the project's meter 21 (strict 31). At 60 frames a second, every
+/// reading within the limit.
+#[test]
+fn the_stereo_scope_is_calm_through_uncorrelated_stereo() {
+    let mut failures = Vec::new();
+    for (motion, scheme) in [
+        (Motion::Calm, "classic"),
+        (Motion::Intense, "classic"),
+        (Motion::Intense, "fire"),
+        (Motion::Intense, "bw"),
+        (Motion::Intense, "wb"),
+    ] {
+        let r = run(
+            "lissajous",
+            motion,
+            scheme,
+            (320.0, 180.0),
+            0.6,
+            60.0,
+            |_| {},
+        );
+        let line = format!(
+            "lissajous {motion:?} {scheme}: transitions/s {} (strict {}) area {} swept {} red {}",
+            r.transitions,
+            r.strict,
+            r.area,
+            r.swept,
+            r.red + r.strict_red + r.red_gamma
+        );
+        println!("{line}");
+        if r.fails() {
+            failures.push(line);
+        }
+    }
+    assert!(failures.is_empty(), "{failures:#?}");
+}
+
+/// Review 11's worst music (its music11.rs: chords gated at 6 - 10 Hz,
+/// stereo noise, sweeps, 175 BPM beats, kicks eight a second, a chord in
+/// antiphase, 30 ms bursts) through the cases its meter found over the
+/// project's own limits: the particles in Classic; the LED equalizer, the
+/// particles, the line, the mirrored spectrum and the bell curves in pure
+/// red; the piano roll and the oscilloscope in black on white and white on
+/// black; the tunnel in black on white; and in Calm the spectrum in pure
+/// red, the Julia set and the reaction-diffusion in black on white, the
+/// flow field in pure red - every reading within the limit. (In Intense
+/// the spectrum in pure red and the Julia set in black on white read 8 by
+/// the strict reading: docs/FLASH_SAFETY.md says so.)
+#[test]
+fn review_11s_cases_keep_within_the_limits() {
+    // (AMP_FLASH_ONLY=tunnel,...: those faces only, as the other runs)
+    let only = std::env::var("AMP_FLASH_ONLY").ok();
+    let wanted = |k: &str| only.as_deref().is_none_or(|o| o.split(',').any(|w| w == k));
+    let mut failures = Vec::new();
+    for (key, motion, scheme) in [
+        ("particles", Motion::Calm, "classic"),
+        ("led", Motion::Intense, "redcustom"),
+        ("particles", Motion::Intense, "redcustom"),
+        ("line", Motion::Intense, "redcustom"),
+        ("pianoroll", Motion::Intense, "bw"),
+        ("pianoroll", Motion::Intense, "wb"),
+        ("scope", Motion::Intense, "bw"),
+        ("scope", Motion::Intense, "wb"),
+        ("tunnel", Motion::Intense, "wb"),
+        ("spectrum", Motion::Calm, "redcustom"),
+        ("mirror", Motion::Intense, "redcustom"),
+        ("bells", Motion::Intense, "redcustom"),
+        ("julia", Motion::Calm, "wb"),
+        ("flowfield", Motion::Calm, "redcustom"),
+        ("reaction", Motion::Calm, "wb"),
+    ] {
+        if !wanted(key) {
+            continue;
+        }
+        let music: Vec<f32> = music11::worst(1.2);
+        let r = measure(
+            key,
+            Play {
+                motion,
+                scheme,
+                size: (320.0, 180.0),
+                fps: 60.0,
+                music,
+            },
+            |_| {},
+        );
+        let line = format!(
+            "{key} {motion:?} {scheme}: transitions/s {} (strict {}) area {} stripes {:.2} ({} frames) red {}",
+            r.transitions,
+            r.strict,
+            r.area,
+            r.stripes,
+            r.pattern_frames,
+            r.red + r.strict_red + r.red_gamma
+        );
+        println!("{line}");
+        if r.fails() {
             failures.push(line);
         }
     }

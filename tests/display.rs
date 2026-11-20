@@ -226,6 +226,23 @@ fn the_sound_goes_to_the_display_and_comes_back() {
     );
 }
 
+/// The window was not held for pactl: back within 100 ms, or - on a busy
+/// machine, where any call takes longer - within half of what a Python
+/// takes to start now (the fake pactl is one: a call waited for takes at
+/// least that).
+#[cfg(unix)]
+fn not_held(held: std::time::Duration) -> bool {
+    if held.as_millis() < 100 {
+        return true;
+    }
+    let python = std::env::var("AMP_PYTHON").unwrap_or_else(|_| "python3".into());
+    let started = std::time::Instant::now();
+    let _ = std::process::Command::new(&python)
+        .args(["-c", "pass"])
+        .output();
+    held < started.elapsed() / 2
+}
+
 #[cfg(unix)]
 /// axross's fake pactl in `dir`, as Intel HDA has it: one card, analog OR
 /// HDMI - its HDMI profile available, no HDMI sink until the card is
@@ -369,7 +386,7 @@ fn the_cards_profile_comes_back_with_the_sound() {
     let started = std::time::Instant::now();
     h.state_mut().show_on("HDMI-1", true).unwrap();
     let held = started.elapsed();
-    assert!(held.as_millis() < 100, "the window was held {held:?}");
+    assert!(not_held(held), "the window was held {held:?}");
     assert!(
         wait_for(&mut h, |a| a.output_choice().ends_with("hdmi-stereo")),
         "{}",
@@ -402,7 +419,8 @@ fn a_failed_switch_puts_the_profile_back() {
     settle(&mut h, 2);
     let started = std::time::Instant::now();
     h.state_mut().show_on("HDMI-1", true).unwrap();
-    assert!(started.elapsed().as_millis() < 100, "the window was held");
+    let held = started.elapsed();
+    assert!(not_held(held), "the window was held {held:?}");
     assert!(wait_for(&mut h, |a| a
         .notice()
         .contains("the sound stays here")));
@@ -463,6 +481,51 @@ fn the_sound_comes_back_after_a_restart() {
         "the card stayed on {}",
         card_profile(&state)
     );
+}
+
+/// Quit with the view open and the sound on the display: the card's
+/// profile and the output are put back as the program ends (not left on
+/// HDMI - the analog output gone for every program - until the next
+/// start); the next start opens the view again and switches once more.
+#[test]
+#[cfg(unix)]
+fn quitting_with_the_view_open_puts_the_card_back() {
+    let _one = PACTL.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = Scratch::new("display-quit");
+    let Some(state) = hda_card(&dir, true) else {
+        eprintln!("AMP_FAKE_PACTL not set: skipped");
+        return;
+    };
+    let analog = "output:analog-stereo+input:analog-stereo";
+    let before;
+    {
+        let mut h = window(&dir, vec![]);
+        h.state_mut().set_monitors(hdmi_only());
+        settle(&mut h, 2);
+        before = h.state().output_choice().to_owned();
+        h.state_mut().show_on("HDMI-1", true).unwrap();
+        assert!(wait_for(&mut h, |a| a
+            .output_choice()
+            .ends_with("hdmi-stereo")));
+        assert_eq!(card_profile(&state), "output:hdmi-stereo");
+        // quit: eframe calls on_exit, then drops the app
+        eframe::App::on_exit(h.state_mut());
+        // (at once: nothing of the program is left to do it later)
+        assert_eq!(card_profile(&state), analog, "the card was left on HDMI");
+        assert_eq!(h.state().output_choice(), before);
+    }
+    let mut h = window(&dir, vec![]);
+    h.state_mut().set_monitors(hdmi_only());
+    assert!(wait_for(&mut h, |a| a.display_shown() == Some("HDMI-1")));
+    assert!(
+        wait_for(&mut h, |a| a.output_choice().ends_with("hdmi-stereo")),
+        "the view opened again without its sound: {}",
+        h.state().notice()
+    );
+    assert_eq!(card_profile(&state), "output:hdmi-stereo");
+    h.state_mut().close_display(None);
+    assert!(wait_for(&mut h, |a| a.output_choice() == before));
+    assert!(wait_for(&mut h, |_| card_profile(&state) == analog));
 }
 
 /// On a desktop scaled 2 x, the display's flash guard is given that screen
@@ -556,4 +619,40 @@ fn gone_while_the_sound_moves_the_next_start_puts_it_back() {
         "the card stayed on {}",
         card_profile(&state)
     );
+}
+
+/// The picture in a window of its own (as the Python player's Detach): from
+/// ⚙, a window of the face alone; in the main window, a word of where it
+/// is, a click on which brings it back; closed (Escape there), it is back.
+#[test]
+fn the_picture_goes_to_a_window_of_its_own_and_comes_back() {
+    let home = Scratch::new("detached");
+    let mut h = window(&home, track(&home));
+    assert!(until(&mut h, 5.0, |a| a.is_loaded()));
+    settle(&mut h, 2);
+    h.get_by_label("⚙").click();
+    settle(&mut h, 2);
+    h.get_by_label("The picture in a window of its own").click();
+    settle(&mut h, 3);
+    assert!(h.state().detached(), "not detached");
+    assert!(
+        h.query_by_label_contains("in a window of its own")
+            .is_some(),
+        "no word of where the picture is"
+    );
+    // the face is drawn once, in its window (headless: inside this one)
+    assert_eq!(h.query_all_by_label_contains("Visualization: ").count(), 1);
+    h.key_press(egui::Key::Escape);
+    settle(&mut h, 3);
+    assert!(!h.state().detached(), "Escape left it detached");
+    assert!(
+        h.query_by_label_contains("in a window of its own")
+            .is_none()
+    );
+    // and back by a click on the word of where it is
+    h.state_mut().set_detached(true);
+    settle(&mut h, 2);
+    h.get_by_label_contains("in a window of its own").click();
+    settle(&mut h, 2);
+    assert!(!h.state().detached());
 }

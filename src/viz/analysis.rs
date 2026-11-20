@@ -1213,6 +1213,16 @@ fn pianoroll(f: &Frame<'_>, cv: &mut Canvas) {
             0.0
         }
     };
+    // (noise is no notes: loud everywhere, every other key "louder than
+    // its neighbours" - a column of many is not drawn; through the stereo
+    // noise of the flash music they lay as stripes over 40 % of the roll,
+    // standing, in black on white)
+    let notes = |levels: &[f32; fine::KEYS]| {
+        (ROLL_LOW..=ROLL_HIGH)
+            .filter(|&m| sounds(levels, m) > 0.0)
+            .count()
+            <= keys / 6
+    };
     cv.draw(p, |pen| {
         for midi in ROLL_LOW..=ROLL_HIGH {
             let y = y_of(midi);
@@ -1228,7 +1238,11 @@ fn pianoroll(f: &Frame<'_>, cv: &mut Canvas) {
                     s.grid(),
                 );
             }
-            let v = sounds(&fine.keys, midi);
+            let v = if notes(&fine.keys) {
+                sounds(&fine.keys, midi)
+            } else {
+                0.0
+            };
             let key = if v > 0.0 {
                 s.at(v)
             } else if black(midi) {
@@ -1255,6 +1269,9 @@ fn pianoroll(f: &Frame<'_>, cv: &mut Canvas) {
         for age in 0..=steps {
             let x = roll.right() - (age + 1) as f32 * cell - shift;
             let levels = fine.key_row(age);
+            if !notes(levels) {
+                continue;
+            }
             for midi in ROLL_LOW..=ROLL_HIGH {
                 let v = sounds(levels, midi);
                 if v > 0.0 {

@@ -1,12 +1,15 @@
 [package]
 name = "axross-amp"
-version = "0.14.0"
+version = "0.14.2"
 description = "axross's Media Player as a program of its own, in Rust: playlists, a ten-band equalizer, visualizations, internet radio"
 license = "Apache-2.0"
 repository = "https://github.com/c0decave/axross-amp"
 keywords = ["audio", "music", "player", "visualizer", "equalizer"]
 categories = ["multimedia::audio"]
 readme = "README.md"
+# crates.io: the pictures stay on GitHub (the README links resolve against the
+# repository there); the crate keeps the docs' text.
+exclude = ["docs/*.png", "docs/*.py"]
 edition = "2024"
 
 [dependencies]
@@ -36,6 +39,11 @@ strip = true
 # (already in the lock through the sound and window crates: setsid and fcntl
 # for going to the background)
 libc = "0.2.191"
+
+[target.'cfg(windows)'.dependencies]
+# (already in the lock through the window and sound crates: AttachConsole,
+# for --help and messages from a GUI program started in a terminal)
+windows-sys = { version = "0.61.2", features = ["Win32_System_Console"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 # BlueZ over D-Bus (the Bluetooth tab); already in the tree through accesskit

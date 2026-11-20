@@ -14,7 +14,9 @@ pub const AUDIO_EXTENSIONS: [&str; 17] = [
 pub const PLAYLIST_EXTENSIONS: [&str; 3] = ["m3u", "m3u8", "pls"];
 /// How deep a folder is walked, and the largest playlist file read (axross's).
 const MAX_DEPTH: usize = 16;
-const MAX_PLAYLIST_BYTES: u64 = 1 << 20;
+/// The most of a playlist file read (its first MAX_TRACKS entries are well
+/// within it: 10,000 long paths with their titles are some 2 MiB).
+const MAX_PLAYLIST_BYTES: u64 = 64 << 20;
 const MAX_LINE: usize = 4096;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -661,24 +663,37 @@ pub fn read_playlist(path: &Path) -> Result<Vec<Track>, String> {
     if !meta.is_file() {
         return Err("not a file".into());
     }
-    if meta.len() > MAX_PLAYLIST_BYTES {
-        return Err("too big".into());
-    }
-    let bytes = fs::read(path).map_err(|e| e.to_string())?;
-    if bytes.contains(&0) {
+    // (read a line at a time, up to the first MAX_TRACKS entries - a
+    // playlist over 1 MiB, the player's own of 10,000 tracks, was refused
+    // whole as "too big"; what is read at most is bounded all the same)
+    use std::io::{BufRead, Read};
+    let file = fs::File::open(path).map_err(|e| e.to_string())?;
+    let mut reader = std::io::BufReader::new(file.take(MAX_PLAYLIST_BYTES));
+    if reader
+        .fill_buf()
+        .map_err(|e| e.to_string())?
+        .iter()
+        .take(8192)
+        .any(|b| *b == 0)
+    {
         return Err("not a text file".into());
     }
-    // UTF-8 (a BOM allowed), else Windows' Latin-1 (axross's fallbacks)
-    let text = match String::from_utf8(bytes) {
-        Ok(text) => text,
-        Err(e) => e.into_bytes().iter().map(|b| *b as char).collect(),
-    };
+    // UTF-8 (a BOM allowed), else Windows' Latin-1 (axross's fallbacks),
+    // line by line
+    let lines =
+        reader
+            .split(b'\n')
+            .map_while(Result::ok)
+            .map(|bytes| match String::from_utf8(bytes) {
+                Ok(text) => text,
+                Err(e) => e.into_bytes().iter().map(|b| *b as char).collect(),
+            });
     let base = path.parent().unwrap_or(Path::new("."));
     let pls = extension(path) == "pls";
     let mut tracks = Vec::new();
     let mut title = String::new();
     let mut seconds = 0u64;
-    for raw in text.lines() {
+    for raw in lines {
         let line = raw.trim().trim_start_matches('\u{feff}');
         if line.is_empty() || line.len() > MAX_LINE || line.contains('\0') {
             continue;
@@ -781,6 +796,19 @@ pub fn to_m3u(tracks: &[Track], base: Option<&Path>) -> String {
             .and_then(|b| Path::new(&t.path).strip_prefix(b).ok())
             .map(|p| p.to_string_lossy().into_owned())
             .unwrap_or_else(|| t.path.clone());
+        // (a name that a reader takes for something else - a comment,
+        // starting with '#'; spaces at its ends, trimmed - as a file:// URL
+        // of its whole path: "#1 Crush.mp3" and " Intro.mp3" were lost)
+        let path = if !is_stream(&t.path)
+            && (path.starts_with('#')
+                || path.starts_with(char::is_whitespace)
+                || path.ends_with(char::is_whitespace)
+                || path.contains(['\r', '\n']))
+        {
+            file_url(&absolute(Path::new(&t.path)))
+        } else {
+            path
+        };
         let flat = |s: &str| s.replace(['\r', '\n'], " ");
         out.push_str(&format!(
             "#EXTINF:{secs},{}\n{}\n",
@@ -819,6 +847,19 @@ pub fn write_atomically(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 }
 
 /// %XX sequences back to their bytes (a file: URL's path).
+/// A local path as a file:// URL (what is not plain, percent-encoded).
+pub fn file_url(path: &str) -> String {
+    let mut out = String::from("file://");
+    for b in path.bytes() {
+        if b.is_ascii_alphanumeric() || b"/-._~".contains(&b) {
+            out.push(b as char);
+        } else {
+            out.push_str(&format!("%{b:02X}"));
+        }
+    }
+    out
+}
+
 pub fn percent_decode(text: &str) -> String {
     let bytes = text.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
@@ -1062,6 +1103,50 @@ mod tests {
         assert_eq!(p.previous(), Some(0));
         p.repeat = Repeat::All;
         assert_eq!(p.previous(), Some(2));
+    }
+
+    /// Names that start with '#' or a space, saved and read back whole
+    /// (review 11: "#1 Crush.mp3" was read as a comment, " Intro.mp3" as
+    /// "Intro.mp3"); and a playlist of 10,000 tracks - over 1 MiB - read
+    /// back (it was refused as "too big"), its first 10,000 entries.
+    #[test]
+    fn a_saved_playlist_reads_back_whole() {
+        let dir = std::env::temp_dir().join(format!("amp-m3u-{}", std::process::id()));
+        let music = dir.join("music");
+        std::fs::create_dir_all(&music).unwrap();
+        let names = ["#1 Crush.mp3", " Intro.mp3", "Outro .mp3", "ok.mp3"];
+        let tracks: Vec<Track> = names
+            .iter()
+            .map(|n| Track {
+                path: music.join(n).to_string_lossy().into_owned(),
+                ..Default::default()
+            })
+            .collect();
+        let list = music.join("list.m3u");
+        std::fs::write(&list, to_m3u(&tracks, Some(&music))).unwrap();
+        let back = read_playlist(&list).unwrap();
+        let paths: Vec<&str> = back.iter().map(|t| t.path.as_str()).collect();
+        let want: Vec<&str> = tracks.iter().map(|t| t.path.as_str()).collect();
+        assert_eq!(paths, want);
+        let many: Vec<Track> = (0..MAX_TRACKS + 50)
+            .map(|i| Track {
+                path: format!(
+                    "/home/someone/Music/Some Artist/Some Album (Deluxe)/{:02} - A Song Title {i}.flac",
+                    i % 20
+                ),
+                title: format!("Some Artist - A Song Title Number {i}"),
+                duration_ms: 245_000,
+                ..Default::default()
+            })
+            .collect();
+        let big = dir.join("big.m3u");
+        let text = to_m3u(&many, None);
+        assert!(text.len() as u64 > 1 << 20);
+        std::fs::write(&big, &text).unwrap();
+        let back = read_playlist(&big).unwrap();
+        assert_eq!(back.len(), MAX_TRACKS);
+        assert_eq!(back[MAX_TRACKS - 1].path, many[MAX_TRACKS - 1].path);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -6,8 +6,6 @@ Back to the [README](../README.md) - everything in detail: the [extended README]
   particles, the spirograph and the skyline at 4K: **60 frames a second is not
   supported for those faces** on a laptop's CPU (see
   [Photosensitivity](FLASH_SAFETY.md)).
-- The designs Glass, Soft and Zen share the Modern design's arrangement
-  (Zen in one narrow column); their difference is their surfaces.
 - **Show on display** with the sound has been tested against a fake sound
   server only - not on real HDMI or DisplayPort hardware; on Wayland the
   compositor decides where the full-screen view goes; macOS and Windows list
@@ -16,12 +14,18 @@ Back to the [README](../README.md) - everything in detail: the [extended README]
   newly changing one way, summed over a tenth of a second - it counts a
   curve or small shapes moving over a field quickly too), 34 of 196 cases at
   60 frames a second in Classic and Fire, Calm and Intense, read more than 6
-  a second - the wave ribbon most (40 - 41), then the galaxy, morph,
+  a second - the wave ribbon most (Classic 41, Fire 24), then the galaxy, morph,
   isometric, milkdrop, ridges, typography, terrain, particles, beat rings
   (10 - 30), a few spectra (7 - 9); none of them more than before the reds
   were taken out. At 12 frames a second all read at most 5, and every
   other reading (one frame, 34 ms, the field's mean, red) at most 6
   everywhere.
+- Through an independent review's harshest music (chords gated at 6 - 10
+  Hz, fast sweeps), by the strict 100 ms reading, the spectrum in pure red
+  and the Julia set in black on white, *Intense*, read 8 transitions a
+  second (by WCAG's reading 1); the flow field in pure red and the
+  reaction-diffusion in black on white, *Intense*, show a pattern for a
+  frame. In *Calm* they keep within.
 - The flash guard dims the line face in very fast music more often than
   needed (it over-estimates the moving fill); nothing flashes, the picture is
   just darker at times.

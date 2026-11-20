@@ -22,7 +22,9 @@ pactl and the wait for a switched card's output run on a thread of their
 own (the window is never held). When the view closes the sound goes back
 where it was - the output and the card's profile (on Intel HDA one card
 is analog *or* HDMI: left on HDMI, the analog output was gone for every
-program); a switch whose output does not come is undone at once. What it
+program); a switch whose output does not come is undone at once. Quitting
+with the view open (the close button, SIGTERM or Ctrl+C in its terminal)
+puts them back too, before the program ends. What it
 was is kept in axross-amp's own file before anything moves it, so it is
 put back also after a restart (the view opened again does not take the
 display's output for "before"), after a crash, or when the remembered

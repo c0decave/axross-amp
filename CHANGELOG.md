@@ -4,6 +4,116 @@ axross-amp is axross's Media Player as a program of its own, in Rust. The
 versions before 0.14.0 were not published; they are listed so the history
 reads whole.
 
+## 0.14.2 - 2026-11-20
+
+What independent review 11 (7.5 of 10) asked for.
+
+### Fixed
+- **The stereo scope** through stereo unlike left and right (noise, a wide
+  mix): a new tangle every frame, 33 transitions a second by the review's
+  meter - now drawn faint (0); its 0.4 - 0.5 s frames at 1080p (the flash
+  guard laid its lines' miters along millions of cells) - 5 ms.
+- **The flash guard** veils a flicker of eight a second or more within
+  its first three flashes (it let four or five through); its pattern
+  stage acts in the frame it sees a pattern.
+- **Faces over the project's own limits** through the review's music:
+  the LED equalizer, the particles, the spectrum, the mirrored spectrum
+  and the bell curves fall eased (half the height a second); the piano
+  roll draws no notes for noise; the oscilloscope dims a dense wave
+  sooner in the starkest schemes; the wave ribbon's twist is limited in
+  speed. Two cases remain over the strict reading in *Intense*, said in
+  FLASH_SAFETY.md.
+- A file whose **sample rate** is 0 or 1 Hz is refused and skipped (it
+  showed "Playing 0:00" for ever, 560 MB at 1 Hz).
+- **M3U**: names starting with '#' or a space are saved as file:// URLs
+  and read back; a playlist over 1 MiB is read (its first 10,000
+  entries), not refused.
+- An unreadable **media_player.json** (or audio.json, axross-amp.json) is
+  kept aside as `<name>.unreadable-<time>-<hex>` before anything replaces
+  it, as the Python player does.
+- **Wide and low windows**: the 90s desktop docks its playlist, the
+  terminal and Zen put it beside the player (their pictures were strips).
+- **MPRIS** Seek asked while the first track still opens is done once it
+  is open (Seek(i64::MAX) left it Stopped).
+- A **cover** is decoded within limits (an 11000 x 11000 PNG took 552 MB).
+- Kinetic typography keeps its words in the picture.
+- **The meters** (loudness, true peak, beat, key) hear every frame while
+  their thread gets no turn for up to 5.5 s on a busy machine (1.4 s at
+  192 kHz; it was 1.4 s and 0.34 s).
+
+### Changed
+- **Release**: Linux built on a glibc 2.34 floor (AlmaLinux 9) and
+  checked; macOS one universal binary (arm64 and x86_64, neither left out
+  quietly) also as axross-amp.app in a DMG; the supply-chain gate's axross
+  pinned to v0.15.180.
+- **The picture in a window of its own** (⚙), as the Python player's
+  Detach.
+- "Follow the theme" follows each of the twelve themes.
+- A very large window (2200 points and more) is used, not a column of
+  1180 points; the bars above and below take the same width.
+- With the pictures off the window wakes once a second; on a software
+  renderer it keeps within 0.35 of a core.
+- The flash test music has stereo unlike left and right, antiphase and
+  30 ms bursts; the review's own music is in the tests too.
+- README: the screenshots first, then the punchlines, then the contents.
+- `--help` names --version, F11, Esc and Ctrl+F.
+- The tunnel's walls have panels and a lit side (on a light ground the
+  panels fade out and its checker keeps a fifth of its contrast: black on
+  white stays within the strict reading).
+
+
+What independent review 10 (8.0 of 10; no flash or red problem found)
+asked for.
+
+### Fixed
+- **Show on display**: quitting with the view open (the close button,
+  SIGTERM, Ctrl+C in its terminal) puts the sound and the card's profile
+  back before the program ends - the card was left on HDMI and the
+  analog output gone until the next start; the next start opens the view
+  again and switches once more. SIGTERM and SIGINT close the window as
+  its close button does.
+- Two monitors of one name, the one remembered gone by its connector:
+  the view is not opened again on the first of them by guess (nor by D);
+  it is said, and asked.
+- The cassette deck's label at 420 x 420 and 1400 x 460 wrote the title
+  over the artist: one line there. The collage's title scraps no longer
+  lie over its artist line in a low window. The terminal at 420 x 420
+  pushed Clear and the durations out of the playlist's box: the
+  playlist's switch row shortens, then puts its actions on a row of
+  their own, where they do not fit.
+- Wide and low windows (900 x 400, 1600 x 420, 1400 x 460): Modern, Glass,
+  Soft, the rack and the collage put the playlist beside the player, as
+  the cassette and the brutalist did - the picture was a strip some
+  10 - 28 points tall.
+- The wave ribbon in the starkest schemes (black on white at 960 x 540: a
+  fast-oscillating grating, 40 by review 10's reading) twists and opens far
+  slower: 4.
+- The docs said "toward a warm white" (a warm grey as light as the colour
+  is), "exits 1" (a start still going after two seconds exits 0 and says
+  so), ~/.cache on macOS (~/Library/Caches), that the AppImage "just runs"
+  (from a terminal it goes to the background), that Glass, Soft and Zen
+  share Modern's arrangement; FLASH_SAFETY.md disagreed with itself (three
+  or four readings, 12 or 14 cases at six) and lacked the 100 ms results.
+
+### Changed
+- **Glass and Soft have layouts of their own**: Glass in two columns (a
+  tall frosted pane of what plays beside the picture and the playlist),
+  Soft centred (the picture pressed in, a raised card of keys around a
+  large play key, the playlist's card).
+- **Windows**: a GUI program (no console window beside it); started from
+  cmd or PowerShell it writes --help, --version and a failed start to
+  that terminal (windows-sys, already in the lock, as a direct
+  dependency).
+- **Release archives** carry LICENSE, THIRD_PARTY_LICENSES.md (every
+  crate's licence and texts, egui's fonts' OFL and Ubuntu Font Licence
+  too, made from Cargo.lock by scripts/third_party_licenses.py and kept up
+  to date by a test) and the README; on Linux also the desktop entry and
+  the icon (the AppImage has the licences in usr/share/doc).
+- **The release waits** for the supply-chain gate and the tests (ci.yml,
+  called) and attests its files' provenance
+  (actions/attest-build-provenance, pinned by commit); every action is
+  pinned by its commit.
+
 ## 0.14.0 - 2026-11-19
 
 The first public release.
@@ -32,8 +142,10 @@ second on the shape-heavy faces (see *Known limitations*).
 
 ### Changed
 - **No saturated red in any face**, whatever the colour scheme: Classic's
-  and Fire's reds, a cover's, a custom one are taken toward a warm white,
-  a red ground darkened and turned from red.
+  and Fire's reds, a cover's, a custom one are turned toward a warm grey
+  as light as they are (a custom scheme's red, and the colours some faces
+  mix from the scheme while they draw, toward a warm white), a red ground
+  darkened and turned from red.
   The faces still move as calmly as the scheme as chosen asks (Fire as
   red): the ridges in Fire had come to 11 - 12 by a 100 ms reading, as
   before 0 again.
@@ -65,8 +177,8 @@ second on the shape-heavy faces (see *Known limitations*).
 - The flash guard costs the CPU about 1.5 - 2 ms a frame, and 5 - 9 ms on the
   particles, the spirograph and the skyline at 4K: 60 frames a second is not
   supported for those faces on a laptop's CPU.
-- Glass, Soft and Zen share the Modern design's arrangement (Zen in one
-  column); their difference is their surfaces.
+- Glass and Soft drew Modern's arrangement in their own surfaces (fixed in
+  0.14.1: each has a layout of its own).
 - "Show on display" with the sound has been tested against a fake pactl
   only, not on real HDMI hardware; on Wayland the compositor places the
   view.

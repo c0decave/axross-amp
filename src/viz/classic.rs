@@ -76,6 +76,9 @@ pub struct State {
     /// LISSAJOUS_POINTS, a ring; the next to write, how many there are.
     figures: Vec<[f32; 2]>,
     figure_at: usize,
+    /// How much of the scope's disc its figure covers, eased: a tangle
+    /// (uncorrelated stereo: noise, a wide mix) drawn faint.
+    figure_busy: f32,
     figures_kept: usize,
     /// The scopes' gain: their highest sample lately (falling slowly), so
     /// that quiet or near-mono music still fills them.
@@ -99,6 +102,10 @@ pub struct State {
     /// fall, it swept a quarter of a third of the screen in a tenth of a
     /// second, again and again: review 9's 100 ms reading 7 to 10).
     line_level: Vec<f32>,
+    /// The spectrum's, the mirrored spectrum's and the bell curves' bars,
+    /// falling so too (review 11's gated chords: 8 - 10 a second by the
+    /// strict reading in pure red, the bars falling as fast as they rose).
+    bar_level: Vec<f32>,
     /// The ribbon's height along it, eased; its twist (the onsets' phase,
     /// followed at Calm's pace, slower in the starkest schemes).
     ribbon_height: Vec<f32>,
@@ -177,7 +184,10 @@ pub fn draw(f: &Frame<'_>, key: &str, state: &mut VizState) {
     let cv = &mut state.canvas;
     let st = &mut state.classic;
     match key {
-        "mirror" => mirror(f, g, cv),
+        "mirror" => {
+            fallen(&mut st.bar_level, &a.bars, s, f.dt);
+            mirror(f, g, cv, &st.bar_level)
+        }
         "radial" => radial(f, g, cv),
         "line" => line(f, g, cv, st),
         "led" => led(f, g, cv, st),
@@ -187,19 +197,32 @@ pub fn draw(f: &Frame<'_>, key: &str, state: &mut VizState) {
         "ridges" => ridges(f, g, cv),
         "terrain" => terrain(f, g, cv),
         "ring" => ring(f, g, cv, st),
-        "bells" => bells(f, g, cv),
+        "bells" => {
+            fallen(&mut st.bar_level, &a.bars, s, f.dt);
+            bells(f, g, cv, &st.bar_level)
+        }
         "ribbon" => ribbon(f, g, cv, st),
         "kaleidoscope" => kaleidoscope(f, g, cv, st),
         "scope" => scope(f, g, cv, st),
         "lissajous" => lissajous(f, g, cv, st, trails),
         "vu" => vu(f, g, cv),
         "starfield" => starfield(f, g, cv, st, trails),
-        _ => spectrum(f.painter, g, a, s, cv),
+        _ => {
+            fallen(&mut st.bar_level, &a.bars, s, f.dt);
+            spectrum(f.painter, g, a, s, cv, &st.bar_level)
+        }
     }
 }
 
-fn spectrum(painter: &egui::Painter, g: Area, a: &Analyzer, s: &Scheme, cv: &mut Canvas) {
-    let n = a.bars.len().max(1);
+fn spectrum(
+    painter: &egui::Painter,
+    g: Area,
+    a: &Analyzer,
+    s: &Scheme,
+    cv: &mut Canvas,
+    bars: &[f32],
+) {
+    let n = bars.len().max(1);
     let width = g.w / n as f32;
     let bottom = g.h;
     let height = bottom - 4.0;
@@ -212,9 +235,9 @@ fn spectrum(painter: &egui::Painter, g: Area, a: &Analyzer, s: &Scheme, cv: &mut
         // heights is shared)
         for i in 0..n {
             let x = i as f32 * width;
-            let next = a.bars.get(i + 1).copied().unwrap_or(0.0);
-            let shared = (a.bars[i].min(next) * height).max(0.0);
-            let own = (a.bars[i] * height).max(2.0);
+            let next = bars.get(i + 1).copied().unwrap_or(0.0);
+            let shared = (bars[i].min(next) * height).max(0.0);
+            let own = (bars[i] * height).max(2.0);
             pen.gradient_as(
                 g.r(x, bottom - own, 1.0, own),
                 s,
@@ -234,7 +257,7 @@ fn spectrum(painter: &egui::Painter, g: Area, a: &Analyzer, s: &Scheme, cv: &mut
         }
         for i in 0..n {
             let x = i as f32 * width + 1.0;
-            let bar = (a.bars[i] * height).max(2.0);
+            let bar = (bars[i] * height).max(2.0);
             pen.gradient(g.r(x, bottom - bar, bar_width, bar), s, g.y0 + bottom, g.y0);
         }
         for i in 0..n {
@@ -247,9 +270,9 @@ fn spectrum(painter: &egui::Painter, g: Area, a: &Analyzer, s: &Scheme, cv: &mut
     });
 }
 
-fn mirror(f: &Frame<'_>, g: Area, cv: &mut Canvas) {
+fn mirror(f: &Frame<'_>, g: Area, cv: &mut Canvas, bars: &[f32]) {
     let (a, s) = (f.a, f.s);
-    let n = a.bars.len().max(1);
+    let n = bars.len().max(1);
     let width = g.w / n as f32;
     let mid = g.h / 2.0;
     let reach = mid - 3.0;
@@ -259,10 +282,10 @@ fn mirror(f: &Frame<'_>, g: Area, cv: &mut Canvas) {
         // (between the bars, a shade dimmer: see the spectrum)
         for i in 0..n {
             let x = i as f32 * width;
-            let next = a.bars.get(i + 1).copied().unwrap_or(0.0);
+            let next = bars.get(i + 1).copied().unwrap_or(0.0);
             for (len, at) in [
-                ((a.bars[i] * reach).max(1.0), x),
-                ((a.bars[i].min(next) * reach).max(0.0), x + width - 1.0),
+                ((bars[i] * reach).max(1.0), x),
+                ((bars[i].min(next) * reach).max(0.0), x + width - 1.0),
             ] {
                 if len > 0.0 {
                     let dim = |c| between(c, ground);
@@ -273,7 +296,7 @@ fn mirror(f: &Frame<'_>, g: Area, cv: &mut Canvas) {
         }
         for i in 0..n {
             let x = i as f32 * width + 1.0;
-            let bar = (a.bars[i] * reach).max(1.0);
+            let bar = (bars[i] * reach).max(1.0);
             pen.gradient(g.r(x, mid - bar, bar_width, bar), s, g.y0 + mid, g.y0);
             pen.gradient(g.r(x, mid, bar_width, bar), s, g.y0 + mid, g.y0 + g.h);
             let p = a.peaks[i] * reach;
@@ -431,8 +454,11 @@ fn fallen(levels: &mut Vec<f32>, bars: &[f32], s: &Scheme, dt: f32) {
         levels.clear();
         levels.extend_from_slice(bars);
     }
-    // (0.8 of the height a second; white on black a third of that)
-    let fall = 0.8 / super::scheme_calm(s).powi(2) * dt;
+    // (half the height a second; white on black a third of that - at 0.8,
+    // all of 128 columns falling together after a burst of noise darkened a
+    // row and a half of cells across a field each tenth of a second: by
+    // the strict reading 7 a second at the Options' extremes)
+    let fall = 0.5 / super::scheme_calm(s).powi(2) * dt;
     for (l, b) in levels.iter_mut().zip(bars) {
         *l = b.max(*l - fall);
     }
@@ -1077,9 +1103,9 @@ fn ellipse_line(pen: &mut Pen<'_>, c: Pos2, r: egui::Vec2, colour: Color32) {
     pen.outline(1.0, colour);
 }
 
-fn bells(f: &Frame<'_>, g: Area, cv: &mut Canvas) {
+fn bells(f: &Frame<'_>, g: Area, cv: &mut Canvas, bars: &[f32]) {
     let (a, s) = (f.a, f.s);
-    let n = a.bars.len().max(1);
+    let n = bars.len().max(1);
     let (w, h) = (g.w, g.h);
     let groups = n.min(BELLS_MAX);
     let sigma = w / groups as f32 * 0.5;
@@ -1095,7 +1121,7 @@ fn bells(f: &Frame<'_>, g: Area, cv: &mut Canvas) {
     let mut tops = [0.0f32; BELLS_MAX];
     for gi in 0..groups {
         let (from, to) = span(gi);
-        loudest[gi] = a.bars[from..to].iter().cloned().fold(0.0, f32::max);
+        loudest[gi] = bars[from..to].iter().cloned().fold(0.0, f32::max);
         tops[gi] = a.peaks[from..to].iter().cloned().fold(0.0, f32::max);
     }
     // the quiet ones behind, the loud in front
@@ -1154,8 +1180,20 @@ fn ribbon(f: &Frame<'_>, g: Area, cv: &mut Canvas, st: &mut State) {
     while d < -wrap / 2.0 {
         d += wrap;
     }
-    let rate = a.motion.phase_follow().min(3.0) / super::scheme_calm(s);
-    st.ribbon_phase = (st.ribbon_phase + d * (1.0 - (-f.dt * rate).exp())).rem_euclid(wrap);
+    // (in the starkest schemes - black on white, white on black - a
+    // quarter of that again: its strands, dark on light, were a grating
+    // oscillating across the picture, 40 a second by review 10's reading
+    // at 960 x 540)
+    let stark = s.stark();
+    let rate = a.motion.phase_follow().min(3.0) / super::scheme_calm(s) / (1.0 + 8.0 * stark);
+    // (and no faster than so many radians a second - in the starkest
+    // schemes a tenth of one: onsets nine times a second, bursts of noise,
+    // ran its target far ahead, and following it the strands swept a
+    // quarter of a field every 50 ms, 16 - 18 a second by the swept 100 ms
+    // reading at 960 x 540)
+    let most = (0.1 + 1.4 * (1.0 - stark)) * f.dt;
+    let step = (d * (1.0 - (-f.dt * rate).exp())).clamp(-most, most);
+    st.ribbon_phase = (st.ribbon_phase + step).rem_euclid(wrap);
     let phase = st.ribbon_phase;
     // the bands, smoothed over five (edges repeated)
     let at = |i: isize| a.bars[i.clamp(0, n as isize - 1) as usize];
@@ -1175,7 +1213,7 @@ fn ribbon(f: &Frame<'_>, g: Area, cv: &mut Canvas, st: &mut State) {
     if st.ribbon_height.len() != RIBBON_POINTS {
         st.ribbon_height = vec![0.2; RIBBON_POINTS];
     }
-    let ease = 1.0 - (-f.dt / (0.35 * a.motion.turn() / 0.25)).exp();
+    let ease = 1.0 - (-f.dt / (0.35 * a.motion.turn() / 0.25 * (1.0 + 5.0 * stark))).exp();
     for (p, h) in st.ribbon_height.iter_mut().enumerate() {
         let u = p as f32 / (RIBBON_POINTS - 1) as f32;
         *h += (0.2 + 0.8 * level(u).max(0.0).sqrt() - *h) * ease;
@@ -1415,7 +1453,10 @@ fn scope(f: &Frame<'_>, g: Area, cv: &mut Canvas, st: &mut State) {
         / points.min(shown_wave.len()).max(1) as f32;
     // (a crossing every ten pixels or more often is a grating: a pure tone
     // drawn so, zigzag, lay in stripes over 46 % of a small picture)
-    let want = (1.25 - crossings * 5.0).clamp(0.25, 1.0);
+    // (in the starkest schemes three times as soon: white on black, a
+    // sweep's and a chirp's waves lay as stripes for four frames by review
+    // 11's meter)
+    let want = (1.25 - crossings * 5.0 * (1.0 + 2.0 * s.stark())).clamp(0.25, 1.0);
     // (dimmer at once, brighter again slowly)
     if st.scope_bright <= 0.0 || want < st.scope_bright {
         st.scope_bright = want;
@@ -1496,6 +1537,40 @@ fn lissajous(f: &Frame<'_>, g: Area, cv: &mut Canvas, st: &mut State, trails: bo
         st.figure_at = (st.figure_at + 1) % LISSAJOUS_KEPT;
         st.figures_kept = (st.figures_kept + 1).min(LISSAJOUS_KEPT);
     }
+    // (how much of the disc the newest figure covers, on a grid of 24 x 24:
+    // a figure from correlated sound - a line, an ellipse, a circle
+    // retraced - covers a little of it; one from uncorrelated stereo, noise,
+    // is a tangle over most of it, new every frame - every pixel of it
+    // changing at once, 33 times a second by review 11's reading. Such a
+    // tangle is drawn faint (its light within 0.09 of the ground's: no
+    // transition however it changes), the fading eased, so it is no
+    // flicker either.)
+    if st.figures_kept > 0 && f.dt > 0.0 {
+        let newest = (st.figure_at + LISSAJOUS_KEPT - 1) % LISSAJOUS_KEPT;
+        let fig = &st.figures[newest * LISSAJOUS_POINTS..(newest + 1) * LISSAJOUS_POINTS];
+        let mut grid = [false; 24 * 24];
+        let cell = |[x, y]: [f32; 2]| {
+            let gx = (((x + 1.0) * 12.0) as usize).min(23);
+            let gy = (((y + 1.0) * 12.0) as usize).min(23);
+            gy * 24 + gx
+        };
+        for w in fig.windows(2) {
+            let (p, q) = (w[0], w[1]);
+            let steps = (((q[0] - p[0]).abs().max((q[1] - p[1]).abs()) * 12.0) as usize).max(1);
+            for i in 0..=steps {
+                let t = i as f32 / steps as f32;
+                grid[cell([p[0] + (q[0] - p[0]) * t, p[1] + (q[1] - p[1]) * t])] = true;
+            }
+        }
+        // (of the disc's some 450 cells)
+        let covered = grid.iter().filter(|c| **c).count() as f32 / 450.0;
+        // (at once as it grows, a second and a half to settle as it ebbs:
+        // bursts of a tangle nine times a second keep it faint)
+        let ease = 1.0 - (-f.dt / if covered > st.figure_busy { 0.02 } else { 1.5 }).exp();
+        st.figure_busy += (covered - st.figure_busy) * ease;
+    }
+    let bright = ((0.4 - st.figure_busy) / 0.25).clamp(0.0, 1.0);
+    let shown = |c: Color32| mix(faint(c, s.background), c, bright);
     let figures = &st.figures;
     let (newest, kept) = (
         (st.figure_at + LISSAJOUS_KEPT - 1) % LISSAJOUS_KEPT,
@@ -1532,21 +1607,25 @@ fn lissajous(f: &Frame<'_>, g: Area, cv: &mut Canvas, st: &mut State, trails: bo
                 pen.points.push(point(figure, k));
             }
             let fade = 1.0 - age as f32 / LISSAJOUS_KEPT as f32;
-            pen.line(1.0, mix(s.background, s.mid, 0.45 * fade * fade));
+            pen.line(1.0, shown(mix(s.background, s.mid, 0.45 * fade * fade)));
         }
         // the newest: its older part fading into the background, with a glow
+        // (a faint tangle drawn from every fourth point: its long crossing
+        // lines cost the tessellation and the flash guard a tenth of a
+        // second a frame at 1080p, and the difference is not seen in it)
+        let every = if bright < 0.5 { 4 } else { 1 };
         let size = (LISSAJOUS_POINTS - 1).div_ceil(LISSAJOUS_FADE);
         for part in 0..LISSAJOUS_FADE {
             let (start, stop) = (part * size, ((part + 1) * size + 1).min(LISSAJOUS_POINTS));
             pen.points.clear();
-            for k in start..stop {
+            for k in (start..stop).step_by(every) {
                 pen.points.push(point(newest, k));
             }
             let k = (part + 1) as f32 / LISSAJOUS_FADE as f32;
             if trails {
-                pen.line(4.0, glow(s.high, 0.14 * k));
+                pen.line(4.0, glow(shown(s.high), 0.14 * k));
             }
-            pen.line(TRACE, mix(s.background, s.high, k));
+            pen.line(TRACE, shown(mix(s.background, s.high, k)));
         }
     });
     let font = FontId::proportional(12.0);
