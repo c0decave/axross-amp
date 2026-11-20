@@ -3,7 +3,9 @@
 //! card's pace: while it plays it draws no more frames than its cap, and
 //! once the track has ended it costs (nearly) nothing - for a bar face and
 //! for a shader face, whose pictures the CPU may draw. Needs Xvfb; without
-//! it the test says loudly that it did not run.
+//! it the test says loudly that it did not run. (And the libraries the
+//! window's toolkit loads: libxkbcommon-x11 and the X libraries - CI
+//! installs libxkbcommon-x11-0 on Ubuntu, whose runners lack it.)
 
 #[path = "support/player.rs"]
 mod player;
@@ -55,6 +57,17 @@ struct Run {
     playing_cpu: f64,
     idle_cpu: f64,
     slow: bool,
+    /// What it wrote (its log's last lines: why it drew nothing).
+    said: String,
+}
+
+/// The last `n` lines of `text` that are not ALSA's own complaints.
+fn tail(text: &str, n: usize) -> String {
+    let lines: Vec<&str> = text
+        .lines()
+        .filter(|l| !l.starts_with("ALSA lib ") && !l.trim().is_empty())
+        .collect();
+    lines[lines.len().saturating_sub(n)..].join("\n")
 }
 
 fn run(
@@ -174,6 +187,7 @@ fn run(
         playing_cpu: (c1 - c0) / secs,
         idle_cpu: idle,
         slow: said.contains("slow renderer"),
+        said: tail(&said, 6),
     }
 }
 
@@ -230,7 +244,12 @@ fn in_a_real_window_it_keeps_its_frame_rate_and_rests_when_the_music_stops() {
             (true, _) => 12.0,
             _ => 30.0,
         };
-        assert!(r.fps > 3.0, "{}: it drew nothing ({report:?})", r.face);
+        assert!(
+            r.fps > 3.0,
+            "{}: it drew nothing ({report:?}); it said:\n{}",
+            r.face,
+            r.said
+        );
         assert!(
             r.fps <= cap * 1.15,
             "{}: above its cap ({report:?})",
@@ -295,7 +314,7 @@ fn sigterm_closes_the_window_as_its_close_button_does() {
         .env("XDG_RUNTIME_DIR", &runtime)
         .env_remove("DBUS_SESSION_BUS_ADDRESS")
         .stdout(Stdio::null())
-        .stderr(Stdio::null());
+        .stderr(std::fs::File::create(home.join("app.log")).unwrap());
     let syslib = Path::new("/root/venvs/syslib/usr/lib/x86_64-linux-gnu");
     if syslib.exists() {
         let old = std::env::var("LD_LIBRARY_PATH").unwrap_or_default();
@@ -321,10 +340,54 @@ fn sigterm_closes_the_window_as_its_close_button_does() {
         }
         std::thread::sleep(Duration::from_millis(50));
     };
-    let status = status.expect("it did not end within 15 s of SIGTERM");
+    let said = tail(
+        &std::fs::read_to_string(home.join("app.log")).unwrap_or_default(),
+        6,
+    );
+    let status =
+        status.unwrap_or_else(|| panic!("it did not end within 15 s of SIGTERM; it said:\n{said}"));
     assert_eq!(
         status.code(),
         Some(0),
-        "cut off by the signal, not closed ({status:?})"
+        "cut off by the signal, not closed ({status:?}); it said:\n{said}"
     );
+}
+
+/// A library the window's toolkit loads by name at its start, missing
+/// (GitHub's Ubuntu runners have no libxkbcommon-x11): the program says
+/// which and the package that has it, exit status 1 - winit panicked
+/// (exit status 101) with "Library libxkbcommon-x11.so could not be
+/// loaded.". No display is needed: it is said before one is asked for.
+#[test]
+#[cfg(target_os = "linux")]
+fn a_missing_window_library_is_said_not_a_panic() {
+    let home = player::Scratch::new("real-window-nolib");
+    // (an empty file of the library's name first in the search path: it
+    // cannot be loaded, as where it is not installed)
+    let hide = home.join("hide");
+    std::fs::create_dir_all(&hide).unwrap();
+    std::fs::write(hide.join("libxkbcommon-x11.so.0"), b"").unwrap();
+    let old = std::env::var("LD_LIBRARY_PATH").unwrap_or_default();
+    let runtime = home.join("runtime");
+    std::fs::create_dir_all(&runtime).unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_axross-amp"))
+        .args(["--new-instance", "--foreground"])
+        .env("DISPLAY", ":97")
+        .env_remove("WAYLAND_DISPLAY")
+        .env_remove("WINIT_UNIX_BACKEND")
+        .env("HOME", &*home)
+        .env("XDG_CONFIG_HOME", home.join(".config"))
+        .env("XDG_RUNTIME_DIR", &runtime)
+        .env("LD_LIBRARY_PATH", format!("{}:{old}", hide.display()))
+        .env_remove("DBUS_SESSION_BUS_ADDRESS")
+        .output()
+        .unwrap();
+    let said = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(1), "{said}");
+    assert!(
+        said.contains("the window cannot be opened: libxkbcommon-x11.so.0 is not installed")
+            && said.contains("libxkbcommon-x11-0"),
+        "{said}"
+    );
+    assert!(!said.contains("panicked"), "{said}");
 }

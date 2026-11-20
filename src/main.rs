@@ -107,6 +107,13 @@ fn main() -> eframe::Result {
         std::thread::sleep(std::time::Duration::from_secs(secs));
         return Ok(());
     }
+    // (a library the window's toolkit loads at its start, missing: said so,
+    // with the package that has it - winit panicked on libxkbcommon-x11)
+    #[cfg(target_os = "linux")]
+    if let Some(missing) = window_library_missing() {
+        eprintln!("axross-amp: the window cannot be opened: {missing}");
+        std::process::exit(1);
+    }
     // the window as large as it was left
     let size = axross_amp::state::read_amp(
         &axross_amp::state::config_dir().join(axross_amp::state::AMP_FILE),
@@ -135,6 +142,60 @@ fn main() -> eframe::Result {
             Ok(Box::new(app))
         }),
     )
+}
+
+/// The first library the window needs (winit loads them as it starts, by
+/// name) that cannot be loaded, said with the packages that carry it:
+/// under X11 - Xvfb, a desktop without Wayland - libxkbcommon-x11 and the
+/// X libraries, under Wayland libwayland-client; libxkbcommon both. Without
+/// libxkbcommon-x11 winit panicked ("Library libxkbcommon-x11.so could not
+/// be loaded.", exit status 101) - GitHub's Ubuntu runners have none.
+#[cfg(target_os = "linux")]
+fn window_library_missing() -> Option<String> {
+    let set = |name: &str| std::env::var_os(name).is_some_and(|v| !v.is_empty());
+    let wayland =
+        set("WAYLAND_DISPLAY") && std::env::var("WINIT_UNIX_BACKEND").map_or(true, |b| b != "x11");
+    // (the library; its package in Debian and Ubuntu, Fedora, Arch)
+    let mut needed = vec![(
+        "libxkbcommon.so.0",
+        ["libxkbcommon0", "libxkbcommon", "libxkbcommon"],
+    )];
+    if wayland {
+        needed.push((
+            "libwayland-client.so.0",
+            ["libwayland-client0", "libwayland-client", "wayland"],
+        ));
+    } else {
+        needed.extend([
+            (
+                "libxkbcommon-x11.so.0",
+                ["libxkbcommon-x11-0", "libxkbcommon-x11", "libxkbcommon-x11"],
+            ),
+            ("libX11.so.6", ["libx11-6", "libX11", "libx11"]),
+            ("libX11-xcb.so.1", ["libx11-xcb1", "libX11-xcb", "libx11"]),
+            (
+                "libXcursor.so.1",
+                ["libxcursor1", "libXcursor", "libxcursor"],
+            ),
+            ("libXi.so.6", ["libxi6", "libXi", "libxi"]),
+        ]);
+    }
+    needed.into_iter().find_map(|(library, packages)| {
+        let name = std::ffi::CString::new(library).ok()?;
+        // SAFETY: a library name as the toolkit opens it, closed again at
+        // once; nothing of it is used
+        let handle = unsafe { libc::dlopen(name.as_ptr(), libc::RTLD_LAZY | libc::RTLD_LOCAL) };
+        if handle.is_null() {
+            let [debian, fedora, arch] = packages;
+            Some(format!(
+                "{library} is not installed (Debian and Ubuntu: {debian}, Fedora: {fedora}, Arch: {arch})"
+            ))
+        } else {
+            // SAFETY: the handle dlopen just gave
+            unsafe { libc::dlclose(handle) };
+            None
+        }
+    })
 }
 
 /// A GUI program on Windows has no console; started from one (cmd,

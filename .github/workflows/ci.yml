@@ -76,9 +76,12 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Rust (rustup, stable, with clippy and rustfmt)
         run: rustup toolchain install stable --profile minimal --component clippy,rustfmt && rustup default stable
-      - name: Linux libraries (ALSA headers; Mesa's software Vulkan for the window test; CMake builds libopus)
+      # (the window test's real window: Xvfb, and the libraries winit loads
+      # by name - the runners have no libxkbcommon-x11, and winit panicked
+      # without it: no frame, exit status 101)
+      - name: Linux libraries (ALSA headers; Mesa's software Vulkan, Xvfb and the X libraries for the window test; CMake builds libopus)
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libasound2-dev pkg-config mesa-vulkan-drivers
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libasound2-dev pkg-config mesa-vulkan-drivers xvfb libxkbcommon-x11-0 libx11-xcb1 libxcursor1 libxi6
       - run: cargo fmt --check
       - run: cargo clippy --all-targets -- -D warnings
       # (every test binary run, also past a failing one; the output kept and,
@@ -87,6 +90,9 @@ jobs:
       - name: Tests (the window test renders with Mesa's lavapipe on Linux)
         if: runner.os == 'Linux'
         shell: bash
+        # (the real window is measured, never skipped for want of Xvfb)
+        env:
+          AMP_REQUIRE_X: "1"
         run: |
           set -o pipefail
           cargo test --no-fail-fast 2>&1 | tee target/test-output.log \

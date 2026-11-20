@@ -4,6 +4,24 @@ axross-amp is axross's Media Player as a program of its own, in Rust. The
 versions before 0.14.0 were not published; they are listed so the history
 reads whole.
 
+## 0.15.1 - 2026-11-20
+
+0.15.0 was tagged but not released (its Linux tests failed in CI: no
+program files were made); its changes below come with this one.
+
+### Fixed
+- **A window library missing on Linux** is said, not a panic: without
+  libxkbcommon-x11 (and the X libraries the window's toolkit loads by name)
+  the program stopped with "Library libxkbcommon-x11.so could not be
+  loaded." (exit status 101); now it says which library is missing and the
+  package that has it (Debian and Ubuntu, Fedora, Arch) and exits with
+  status 1. Under Wayland it asks for libwayland-client and libxkbcommon.
+
+### Changed
+- CI: Ubuntu's runners have no libxkbcommon-x11: it is installed with
+  Xvfb for the real-window test, which there must run (`AMP_REQUIRE_X`);
+  when the window draws nothing, the test says what the program wrote.
+
 ## 0.15.0 - 2026-11-20
 
 ### Added

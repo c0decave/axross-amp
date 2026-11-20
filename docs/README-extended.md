@@ -45,7 +45,10 @@ Cargo.lock for that platform) and the `README.md`.
   AlmaLinux 9: it needs glibc 2.34 or later (AlmaLinux / RHEL 9, Ubuntu 22.04,
   Debian 12 and later - the release checks it) and ALSA's `libasound.so.2`;
   PulseAudio / PipeWire is spoken natively; the window needs Vulkan or OpenGL
-  (any desktop has one of them; without a GPU, Mesa's software drivers).
+  (any desktop has one of them; without a GPU, Mesa's software drivers) and
+  libxkbcommon - under X11 also libxkbcommon-x11 (Debian and Ubuntu:
+  `libxkbcommon-x11-0`), which a desktop has; where one is missing the
+  program says which and exits.
 - **macOS** (Apple silicon and Intel: one universal program) -
   `axross-amp-VERSION-macos-universal.dmg`: `axross-amp.app` to drag to
   Applications; or `axross-amp-VERSION-macos-universal.tar.gz`: the binary.
