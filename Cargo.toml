@@ -7,9 +7,6 @@ repository = "https://github.com/c0decave/axross-amp"
 keywords = ["audio", "music", "player", "visualizer", "equalizer"]
 categories = ["multimedia::audio"]
 readme = "README.md"
-# crates.io: the pictures stay on GitHub (the README links resolve against the
-# repository there); the crate keeps the docs' text.
-exclude = ["docs/*.png", "docs/*.py"]
 edition = "2024"
 
 [dependencies]
