@@ -9,4 +9,7 @@ lock = "../Cargo.lock"
 own = ["axross-amp"]
 baseline_dir = "cargo_baseline"
 cache_dir = "../target/supply-chain-cache"
-min_age_days = 14
+# 10 for 0.14.2 (2026-11-20): egui-file-dialog 0.16.0, published 2026-11-09 and
+# reviewed 2026-11-17 (cargo_baseline), is the one crate under 14 days; back to
+# 14 for the next release.
+min_age_days = 10
