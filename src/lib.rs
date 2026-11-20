@@ -31,4 +31,6 @@ pub mod state;
 #[cfg(test)]
 pub(crate) mod testdir;
 pub mod theme;
+pub mod update;
+pub mod update_ui;
 pub mod viz;

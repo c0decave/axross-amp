@@ -66,6 +66,27 @@ pub fn to_path(text: &str) -> PathBuf {
     }
 }
 
+/// `from` renamed over `to`. On Windows a file another program holds open
+/// for a moment without sharing its deletion (a virus scanner reading the
+/// new file, say) refuses the rename with "access denied": it is tried
+/// again for up to half a second.
+pub fn rename_over(from: &Path, to: &Path) -> std::io::Result<()> {
+    let mut tries = 0;
+    loop {
+        match std::fs::rename(from, to) {
+            Err(e)
+                if cfg!(windows)
+                    && e.kind() == std::io::ErrorKind::PermissionDenied
+                    && tries < 25 =>
+            {
+                tries += 1;
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            done => return done,
+        }
+    }
+}
+
 fn is_byte(c: char) -> bool {
     (BASE..BASE + 256).contains(&(c as u32))
 }

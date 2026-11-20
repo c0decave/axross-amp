@@ -972,7 +972,12 @@ XWAYLAND1 connected 3840x2160+1920+0 (normal left inverted right x axis y axis) 
         // once when the window opens; not again while nothing wants it
         assert_eq!(calls.load(Ordering::Relaxed), 1);
         wanted.store(true, Ordering::Relaxed);
-        std::thread::sleep(std::time::Duration::from_millis(300));
+        // (asked again and again while wanted - every 20 ms; up to 10 s for
+        // three more on a busy machine, where the thread may wait its turn)
+        let end = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while calls.load(Ordering::Relaxed) <= 3 && std::time::Instant::now() < end {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
         assert!(calls.load(Ordering::Relaxed) > 3, "not asked while wanted");
         drop(watch);
     }

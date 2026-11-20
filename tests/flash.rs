@@ -1530,3 +1530,188 @@ fn twelve_frames_a_second_in_every_scheme() {
     }
     assert!(failures.is_empty(), "{failures:#?}");
 }
+
+/// A whole picture flickering in saturated red at `hz` (over `ground`,
+/// black or a lit grey), drawn through the flash guard for `secs` at 60
+/// frames a second: the project's and the review's meters' red readings
+/// (the most in any second), and the share of frames veiled.
+struct RedStrobe {
+    hz: f32,
+    ground: egui::Color32,
+    frame: usize,
+    guard: axross_amp::viz::flashguard::FlashGuard,
+}
+
+impl eframe::App for RedStrobe {
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        egui::CentralPanel::default()
+            .frame(egui::Frame::NONE)
+            .show(ui, |ui| {
+                let rect = ui.max_rect();
+                let painter = ui.painter();
+                let layer = painter.layer_id();
+                let first = painter
+                    .ctx()
+                    .graphics(|g| g.get(layer).map_or(0, |l| l.next_idx().0));
+                let t = self.frame as f32 / 60.0;
+                let on = ((t * self.hz * 2.0) as u32).is_multiple_of(2);
+                painter.rect_filled(
+                    rect,
+                    0.0,
+                    if on {
+                        egui::Color32::from_rgb(255, 0, 0)
+                    } else {
+                        self.ground
+                    },
+                );
+                self.guard
+                    .guard(painter, first, rect, &[], None, 1.0 / 60.0);
+            });
+    }
+}
+
+fn red_strobe(hz: f32, ground: egui::Color32, secs: f32) -> (usize, usize, usize, f32) {
+    let (w, h) = (480usize, 270usize);
+    let mut guard = axross_amp::viz::flashguard::FlashGuard::default();
+    guard.screen_is = Some(vec2(w as f32, h as f32));
+    let mut app = Some(RedStrobe {
+        hz,
+        ground,
+        frame: 0,
+        guard,
+    });
+    let mut harness = egui_kittest::Harness::builder()
+        .with_size(vec2(w as f32, h as f32))
+        .wgpu()
+        .build_eframe(move |_| app.take().unwrap());
+    let mut meter = Meter::with_fps(w, h, 60);
+    let mut gamma = Meter::gamma_red(w, h, 60);
+    let mut review = m11::M11::with(w, h, 60.0, true);
+    let mut veiled = 0;
+    let frames = (secs * 60.0) as usize;
+    for f in 0..frames {
+        harness.state_mut().frame = f;
+        harness.step();
+        let img = harness.render().unwrap();
+        meter.push(&img);
+        gamma.push(&img);
+        review.push_rgba(&img);
+        if harness.state().guard.strength > 0.3 {
+            veiled += 1;
+        }
+    }
+    let project = meter
+        .most()
+        .1
+        .max(meter.most_strict().1)
+        .max(meter.area_red)
+        .max(gamma.most().1)
+        .max(gamma.most_strict().1)
+        .max(gamma.area_red);
+    let r = review.reading();
+    (
+        project,
+        r.c[1],
+        meter.most().0,
+        veiled as f32 / frames as f32,
+    )
+}
+
+/// No saturated red flash passes the guard, however slow (review 12: a
+/// whole picture flickering red at 2 Hz - four red transitions a second,
+/// two red flashes - was not veiled at all: the guard waited for the
+/// general budget, three flashes a second, as for any other). The first
+/// red change is veiled as it comes (a flash is a pair: the rise let
+/// through, its fall follows whatever the veil does); a white flicker at
+/// 2 Hz, within the rule, is left alone.
+#[test]
+fn no_saturated_red_flash_passes_the_guard() {
+    let mut failures = Vec::new();
+    for (hz, ground, name) in [
+        (2.0, egui::Color32::BLACK, "red on black at 2 Hz"),
+        (4.0, egui::Color32::BLACK, "red on black at 4 Hz"),
+        (2.0, egui::Color32::from_gray(90), "red on grey at 2 Hz"),
+    ] {
+        let (project, review, lum, veiled) = red_strobe(hz, ground, 5.0);
+        let line = format!(
+            "{name}: red transitions a second {project} (the review's meter {review}), luminance {lum}, veiled {:.0} %",
+            veiled * 100.0
+        );
+        println!("{line}");
+        // (one red change is no flash; a pair is)
+        if project > 1 || review > 1 || lum > 6 {
+            failures.push(line);
+        }
+    }
+    // (a white flicker within the rule: no veil)
+    let (lum, veiled) = white_strobe(2.0, 5.0);
+    println!(
+        "white on black at 2 Hz: luminance {lum}, veiled {:.0} %",
+        veiled * 100.0
+    );
+    if veiled > 0.01 {
+        failures.push(format!(
+            "a white flicker at 2 Hz veiled {:.0} %",
+            veiled * 100.0
+        ));
+    }
+    assert!(failures.is_empty(), "{failures:#?}");
+}
+
+/// As [`red_strobe`], white on black: the luminance reading and the share
+/// of frames veiled.
+fn white_strobe(hz: f32, secs: f32) -> (usize, f32) {
+    struct White(RedStrobe);
+    impl eframe::App for White {
+        fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+            egui::CentralPanel::default()
+                .frame(egui::Frame::NONE)
+                .show(ui, |ui| {
+                    let s = &mut self.0;
+                    let rect = ui.max_rect();
+                    let painter = ui.painter();
+                    let layer = painter.layer_id();
+                    let first = painter
+                        .ctx()
+                        .graphics(|g| g.get(layer).map_or(0, |l| l.next_idx().0));
+                    let t = s.frame as f32 / 60.0;
+                    let on = ((t * s.hz * 2.0) as u32).is_multiple_of(2);
+                    painter.rect_filled(
+                        rect,
+                        0.0,
+                        if on {
+                            egui::Color32::WHITE
+                        } else {
+                            egui::Color32::BLACK
+                        },
+                    );
+                    s.guard.guard(painter, first, rect, &[], None, 1.0 / 60.0);
+                });
+        }
+    }
+    let (w, h) = (480usize, 270usize);
+    let mut guard = axross_amp::viz::flashguard::FlashGuard::default();
+    guard.screen_is = Some(vec2(w as f32, h as f32));
+    let mut app = Some(White(RedStrobe {
+        hz,
+        ground: egui::Color32::BLACK,
+        frame: 0,
+        guard,
+    }));
+    let mut harness = egui_kittest::Harness::builder()
+        .with_size(vec2(w as f32, h as f32))
+        .wgpu()
+        .build_eframe(move |_| app.take().unwrap());
+    let mut meter = Meter::with_fps(w, h, 60);
+    let mut veiled = 0;
+    let frames = (secs * 60.0) as usize;
+    for f in 0..frames {
+        harness.state_mut().0.frame = f;
+        harness.step();
+        meter.push(&harness.render().unwrap());
+        if harness.state().0.guard.strength > 0.3 {
+            veiled += 1;
+        }
+    }
+    (meter.most().0, veiled as f32 / frames as f32)
+}

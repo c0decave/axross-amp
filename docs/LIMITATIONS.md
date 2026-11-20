@@ -2,6 +2,13 @@
 
 Back to the [README](../README.md) - everything in detail: the [extended README](README-extended.md).
 
+- **Updates** (Options › Check for updates…, from 0.15.0): tried against a
+  fake GitHub only (its API, its redirects, signed and badly signed
+  releases) and on Linux; the Windows replacement (the running program
+  renamed to `.previous`) and the macOS one (the program inside
+  `axross-amp.app`, whose Info.plist keeps naming the old version) are not
+  tested on those systems yet. A release before 0.15.0 has no signature
+  and is never offered.
 - The flash guard costs the CPU about 1.5 - 2 ms a frame, and 5 - 9 ms on the
   particles, the spirograph and the skyline at 4K: **60 frames a second is not
   supported for those faces** on a laptop's CPU (see

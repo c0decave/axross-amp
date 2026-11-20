@@ -656,8 +656,13 @@ impl App {
             self.visual(ui, band);
             return;
         }
-        // (the cover as large as three rows of the playlist leave it)
-        let side = (all - 520.0).min(ui.available_width() * 0.42).min(280.0);
+        // (the cover as large as three rows of the playlist leave it; in a
+        // very large window's wider column, larger, and the picture more
+        // than a strip)
+        let roomy = ui.available_width() >= 1000.0 && all >= 1100.0;
+        let side = (all - 520.0)
+            .min(ui.available_width() * 0.42)
+            .min(if roomy { 380.0 } else { 280.0 });
         if side >= 96.0 {
             ui.vertical_centered(|ui| {
                 let (rect, _) = ui.allocate_exact_size(vec2(side, side), Sense::hover());
@@ -678,7 +683,11 @@ impl App {
         } else {
             self.title_line(ui);
         }
-        let band = (all * 0.09).clamp(28.0, 110.0);
+        let band = if roomy {
+            (all * 0.2).clamp(110.0, 360.0)
+        } else {
+            (all * 0.09).clamp(28.0, 110.0)
+        };
         self.visual(ui, band);
         ui.add_space(6.0);
         self.position(ui);
@@ -1111,7 +1120,11 @@ impl App {
         } else if compact {
             (all * 0.36).clamp(110.0, 170.0)
         } else {
-            (all * 0.42).min(w * 0.34).clamp(200.0, 380.0)
+            // (a very large window: a larger deck - its picture was some
+            // 400 x 150 points at 3000 x 1600, review 12)
+            (all * 0.42)
+                .min(w * 0.34)
+                .clamp(200.0, if w >= 2000.0 { 640.0 } else { 380.0 })
         };
         let (deck, _) = ui.allocate_exact_size(vec2(w, deck_h), Sense::hover());
         // the deck's face

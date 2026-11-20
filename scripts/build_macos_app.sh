@@ -3,7 +3,7 @@
 #
 # Usage: scripts/build_macos_app.sh BINARY VERSION OUTDIR THIRD_PARTY [NAME]
 #   BINARY       the macOS program (arm64, x86_64 or a universal one)
-#   VERSION      0.14.3
+#   VERSION      0.15.0
 #   OUTDIR       where axross-amp.app and NAME.dmg go
 #   THIRD_PARTY  THIRD_PARTY_LICENSES.md made for macOS
 #   NAME         the DMG's name (default axross-amp-VERSION-macos)

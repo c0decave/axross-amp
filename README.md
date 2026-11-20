@@ -13,7 +13,7 @@ axross's Media Player as a program of its own - written in Rust.
 - **Twelve themes** - design tokens, contrast tested to WCAG AA (AAA in High contrast), follows the desktop's light or dark
 - **Show on display** - the pictures full screen on a TV or projector, the sound moved to its HDMI or DisplayPort output
 - **Mixer and Bluetooth built in** - the sound server's devices and applications, pairing and connecting headsets
-- **At home on the desktop** - MPRIS media keys (Linux), one instance, and the state shared with axross
+- **At home on the desktop** - MPRIS media keys (Linux), one instance, the state shared with axross, and updates from the signed GitHub releases (Options › Check for updates…)
 
 ## Contents
 
@@ -66,6 +66,12 @@ and their `SHA256SUMS`:
 Each archive carries `LICENSE`, `THIRD_PARTY_LICENSES.md` and (Linux) the
 desktop entry and icon. Requirements and details: [Install](docs/README-extended.md#install). What changed:
 [CHANGELOG](CHANGELOG.md).
+
+**Updates** (from 0.15.0): *Options › Check for updates…* fetches a newer
+release's file for this program from GitHub and puts it in place - only
+when its `SHA256SUMS` is signed by the release key pinned in the program
+and the file has the signed SHA-256. Off until used; a player before 0.15.0
+is updated by hand once. Details: [Updates](docs/README-extended.md#updates).
 
 ## Quick start
 

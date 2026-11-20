@@ -82,12 +82,15 @@ jobs:
           scripts/pack_release.sh target/release/axross-amp "axross-amp-$VERSION-linux-x86_64" dist THIRD_PARTY_LICENSES.md linux
       - name: The AppImage (appimagetool and its runtime pinned by SHA-256)
         run: scripts/build_appimage.sh target/release/axross-amp "$VERSION" dist "$RUNNER_TEMP/appimage-tools"
+      - name: The program alone (what the updater fetches - src/update.rs)
+        run: install -m 0755 target/release/axross-amp "dist/axross-amp-$VERSION-linux-x86_64"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-linux
           path: |
             dist/*.tar.gz
             dist/*.AppImage
+            dist/axross-amp-*-linux-x86_64
           if-no-files-found: error
 
   macos:
@@ -124,12 +127,15 @@ jobs:
         run: scripts/pack_release.sh pack/axross-amp "axross-amp-$VERSION-macos-universal" dist THIRD_PARTY_LICENSES-macos.md
       - name: axross-amp.app in a DMG
         run: scripts/build_macos_app.sh pack/axross-amp "$VERSION" dist THIRD_PARTY_LICENSES-macos.md "axross-amp-$VERSION-macos-universal"
+      - name: The program alone (what the updater fetches - src/update.rs)
+        run: install -m 0755 pack/axross-amp "dist/axross-amp-$VERSION-macos-universal"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-macos
           path: |
             dist/*.tar.gz
             dist/*.dmg
+            dist/axross-amp-*-macos-universal
           if-no-files-found: error
 
   windows:
@@ -162,10 +168,14 @@ jobs:
           foreach ($f in "axross-amp.exe", "LICENSE", "THIRD_PARTY_LICENSES.md") {
             if ($files -notcontains $f) { Write-Error "$f missing from the zip"; exit 1 }
           }
+          # the program alone (what the updater fetches - src/update.rs)
+          Copy-Item target/release/axross-amp.exe "dist/$name.exe"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-windows
-          path: dist/*.zip
+          path: |
+            dist/*.zip
+            dist/*.exe
           if-no-files-found: error
 
   release:
@@ -208,7 +218,11 @@ jobs:
           ' CHANGELOG.md > notes.md
           test -s notes.md
           printf '\n**Photosensitivity warning**: the visualizations move with the music. They are guarded against flashes and patterns (see the README), but the pictures are not guaranteed safe for everyone; if you or anyone watching has epilepsy, turn them off.\n' >> notes.md
-      - name: The GitHub release
+      # A draft: the maintainer signs SHA256SUMS on their own machine
+      # (scripts/sign_release.py, docs/RELEASING.md), uploads
+      # SHA256SUMS.sig and publishes - the key never reaches CI, and the
+      # updater takes no release without the signature.
+      - name: The GitHub release, as a draft (signed and published by hand)
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --title "axross-amp $VERSION" --notes-file notes.md release/*
+        run: gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --draft --title "axross-amp $VERSION" --notes-file notes.md release/*

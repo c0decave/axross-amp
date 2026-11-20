@@ -556,7 +556,7 @@ pub fn collect_with(args: &[String], progress: &mut dyn FnMut(usize)) -> Collect
         let decoded;
         let arg = match arg.strip_prefix("file://") {
             Some(rest) => {
-                decoded = percent_decode(rest.strip_prefix("localhost").unwrap_or(rest));
+                decoded = url_path(rest.strip_prefix("localhost").unwrap_or(rest));
                 &decoded
             }
             None => arg,
@@ -698,12 +698,12 @@ pub fn read_playlist(path: &Path) -> Result<Vec<Track>, String> {
         let entry = if let Some(rest) = entry.strip_prefix("file://") {
             // a file: URL of this computer
             match rest.strip_prefix("localhost").unwrap_or(rest) {
-                local if local.starts_with('/') => percent_decode(local),
+                local if local.starts_with('/') => url_path(local),
                 _ => return None,
             }
         } else if let Some(local) = entry.strip_prefix("file:").filter(|l| l.starts_with('/')) {
             // (file:/path, one slash: a local path too, not a relative one)
-            percent_decode(local)
+            url_path(local)
         } else {
             entry
         };
@@ -880,7 +880,7 @@ pub fn write_atomically(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
             if let Ok(meta) = fs::metadata(path) {
                 fs::set_permissions(&tmp, meta.permissions())?;
             }
-            fs::rename(&tmp, path)
+            crate::fspath::rename_over(&tmp, path)
         });
     if result.is_err() {
         let _ = fs::remove_file(&tmp);
@@ -888,11 +888,24 @@ pub fn write_atomically(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     result
 }
 
-/// %XX sequences back to their bytes (a file: URL's path).
-/// A local path as a file:// URL (what is not plain, percent-encoded).
+/// A local path as a file:// URL (what is not plain, percent-encoded). On
+/// Windows `C:\Music\a b.mp3` is `file:///C:/Music/a%20b.mp3` (it was
+/// `file://C%3A%5CMusic...`, which no reader - this one neither - takes
+/// for a local file).
 pub fn file_url(path: &str) -> String {
     let mut out = String::from("file://");
-    for b in path.bytes() {
+    let path = if cfg!(windows) {
+        path.replace('\\', "/")
+    } else {
+        path.to_owned()
+    };
+    let mut rest = path.as_str();
+    if cfg!(windows) && has_drive(rest) {
+        out.push('/');
+        out.push_str(&rest[..2]);
+        rest = &rest[2..];
+    }
+    for b in rest.bytes() {
         if b.is_ascii_alphanumeric() || b"/-._~".contains(&b) {
             out.push(b as char);
         } else {
@@ -902,6 +915,24 @@ pub fn file_url(path: &str) -> String {
     out
 }
 
+/// The path of a file: URL of this computer, from what follows `file://`
+/// and its host (none or `localhost`) - or `file:` alone: `/x/a%20b.mp3` is
+/// `/x/a b.mp3`; on Windows `/C:/x/a.mp3` is `C:/x/a.mp3`.
+pub fn url_path(local: &str) -> String {
+    let path = percent_decode(local);
+    match path.strip_prefix('/') {
+        Some(drive) if cfg!(windows) && has_drive(drive) => drive.to_owned(),
+        _ => path,
+    }
+}
+
+/// Whether `path` begins with a drive letter and its colon (`C:`).
+fn has_drive(path: &str) -> bool {
+    let b = path.as_bytes();
+    b.len() >= 2 && b[0].is_ascii_alphabetic() && b[1] == b':'
+}
+
+/// %XX sequences back to their bytes (a file: URL's path).
 pub fn percent_decode(text: &str) -> String {
     let bytes = text.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
@@ -1172,10 +1203,13 @@ mod tests {
         assert_eq!(paths, want);
         let many: Vec<Track> = (0..MAX_TRACKS + 50)
             .map(|i| Track {
-                path: format!(
-                    "/home/someone/Music/Some Artist/Some Album (Deluxe)/{:02} - A Song Title {i}.flac",
-                    i % 20
-                ),
+                // (a path of this system's: read back as it was written)
+                path: music
+                    .join("Some Artist")
+                    .join("Some Album (Deluxe)")
+                    .join(format!("{:02} - A Song Title {i}.flac", i % 20))
+                    .to_string_lossy()
+                    .into_owned(),
                 title: format!("Some Artist - A Song Title Number {i}"),
                 duration_ms: 245_000,
                 ..Default::default()
@@ -1199,15 +1233,24 @@ mod tests {
         let mut text = b"#EXTM3U\n#EXTINF:5,Caf\xe9\n".to_vec();
         text.extend_from_slice(b"Ca va\\x.mp3\n");
         text.extend_from_slice(
-            format!("file://{}/%C3%87a%20va/y.flac\n", dir.display()).as_bytes(),
+            format!("{}/%C3%87a%20va/y.flac\n", file_url(&dir.to_string_lossy())).as_bytes(),
         );
         text.extend_from_slice(b"file://otherhost/z.mp3\n");
         fs::write(dir.join("list.m3u"), text).unwrap();
         let t = read_playlist(&dir.join("list.m3u")).unwrap();
         assert_eq!(t.len(), 2, "{t:?}");
         assert_eq!(t[0].title, "Café");
-        assert!(t[0].path.ends_with("/Ca va/x.mp3"), "{}", t[0].path);
-        assert!(t[1].path.ends_with("/Ça va/y.flac"), "{}", t[1].path);
+        // (on Windows a backslash is a separator of its own)
+        assert!(
+            Path::new(&t[0].path).ends_with("Ca va/x.mp3"),
+            "{}",
+            t[0].path
+        );
+        assert!(
+            Path::new(&t[1].path).ends_with("Ça va/y.flac"),
+            "{}",
+            t[1].path
+        );
         fs::write(dir.join("bin.m3u"), b"a.mp3\0").unwrap();
         assert!(read_playlist(&dir.join("bin.m3u")).is_err());
     }
@@ -1331,6 +1374,23 @@ mod tests {
     /// as Latin-1's C1 controls: those tracks not found), a `file:/path`
     /// URL (one slash: taken as relative), a PLS whose File10 comes before
     /// File3 (taken in the file's order; titles by their numbers).
+    /// A file: URL of this system's paths and back (on Windows with the
+    /// drive after three slashes, as other programs write and read them).
+    #[test]
+    fn file_urls_of_this_systems_paths() {
+        if cfg!(windows) {
+            assert_eq!(
+                file_url(r"C:\Music\a b#.mp3"),
+                "file:///C:/Music/a%20b%23.mp3"
+            );
+            assert_eq!(url_path("/C:/Music/a%20b%23.mp3"), "C:/Music/a b#.mp3");
+        } else {
+            assert_eq!(file_url(r"/m/C:\x #.mp3"), "file:///m/C%3A%5Cx%20%23.mp3");
+            assert_eq!(url_path("/C:/x%20%23.mp3"), "/C:/x #.mp3");
+        }
+        assert_eq!(url_path("/m/a%20b.mp3"), "/m/a b.mp3");
+    }
+
     #[test]
     fn playlists_from_elsewhere_read_as_meant() {
         let dir = crate::testdir::Scratch::new("pl-elsewhere");
@@ -1362,13 +1422,12 @@ mod tests {
             w.iter().map(at).collect::<Vec<_>>(),
             ["c\u{20ac}.mp3", "d\u{2019}s.mp3"]
         );
+        // (file:///C:/... on Windows; one slash fewer: file:/C:/...)
+        let url = file_url(&dir.to_string_lossy());
+        let one_slash = format!("file:{}", &url["file://".len()..]);
         fs::write(
             dir.join("urls.m3u"),
-            format!(
-                "file:{}/a.mp3\nfile://{}/b.mp3\n",
-                dir.display(),
-                dir.display()
-            ),
+            format!("{one_slash}/a.mp3\n{url}/b.mp3\n"),
         )
         .unwrap();
         let urls = read_playlist(&dir.join("urls.m3u")).unwrap();
@@ -1406,7 +1465,7 @@ mod tests {
         .unwrap();
         let m3u = read_playlist(&dir.join("list.m3u")).unwrap();
         assert_eq!(m3u.len(), 2);
-        assert!(m3u[0].path.ends_with("sub/a.mp3") && m3u[0].title == "Song A");
+        assert!(Path::new(&m3u[0].path).ends_with("sub/a.mp3") && m3u[0].title == "Song A");
         assert_eq!((m3u[0].duration_ms, m3u[1].duration_ms), (123_000, 0));
         assert_eq!(m3u[1].path, "https://radio.example/live");
         let pls = read_playlist(&dir.join("radio.pls")).unwrap();
@@ -1419,7 +1478,12 @@ mod tests {
         assert_eq!(found.skipped, vec!["nope.xyz".to_string()]);
         assert!(!found.truncated);
         let saved = to_m3u(&m3u, Some(&dir));
-        assert!(saved.contains("#EXTINF:123,Song A\nsub/a.mp3\n"), "{saved}");
+        // (below the playlist's folder: relative, in the system's own way)
+        let relative = Path::new("sub").join("a.mp3");
+        assert!(
+            saved.contains(&format!("#EXTINF:123,Song A\n{}\n", relative.display())),
+            "{saved}"
+        );
         assert!(saved.contains("https://radio.example/live"));
         for name in ["x.opus", "x.webm", "x.OGG"] {
             assert!(is_audio(Path::new(name)), "{name}");

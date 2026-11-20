@@ -196,6 +196,9 @@ pub struct AmpSettings {
     pub display_restore_profile: Option<(String, String)>,
     /// The window's design (`design::DESIGNS`' key).
     pub design: String,
+    /// Ask GitHub for a newer release at the start (off unless ticked:
+    /// src/update.rs).
+    pub update_check: bool,
 }
 
 /// The loudness targets offered: LUFS and what aims at it.
@@ -231,6 +234,7 @@ impl Default for AmpSettings {
             display_restore_output: None,
             display_restore_profile: None,
             design: "modern".into(),
+            update_check: false,
         }
     }
 }
@@ -342,6 +346,9 @@ pub fn read_amp(path: &Path) -> AmpSettings {
     {
         settings.design = d;
     }
+    if let Some(on) = map.get("update_check").and_then(Value::as_bool) {
+        settings.update_check = on;
+    }
     settings
 }
 
@@ -393,6 +400,7 @@ pub fn write_amp(path: &Path, settings: &AmpSettings) -> std::io::Result<()> {
         map.remove("display_restore");
     }
     map.insert("design".into(), json!(settings.design));
+    map.insert("update_check".into(), json!(settings.update_check));
     write_object(path, &map)
 }
 
@@ -529,7 +537,7 @@ fn write_object(path: &Path, object: &Map<String, Value>) -> std::io::Result<()>
         file.write_all(text.as_bytes())?;
         file.sync_all()?;
     }
-    fs::rename(&tmp, path).inspect_err(|_| {
+    crate::fspath::rename_over(&tmp, path).inspect_err(|_| {
         let _ = fs::remove_file(&tmp);
     })
 }
@@ -1056,6 +1064,7 @@ mod tests {
                 "output:analog-stereo+input:analog-stereo".into(),
             )),
             design: "cassette".into(),
+            update_check: true,
         };
         write_amp(&path, &settings).unwrap();
         let back = read_amp(&path);

@@ -81,12 +81,30 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libasound2-dev pkg-config mesa-vulkan-drivers
       - run: cargo fmt --check
       - run: cargo clippy --all-targets -- -D warnings
+      # (every test binary run, also past a failing one; the output kept and,
+      # when a test fails, each failure an annotation of its own - its name,
+      # where it panicked, the message - readable without the job's log)
       - name: Tests (the window test renders with Mesa's lavapipe on Linux)
         if: runner.os == 'Linux'
-        run: cargo test
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo test --no-fail-fast 2>&1 | tee target/test-output.log \
+            || { python3 scripts/test_failures.py target/test-output.log; exit 1; }
       - name: "Tests (no GPU on these runners: the window test is skipped)"
         if: runner.os != 'Linux'
-        run: cargo test --lib --bins
+        shell: bash
+        run: |
+          set -o pipefail
+          PYTHON=$(command -v python3 || command -v python)
+          cargo test --no-fail-fast --lib --bins 2>&1 | tee target/test-output.log \
+            || { "$PYTHON" scripts/test_failures.py target/test-output.log; exit 1; }
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: failure()
+        with:
+          name: test-output-${{ runner.os }}
+          path: target/test-output.log
+          if-no-files-found: ignore
       - run: cargo build --release
       - name: On Windows a GUI program (no console window beside it)
         if: runner.os == 'Windows'

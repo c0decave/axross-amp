@@ -921,8 +921,18 @@ impl FlashGuard {
         // once on, it stays while the face goes on near the rule - four in
         // a second - and a second and a half after (no pumping on a loop
         // that comes and goes)
+        // (a saturated red change over a field: the veil at once, whatever
+        // the count - no red flash passes, however slow: a flash is a pair,
+        // and once the first change is shown its pair follows whatever the
+        // veil does. Review 12: red at 2 Hz, two red flashes a second, was
+        // not veiled - it waited for the general budget.)
+        let mut red_now = false;
         for k in 0..self.fields.len() {
             let raw = self.raw_watch.recent(k);
+            let red = self.raw_watch.events[k][1]
+                .last()
+                .is_some_and(|t| now - t < dt * 0.5);
+            red_now |= red;
             let shown = if self.shown_is_raw {
                 raw
             } else {
@@ -936,7 +946,12 @@ impl FlashGuard {
             // strictly, ordinary music stays there, and was veiled)
             let fast = self.raw_watch.fast(k, now)
                 || (!self.shown_is_raw && self.shown_watch.fast(k, now));
-            let want = if shown >= SHOWN_BUDGET || raw >= RAW_BUDGET || fast {
+            // (red: 0.99 - the picture the veil holds may be red itself, a
+            // red that came before the veil; 0.05 of a red swing over it was
+            // still a red transition)
+            let want = if red {
+                0.99
+            } else if shown >= SHOWN_BUDGET || raw >= RAW_BUDGET || fast {
                 0.95
             } else {
                 0.0
@@ -967,7 +982,14 @@ impl FlashGuard {
         let mut strongest = 0.0f32;
         for i in 0..self.veil.len() {
             let t = target[i];
-            let k = if t > self.veil[i] { on } else { off };
+            // (for red: in this frame, before the change is shown)
+            let k = if t <= self.veil[i] {
+                off
+            } else if red_now {
+                1.0
+            } else {
+                on
+            };
             self.veil[i] += (t - self.veil[i]) * k;
             // (gone below a thousandth: gone - the shown picture is the raw)
             if t == 0.0 && self.veil[i] < 0.001 {

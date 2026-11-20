@@ -154,3 +154,22 @@ fn the_help_names_every_option_and_key() {
         assert!(help.contains(what), "--help does not name {what}");
     }
 }
+
+/// The player's own update (0.15.0) is in the README, the extended README
+/// and the CHANGELOG, by the menu's words.
+#[test]
+fn the_update_is_described() {
+    let readme = flat(&read("README.md"));
+    assert!(readme.contains("Options › Check for updates…"));
+    assert!(readme.contains("(docs/README-extended.md#updates)"));
+    let extended = read("docs/README-extended.md");
+    assert!(extended.contains("\n## Updates\n"));
+    assert!(flat(&extended).contains("*Options › Check for updates…*"));
+    let changelog = read("CHANGELOG.md");
+    let notes = changelog
+        .split("\n## 0.15.0 ")
+        .nth(1)
+        .and_then(|rest| rest.split("\n## ").next())
+        .expect("0.15.0 in the CHANGELOG");
+    assert!(notes.contains("Updates from the GitHub releases"));
+}

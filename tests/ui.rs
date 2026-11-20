@@ -94,8 +94,13 @@ fn the_window_shows_the_track_and_every_visualization() {
         headless_audio: true,
     };
     let arg = sound.to_string_lossy().into_owned();
+    // (a frame of the window for each 10 ms of sound play_for takes: the
+    // faces go by the window's clock, kittest's step of a quarter of a
+    // second ran it 25 times as fast as the sound - a steady chord's
+    // chromagram had scrolled full and stood still)
     let mut harness = Harness::builder()
         .with_size(egui::vec2(620.0, 860.0))
+        .with_step_dt(0.01)
         .wgpu()
         .build_eframe(move |cc| App::with_setup(cc, vec![arg.clone()], setup.clone()));
     let mut output = RenderState::default();
@@ -187,6 +192,7 @@ fn the_readme_picture() {
     unsafe { std::env::set_var("AMP_GPU_SHADERS", "1") };
     let mut harness = Harness::builder()
         .with_size(egui::vec2(620.0, 860.0))
+        .with_step_dt(0.01)
         .wgpu()
         .build_eframe(move |cc| App::with_setup(cc, args.clone(), setup.clone()));
     // (the faces at full resolution, as a GPU draws them)

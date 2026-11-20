@@ -10,13 +10,14 @@ some topics have a page of their own, linked below.
 - [Features](#features)
 - [Screenshots](#screenshots)
 - [Use](#use)
+- [Updates](#updates)
 - [Build](#build)
 - [Status](#status)
 - [Tests](#tests)
 - [Licence](#licence)
 - Pages of their own: [Faces](FACES.md), [Designs](DESIGNS.md), [Themes](THEMES.md),
   [Show on display](DISPLAY.md), [Photosensitivity](FLASH_SAFETY.md),
-  [Known limitations](LIMITATIONS.md), [Changelog](../CHANGELOG.md)
+  [Known limitations](LIMITATIONS.md), [Releasing](RELEASING.md), [Changelog](../CHANGELOG.md)
 
 ![The window](window.png)
 
@@ -55,6 +56,11 @@ Cargo.lock for that platform) and the `README.md`.
 - **Windows (x64)** - `axross-amp-VERSION-windows-x64.zip`: `axross-amp.exe`
   (a GUI program: no console window), not signed (SmartScreen asks once).
 - **From source** - see [Build](#build) (a recent stable Rust; the releases are built with the current one).
+
+From 0.15.0 on each release also carries the program alone for every
+system (`axross-amp-VERSION-linux-x86_64`, `-macos-universal`,
+`-windows-x64.exe`) and `SHA256SUMS.sig`, the signature of `SHA256SUMS`:
+what the player's own update fetches (see [Updates](#updates)).
 
 The Python program this one replaces is on the `python` branch.
 
@@ -270,6 +276,40 @@ leave a paused player paused, as MPRIS asks.
 ![The row of buttons](transport.png)
 
 The mouse wheel seeks over the position and sets the volume over its slider.
+
+## Updates
+
+*Options › Check for updates…* asks GitHub for the latest release and, when
+it is newer, offers *Download and install*; *Check for updates at start*
+does the asking at every start. Both are off until used: nothing goes to the
+network otherwise (`AXROSS_AMP_NO_UPDATE_CHECK=1` keeps the start check off
+whatever the setting says). The window is calm: a bar that fills, no
+spinner, nothing blinking.
+
+What is fetched is the release's file for this program - the Linux binary,
+the AppImage (the AppImage file itself is replaced), the program inside
+`axross-amp.app` on macOS, the Windows `.exe`. A build from the source tree or
+from `cargo install` is not replaced (the window says how to update it).
+Before anything is replaced:
+
+- every request and every redirect goes over https to GitHub's hosts only
+  (`api.github.com`, `github.com`, `release-assets.githubusercontent.com`,
+  `objects.githubusercontent.com`), each answer bounded in size;
+- the release is strictly newer than the running program;
+- `SHA256SUMS.sig` is a valid Ed25519 signature of `SHA256SUMS` by the
+  release key pinned in the program (no signature, another key: refused,
+  before the program is fetched);
+- the file has its entry in the signed `SHA256SUMS`, the size the release
+  states (at most 512 MiB) and that SHA-256.
+
+The new file is written beside the program and put in place with one
+rename; the old one stays as `axross-amp.previous` (on Windows
+`axross-amp.exe.previous`: a running program can be renamed, not
+overwritten) until the new one has started. It takes effect at the next
+start; *Restart now* starts it at once. A folder that cannot be written
+(an app in a system folder) keeps the program as it is: the checked file is
+left in `~/.cache/axross-amp/update/` and the window says where. How a
+release is signed: [RELEASING.md](RELEASING.md).
 
 ## Build
 

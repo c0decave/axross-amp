@@ -976,6 +976,34 @@ fn glass_and_soft_are_not_modern() {
 /// span most of it, not a column of 1180 points in the middle (review 11:
 /// eight designs stayed a narrow column). Zen alone is one column by its
 /// nature.
+/// At 3000 x 1600 every design gives the picture room: at least an eighth
+/// of the window's height and a fifth of its width (review 12: Zen kept a
+/// column of 720 points with a strip of a picture, the Cassette a picture
+/// of some 400 x 150 under its reels).
+#[test]
+fn a_very_large_window_gives_the_picture_room() {
+    let mut failures = Vec::new();
+    let size = egui::vec2(3000.0, 1600.0);
+    for d in DESIGNS.iter() {
+        let home = Scratch::new(&format!("design-room-{}", d.key));
+        let tracks = two_tracks(&home);
+        let mut h = window(&home, tracks, size);
+        assert!(until(&mut h, 5.0, |a| a.is_loaded()));
+        h.state_mut().set_design(d.key);
+        settle(&mut h, 4);
+        let picture = h.get_by_label_contains("Visualization: ").rect();
+        if picture.height() < size.y / 8.0 || picture.width() < size.x / 5.0 {
+            failures.push(format!(
+                "{}: the picture {:.0} x {:.0}",
+                d.name,
+                picture.width(),
+                picture.height()
+            ));
+        }
+    }
+    assert!(failures.is_empty(), "{failures:#?}");
+}
+
 #[test]
 fn a_very_large_window_is_used() {
     let mut failures = Vec::new();

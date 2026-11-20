@@ -4,6 +4,50 @@ axross-amp is axross's Media Player as a program of its own, in Rust. The
 versions before 0.14.0 were not published; they are listed so the history
 reads whole.
 
+## 0.15.0 - 2026-11-20
+
+### Added
+- **Updates from the GitHub releases** (Options › Check for updates…, and
+  *Check for updates at start* - both off until used). A newer release's
+  file for this program - the Linux binary, the AppImage, the program in
+  axross-amp.app, the Windows .exe - is fetched over https from GitHub's
+  hosts only, taken only when `SHA256SUMS` carries a valid Ed25519
+  signature by the release key pinned in the program and the file has the
+  signed SHA-256 and the stated size, and put in place with one rename (the
+  old one kept until the new one has started). Releases carry the program
+  alone for each system and `SHA256SUMS.sig`; CI makes a draft that the
+  maintainer signs and publishes (docs/RELEASING.md).
+- A player before 0.15.0 has no update: it is updated by hand once, to
+  0.15.0; from there on the player updates itself. A build from the source
+  tree or from `cargo install` is never replaced. What is not tested yet
+  (the replacement on Windows and macOS) is in docs/LIMITATIONS.md.
+
+### Fixed
+- **The flash guard lets no saturated red flash through**, however slow:
+  a whole picture flickering in saturated red at 2 Hz (two red flashes a
+  second, within the general budget of three) was not veiled at all. A
+  saturated red change over a field now calls the veil in the frame it
+  comes (review 12).
+- **Zen and the Cassette deck use a very large window** (2200 points and
+  more): Zen's column is two fifths of it with a picture a fifth of its
+  height (it kept a column of 720 points and a strip of a picture), the
+  Cassette deck grows up to 640 points tall (review 12, low).
+- **Windows: file:// URLs** are `file:///C:/Music/...` both ways - a
+  playlist's name starting with '#' or a space was saved as a URL no reader
+  took for a local file and lost on reading, and the `file:///C:/...` of
+  other programs' playlists was skipped.
+- **Windows**: the shared state file and saved playlists are put in
+  place with a retry while a virus scanner holds the new file a moment.
+
+### Changed
+- The faces, the analysis and the flash guard take their time step from
+  egui's clock (on a screen the wall clock's as before): in the tests a
+  busy machine's slow frames no longer count as seconds on the screen
+  (the cover test read 16 transitions a second on a loaded machine).
+- CI: a failing test is an annotation of its own (its name, where it
+  panicked, the message), every test binary runs past a failing one, and
+  the output is kept; the unit tests compare paths as Windows has them.
+
 ## 0.14.3 - 2026-11-20
 
 What independent review 12 (8.0 of 10) asked for. (0.14.2 was not

@@ -322,3 +322,117 @@ fn the_glibc_floor_is_read_from_the_binary() {
     assert!(String::from_utf8_lossy(&high.stdout).contains("needs glibc 2."));
     assert!(!run("2.0").status.success());
 }
+
+/// When the tests fail in CI, each failing test is an annotation of its
+/// own - its name, where it panicked, the message - so a failure can be
+/// read from the check run alone (the job's log is not always at hand):
+/// every test step keeps its output and runs scripts/test_failures.py on
+/// it when it fails, and the script reads cargo's output so.
+#[test]
+#[cfg(target_os = "linux")]
+fn a_failing_test_in_ci_is_named_in_an_annotation() {
+    let ci = std::fs::read_to_string(Path::new(ROOT).join(".github/workflows/ci.yml")).unwrap();
+    let steps: Vec<&str> = ci
+        .split("      - ")
+        .filter(|s| s.contains("cargo test"))
+        .collect();
+    assert_eq!(
+        steps.len(),
+        2,
+        "the Linux and the other systems' test steps"
+    );
+    for step in steps {
+        for want in [
+            "shell: bash",
+            "set -o pipefail",
+            "--no-fail-fast",
+            "| tee target/test-output.log",
+            "scripts/test_failures.py target/test-output.log; exit 1;",
+        ] {
+            assert!(step.contains(want), "no {want:?} in:\n{step}");
+        }
+    }
+    let log = "     Running unittests src/lib.rs (target/debug/deps/axross_amp-0123456789abcdef)
+test playlist::tests::a ... FAILED
+test playlist::tests::b ... ok
+
+failures:
+
+---- playlist::tests::a stdout ----
+printed first
+
+thread 'playlist::tests::a' panicked at src\\playlist.rs:1170:9:
+assertion `left == right` failed
+  left: [\"a, b: 100%\"]
+ right: []
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    playlist::tests::a
+
+test result: FAILED. 1 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/cover_skip.rs (target/debug/deps/cover_skip-fedcba9876543210)
+test skipping_never_blinks_the_cover has been running for over 60 seconds
+error: test failed, to rerun pass `--test cover_skip`
+
+Caused by:
+  process didn't exit successfully: `target/debug/deps/cover_skip-fedcba9876543210` (signal: 11, SIGSEGV: invalid memory reference)
+";
+    let dir = std::env::temp_dir().join(format!("amp-annotations-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("test-output.log");
+    std::fs::write(&file, log).unwrap();
+    let out = Command::new("python3")
+        .arg(Path::new(ROOT).join("scripts/test_failures.py"))
+        .arg(&file)
+        .output()
+        .unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(out.status.success());
+    let lines: Vec<String> = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .map(str::to_owned)
+        .collect();
+    assert_eq!(
+        lines[0],
+        "::error file=src/playlist.rs,line=1170,title=lib.rs%3A playlist%3A%3Atests%3A%3Aa::\
+         assertion `left == right` failed%0A  left: [\"a, b: 100%25\"]%0A right: []"
+    );
+    assert!(
+        lines.iter().any(
+            |l| l.starts_with("::error title=cover_skip.rs%3A crashed::") && l.contains("SIGSEGV")
+        ),
+        "{lines:#?}"
+    );
+    assert!(
+        lines.iter().any(|l| l
+            == "::warning title=cover_skip.rs%3A skipping_never_blinks_the_cover::running for over 60 seconds"),
+        "{lines:#?}"
+    );
+    // (short enough for GitHub: at most ten errors a step, each under 1 KB)
+    let many: String = (0..30)
+        .map(|i| {
+            format!(
+                "---- t{i} stdout ----\nthread 't{i}' panicked at src/x.rs:1:1:\n{}\n\n",
+                "x".repeat(5000)
+            )
+        })
+        .collect();
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(&file, format!("failures:\n\n{many}failures:\n")).unwrap();
+    let out = Command::new("python3")
+        .arg(Path::new(ROOT).join("scripts/test_failures.py"))
+        .arg(&file)
+        .output()
+        .unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(
+        text.lines().filter(|l| l.starts_with("::error")).count(),
+        10
+    );
+    assert!(text.lines().all(|l| l.len() < 1100), "{text}");
+    assert!(text.contains("30 tests failed"));
+}

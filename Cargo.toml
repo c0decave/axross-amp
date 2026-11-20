@@ -1,6 +1,6 @@
 [package]
 name = "axross-amp"
-version = "0.14.3"
+version = "0.15.0"
 description = "axross's Media Player as a program of its own, in Rust: playlists, a ten-band equalizer, visualizations, internet radio"
 license = "Apache-2.0"
 repository = "https://github.com/c0decave/axross-amp"
@@ -17,6 +17,9 @@ eframe = "0.37.0"
 egui = "0.37"
 egui-file-dialog = "0.16.0"
 image = { version = "0.25.10", default-features = false, features = ["jpeg", "png"] }
+# (already in the lock through rustls: the update's Ed25519 signature and
+# SHA-256 - src/update.rs)
+ring = "0.17.14"
 rustfft = "6.4.1"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"

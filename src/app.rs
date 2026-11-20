@@ -176,6 +176,8 @@ pub struct App {
     /// The photosensitivity warning shown (the intense motion asked for),
     /// and whether the desktop asks for reduced motion (None: not known).
     intense_asked: bool,
+    /// The Updates window and its check (src/update_ui.rs).
+    updater: crate::update_ui::Updater,
     reduced_motion: Arc<Mutex<Option<bool>>>,
     /// The desktop's light or dark, asked (winit says nothing on Linux);
     /// None where the window does not belong to a desktop (tests).
@@ -254,7 +256,8 @@ pub struct App {
     dirty: bool,
     eq_dirty: bool,
     last_save: Instant,
-    last_frame: Instant,
+    /// When the face was drawn last, by egui's clock (None: not yet).
+    last_frame: Option<f64>,
     tab: Tab,
     mixer_page: crate::mixer_ui::MixerPage,
     #[cfg(target_os = "linux")]
@@ -696,6 +699,7 @@ impl App {
             big_visual: false,
             big_list: false,
             intense_asked: false,
+            updater: crate::update_ui::Updater::default(),
             reduced_motion: desktop_reduced_motion(),
             // (watched only while followed: see update_theme)
             desktop_shade: None,
@@ -748,7 +752,7 @@ impl App {
             dirty: false,
             eq_dirty: false,
             last_save: Instant::now(),
-            last_frame: Instant::now(),
+            last_frame: None,
             tab: Tab::Player,
             mixer_page: Default::default(),
             #[cfg(target_os = "linux")]
@@ -801,6 +805,8 @@ impl App {
             });
         }
         app.scanner.scan(&app.playlist.tracks);
+        // (only when ticked: off by default, nothing goes to the network)
+        app.updater.start(&cc.egui_ctx, app.amp.update_check);
         // (the display view open when it ended: opened there again once
         // the monitors are known)
         app.reopen_display = app.amp.display_open;
@@ -979,6 +985,11 @@ impl App {
     /// How the pictures move: "calm" or "intense" (tests).
     pub fn motion(&self) -> &str {
         &self.amp.motion
+    }
+
+    /// Check for updates at start ticked (tests).
+    pub fn settings_update_check(&self) -> bool {
+        self.amp.update_check
     }
 
     pub fn big_visual(&self) -> bool {
@@ -2191,6 +2202,7 @@ impl App {
         let inner = self.details.is_some()
             || self.url_open
             || self.intense_asked
+            || self.updater.open
             || ui.ctx().memory(|m| m.focused().is_some());
         if pressed(Key::Escape) && !inner {
             if self.fullscreen {
@@ -3378,6 +3390,10 @@ impl App {
             self.amp_dirty = true;
         }
         ui.separator();
+        if self.updater.menu(ui, &mut self.amp.update_check) {
+            self.amp_dirty = true;
+        }
+        ui.separator();
         let mut o = self.options.clone();
         ui.add(egui::Slider::new(&mut o.bars, 8..=128).text("Bars"));
         ui.add(
@@ -4115,8 +4131,18 @@ impl App {
         let scheme = self.scheme();
         self.viz_state.waterfall_hd = self.amp.waterfall_hd;
         self.viz_state.classic_plus = self.amp.classic_plus;
-        let dt = self.last_frame.elapsed().as_secs_f32().clamp(0.0, 0.2);
-        self.last_frame = Instant::now();
+        // (the time between frames by egui's clock, as the cover's
+        // crossfade keeps it: the wall clock's on a screen, the frames' own
+        // in a test's harness - by the wall clock there a busy machine's
+        // slow frames counted as seconds on the screen, and the faces and
+        // the flash guard moved more in a frame than a screen shows)
+        let (now, stable) = ui.input(|i| (i.time, i.stable_dt));
+        let dt = match self.last_frame {
+            Some(last) => (now - last) as f32,
+            None => stable,
+        }
+        .clamp(0.0, 0.2);
+        self.last_frame = Some(now);
         let written = self.engine.shared.tap_into(&mut self.tap);
         let rate = self
             .engine
@@ -5526,6 +5552,12 @@ impl eframe::App for App {
             });
         self.url_window(&ctx);
         self.intense_window(&ctx);
+        if self.updater.window(&ctx, &mut self.amp.update_check) {
+            self.amp_dirty = true;
+        }
+        if let Some(said) = self.updater.take_notice() {
+            self.notice = said;
+        }
         self.details_window(&ctx);
         self.file_dialog(&ctx);
         if let Some((path, frames, written)) = self.stats.as_mut() {
@@ -6286,12 +6318,18 @@ fn faces_list(ui: &mut Ui, mode: &mut &'static str) {
 }
 
 /// The width of the player's column in a window `room` points wide: the
-/// design's own narrow column (Zen) unless the window is wide and `low`;
-/// four fifths of a very large window (2200 points and more); else 1180.
-/// The bars above and below take the same width.
+/// design's own narrow column (Zen) unless the window is wide and `low` -
+/// two fifths of a very large one (review 12: at 3000 points a column of
+/// 720 with a strip of a picture); four fifths of a very large window
+/// (2200 points and more); else 1180. The bars above and below take the
+/// same width.
 fn player_column(narrow: f32, room: f32, low: bool) -> f32 {
     if narrow > 0.0 && !low {
-        narrow
+        if room >= 2200.0 {
+            (room * 0.4).max(narrow)
+        } else {
+            narrow
+        }
     } else if room >= 2200.0 {
         room * 0.8
     } else {
