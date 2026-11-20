@@ -53,6 +53,15 @@ const SHOWN_BUDGET: usize = 7;
 /// more - veiled at once, not after the seventh (review 11: four or five
 /// flashes went through in the first second of a hazard).
 const FAST: f32 = 0.45;
+/// The fifth transition in a second coming this soon after the fourth
+/// (seconds): a flicker at 2.6 Hz or quicker that has reached five -
+/// veiled now, for the veil's own coming over a light picture may be the
+/// sixth, and the seventh is not let through. A flicker that starts within
+/// the rule and speeds up (3 Hz stepping to 4, 2 rising to 5, 2 stepping
+/// to 3.6) went through with seven or eight: RAW_BUDGET's seventh and
+/// FAST's eight a second came too late (review 12). A beat of 2.5 Hz is
+/// left alone.
+const PACE: f32 = 0.19;
 
 #[derive(Clone, Copy, Default)]
 struct Track {
@@ -347,9 +356,14 @@ impl Watch {
 
     /// Whether a field flickers fast: four transitions (of one kind) within
     /// the last FAST seconds - eight or more a second, where a face within
-    /// the rule, at most six evenly, takes half a second for four.
+    /// the rule, at most six evenly, takes half a second for four; or a
+    /// fifth in a second within PACE of the one before.
     fn fast(&self, field: usize, now: f32) -> bool {
-        let quick = |ev: &[f32]| ev.iter().filter(|&&t| now - t < FAST).count() >= 4;
+        let quick = |ev: &[f32]| {
+            let n = ev.len();
+            ev.iter().filter(|&&t| now - t < FAST).count() >= 4
+                || (n >= 5 && ev[n - 1] - ev[n - 2] <= PACE)
+        };
         quick(&self.events[field][0])
             || quick(&self.events[field][1])
             || quick(&self.either_events[field])
@@ -2039,6 +2053,67 @@ mod tests {
                 "{hz} Hz: {shown} transitions through the veil in the first second"
             );
         }
+    }
+
+    /// A whole-face flicker whose phase (in cycles) at `t` seconds is
+    /// `phase(t)`, for `secs`: the most transitions through the veil in any
+    /// second, and the share of frames it was veiled.
+    fn flicker(phase: impl Fn(f32) -> f32, secs: f32) -> (usize, f32) {
+        let mut g = FlashGuard::default();
+        let rect = Rect::from_min_size(Pos2::ZERO, egui::vec2(384.0, 216.0));
+        g.layout(rect, egui::vec2(384.0, 216.0));
+        let n = g.cols * g.rows;
+        let (mut most, mut veiled) = (0, 0);
+        let frames = (secs * 60.0) as usize;
+        for i in 0..frames {
+            let on = phase(i as f32 / 60.0).fract() < 0.5;
+            let v = if on { 0.9 } else { 0.01 };
+            g.raw = vec![[v, v, v]; n];
+            g.raw_big = g.raw.clone();
+            g.time += 1.0 / 60.0;
+            g.frame += 1;
+            g.follow(1.0 / 60.0);
+            most = most.max(g.pressure().1);
+            if g.strength > 0.3 {
+                veiled += 1;
+            }
+        }
+        (most, veiled as f32 / frames as f32)
+    }
+
+    /// A flicker that starts within the rule and speeds up past it is
+    /// veiled before its seventh transition in a second (review 12: 3 Hz
+    /// stepping to 4, 2 Hz rising to 5 over three seconds, 2 Hz stepping
+    /// to 3.6 went through with 7 - 8 a second - the veil came after the
+    /// seventh, and fast only from eight a second); one well within it,
+    /// 2 Hz, is never veiled.
+    #[test]
+    fn a_flicker_that_speeds_up_is_veiled_in_time() {
+        let step = |a: f32, b: f32, at: f32| {
+            move |t: f32| if t < at { a * t } else { a * at + b * (t - at) }
+        };
+        let ramp = |a: f32, b: f32, d: f32| {
+            move |t: f32| {
+                let tt = t.min(d);
+                a * tt + (b - a) * tt * tt / (2.0 * d) + if t > d { b * (t - d) } else { 0.0 }
+            }
+        };
+        for (name, most) in [
+            ("3 -> 4 Hz at 2 s", flicker(step(3.0, 4.0, 2.0), 5.0).0),
+            ("2 -> 5 Hz over 3 s", flicker(ramp(2.0, 5.0, 3.0), 5.0).0),
+            ("2 -> 3.6 Hz at 1.5 s", flicker(step(2.0, 3.6, 1.5), 5.0).0),
+        ] {
+            assert!(
+                most <= 6,
+                "{name}: {most} transitions in a second through the veil"
+            );
+        }
+        let (_, veiled) = flicker(|t| 2.0 * t, 5.0);
+        assert!(
+            veiled < 0.01,
+            "a 2 Hz flicker veiled {:.0} % of the time",
+            veiled * 100.0
+        );
     }
 
     #[test]

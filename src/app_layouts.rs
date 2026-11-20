@@ -212,23 +212,31 @@ impl App {
     /// shade), its corners `radius`.
     pub(super) fn cover_in(&mut self, ui: &mut Ui, rect: Rect, radius: u8) {
         let px = rect.width().max(rect.height()) * ui.ctx().pixels_per_point();
-        if let Some(texture) = self.sizer.get(px).or(self.cover.as_ref()).cloned() {
-            egui::Image::new(&texture)
-                .corner_radius(CornerRadius::same(radius))
-                .paint_at(ui, rect);
-        } else {
-            ui.painter().rect_filled(
-                rect,
-                CornerRadius::same(radius),
-                viz::mix(th().surface, self.accent, 0.3),
-            );
-            ui.painter().text(
-                rect.center(),
-                egui::Align2::CENTER_CENTER,
-                "♫",
-                egui::FontId::proportional((rect.height() * 0.3).clamp(14.0, 64.0)),
-                viz::mix(th().muted, th().strong, 0.4),
-            );
+        let now = self.sizer.get(px).or(self.cover.as_ref()).cloned();
+        // (the one before under the new one while they crossfade)
+        for (texture, alpha) in self.cover_layers(now) {
+            if alpha <= 0.0 {
+                continue;
+            }
+            if let Some(texture) = texture {
+                egui::Image::new(&texture)
+                    .corner_radius(CornerRadius::same(radius))
+                    .tint(Color32::from_white_alpha((alpha * 255.0).round() as u8))
+                    .paint_at(ui, rect);
+            } else {
+                ui.painter().rect_filled(
+                    rect,
+                    CornerRadius::same(radius),
+                    viz::mix(th().surface, self.accent, 0.3).gamma_multiply(alpha),
+                );
+                ui.painter().text(
+                    rect.center(),
+                    egui::Align2::CENTER_CENTER,
+                    "♫",
+                    egui::FontId::proportional((rect.height() * 0.3).clamp(14.0, 64.0)),
+                    viz::mix(th().muted, th().strong, 0.4).gamma_multiply(alpha),
+                );
+            }
         }
     }
 
@@ -1666,16 +1674,23 @@ impl App {
             Stroke::new(1.0, crate::theme::mix(t.border, Color32::BLACK, 0.2)),
         ));
         let px = side * ui.ctx().pixels_per_point();
-        if let Some(texture) = self.sizer.get(px).or(self.cover.as_ref()).cloned() {
-            egui::Image::new(&texture)
-                .rotate(angle, egui::Vec2::splat(0.5))
-                .paint_at(ui, photo);
-        } else {
-            p.add(Shape::convex_polygon(
-                design::turned(photo, angle),
-                viz::mix(t.surface, self.accent, 0.4),
-                Stroke::NONE,
-            ));
+        let now = self.sizer.get(px).or(self.cover.as_ref()).cloned();
+        for (texture, alpha) in self.cover_layers(now) {
+            if alpha <= 0.0 {
+                continue;
+            }
+            if let Some(texture) = texture {
+                egui::Image::new(&texture)
+                    .rotate(angle, egui::Vec2::splat(0.5))
+                    .tint(Color32::from_white_alpha((alpha * 255.0).round() as u8))
+                    .paint_at(ui, photo);
+            } else {
+                p.add(Shape::convex_polygon(
+                    design::turned(photo, angle),
+                    viz::mix(t.surface, self.accent, 0.4).gamma_multiply(alpha),
+                    Stroke::NONE,
+                ));
+            }
         }
         // the title: words cut out, each its own scrap and type
         let words_rect = Rect::from_min_max(pos2(frame.right() + 22.0, head.top() + 4.0), head.max);

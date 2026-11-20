@@ -117,6 +117,7 @@ fn main() -> eframe::Result {
         viewport: egui::ViewportBuilder::default()
             .with_title("axross-amp")
             .with_app_id("axross-amp")
+            .with_icon(axross_amp::icon::window_icon())
             .with_inner_size(size)
             .with_min_inner_size([420.0, 420.0])
             .with_drag_and_drop(true),

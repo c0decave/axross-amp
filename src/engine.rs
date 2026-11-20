@@ -581,6 +581,15 @@ impl Shared {
         self.ring.buffered() as usize
     }
 
+    /// Whether `frames` of sound are decoded and waiting, or all there is
+    /// (the sound ends in the ring): an output of the tests' own takes its
+    /// next frames once they are, as a device's buffer covers a busy
+    /// decoder (tests).
+    #[doc(hidden)]
+    pub fn ready(&self, frames: u64) -> bool {
+        self.ring.buffered() >= frames || self.ending.load(Ordering::Relaxed)
+    }
+
     /// Where the sound decoded next will be heard (in the ring's frames).
     fn end_of_buffer(&self) -> u64 {
         self.ring.written()
@@ -741,13 +750,11 @@ impl Drop for Engine {
 /// The hosts to try: PulseAudio / PipeWire first on Linux, then the
 /// system's default (ALSA, CoreAudio, WASAPI).
 fn hosts() -> Vec<cpal::Host> {
-    let mut hosts: Vec<cpal::Host> = Vec::new();
     #[cfg(target_os = "linux")]
-    if let Ok(host) = cpal::host_from_id(cpal::HostId::PulseAudio) {
-        hosts.push(host);
-    }
-    hosts.push(cpal::default_host());
-    hosts
+    let first = cpal::host_from_id(cpal::HostId::PulseAudio).ok();
+    #[cfg(not(target_os = "linux"))]
+    let first: Option<cpal::Host> = None;
+    first.into_iter().chain([cpal::default_host()]).collect()
 }
 
 /// The output devices to choose from: (id, name).

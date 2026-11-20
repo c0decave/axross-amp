@@ -7,8 +7,13 @@ PlayerPanel.restore_state would and says what is wrong (exit 1).
 """
 
 import importlib.util
+import os
 import sys
 from pathlib import Path
+
+
+# A file name in Latin-1 bytes, as Python holds it (surrogate escapes).
+NOT_UTF8 = os.fsdecode(b"/music/caf\xe9 del mar.mp3")
 
 
 def load(axross: Path):
@@ -33,6 +38,9 @@ def main() -> int:
                 {"path": "/music/b.mp3", "title": "", "duration": 0},
                 {"path": "/music/c.ogg", "title": "Third", "duration": 2},
                 {"path": "https://radio.example/live.mp3", "title": "Radio", "duration": 0},
+                # (a name that is no UTF-8, as a Latin-1 disk has it: axross
+                # writes it as the escape "\udce9")
+                {"path": NOT_UTF8, "title": "Cafe", "duration": 5},
             ],
             "current": 2, "position_ms": 900, "visualizer": "radial",
             "equalizer_open": True, "visual_scheme": "neon",
@@ -64,15 +72,23 @@ def main() -> int:
     if state.get("visualizer") not in mp.Visualizer.MODES:
         problems.append("axross has no such face")
     tracks = state.get("tracks") or []
-    if len(tracks) != 5:
+    if len(tracks) != 6:
         problems.append(f"{len(tracks)} tracks")
     else:
         if tracks[0].get("title") != "Renamed by Rust":
             problems.append(f"track 0: {tracks[0]!r}")
+        # the name that is no UTF-8 comes back as axross wrote it: the same
+        # bytes on the disk
+        if tracks[4].get("path") != NOT_UTF8:
+            problems.append(f"track 4: {tracks[4]!r}, not {NOT_UTF8!r}")
+        elif os.fsencode(tracks[4]["path"]) != b"/music/caf\xe9 del mar.mp3":
+            problems.append(f"track 4's bytes: {os.fsencode(tracks[4]['path'])!r}")
         # (durations in seconds, as axross keeps them: 3000 ms is 3)
-        if tracks[4].get("path") != "/music/tone.m4a" or tracks[4].get("duration") != 3:
-            problems.append(f"track 4: {tracks[4]!r}")
+        if tracks[5].get("path") != "/music/tone.m4a" or tracks[5].get("duration") != 3:
+            problems.append(f"track 5: {tracks[5]!r}")
         for t in tracks:
+            if t.get("path") == NOT_UTF8:
+                continue  # (axross's restore_state skips its own such names too)
             # as restore_state takes them: a printable path, an int duration
             if not isinstance(t.get("path"), str) or not t["path"].isprintable():
                 problems.append(f"a path axross skips: {t!r}")

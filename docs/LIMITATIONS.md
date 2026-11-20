@@ -26,6 +26,11 @@ Back to the [README](../README.md) - everything in detail: the [extended README]
   second (by WCAG's reading 1); the flow field in pure red and the
   reaction-diffusion in black on white, *Intense*, show a pattern for a
   frame. In *Calm* they keep within.
+- The flow field in the built-in Classic scheme, *Intense*, shows a pattern
+  (regular stripes, by the project's own detector) for 5 frames through an
+  independent review's music and for 6 through fast chirps eight a second
+  (review 12, which found it in *Intense* only); the guard's pattern stage
+  softens them as they come.
 - The flash guard dims the line face in very fast music more often than
   needed (it over-estimates the moving fill); nothing flashes, the picture is
   just darker at times.

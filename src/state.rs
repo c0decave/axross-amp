@@ -415,10 +415,14 @@ fn read_object(path: &Path) -> Map<String, Value> {
     if !meta.is_file() {
         return Map::new();
     }
+    // (Python's escapes for names that are no UTF-8 read as their bytes:
+    // one such name lost the whole file - review 12)
     let map = (meta.len() <= MAX_FILE_BYTES)
-        .then(|| fs::read_to_string(path).ok())
+        .then(|| fs::read(path).ok())
         .flatten()
-        .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+        .and_then(|bytes| {
+            serde_json::from_str::<Value>(&crate::fspath::json_from_python(&bytes)).ok()
+        })
         .and_then(|value| {
             if let Value::Object(map) = value {
                 Some(map)
@@ -518,7 +522,10 @@ fn write_object(path: &Path, object: &Map<String, Value>) -> std::io::Result<()>
             options.mode(0o600);
         }
         let mut file = options.open(&tmp)?;
-        let text = serde_json::to_string_pretty(&Value::Object(object.clone()))?;
+        // (names that are no UTF-8 as axross writes them: "\udce9")
+        let text = crate::fspath::json_for_python(&serde_json::to_string_pretty(&Value::Object(
+            object.clone(),
+        ))?);
         file.write_all(text.as_bytes())?;
         file.sync_all()?;
     }
@@ -748,7 +755,7 @@ pub const MAX_STATE_BYTES: usize = 4 * 1024 * 1024;
 fn fit(out: &mut Map<String, Value>) {
     let size = |m: &Map<String, Value>| {
         serde_json::to_string_pretty(&Value::Object(m.clone()))
-            .map(|t| t.len())
+            .map(|t| crate::fspath::json_for_python(&t).len())
             .unwrap_or(usize::MAX)
     };
     if size(out) <= MAX_STATE_BYTES {

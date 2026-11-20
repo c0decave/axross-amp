@@ -48,8 +48,10 @@ Cargo.lock for that platform) and the `README.md`.
 - **macOS** (Apple silicon and Intel: one universal program) -
   `axross-amp-VERSION-macos-universal.dmg`: `axross-amp.app` to drag to
   Applications; or `axross-amp-VERSION-macos-universal.tar.gz`: the binary.
-  Not signed or notarised: the first time, right-click the app → Open (or
-  `xattr -d com.apple.quarantine` on it once).
+  Not signed or notarised: the first time macOS refuses it - then System
+  Settings → Privacy & Security → Open Anyway (macOS 15 and later; before,
+  right-click the app → Open), or `xattr -d com.apple.quarantine` on it
+  once.
 - **Windows (x64)** - `axross-amp-VERSION-windows-x64.zip`: `axross-amp.exe`
   (a GUI program: no console window), not signed (SmartScreen asks once).
 - **From source** - see [Build](#build) (a recent stable Rust; the releases are built with the current one).

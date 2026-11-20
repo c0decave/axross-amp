@@ -728,8 +728,14 @@ fn a_paused_90s_desktop_rests() {
     if h.state().playing() {
         h.key_press(egui::Key::Space);
     }
-    // (the face's name, shown for a moment after it changed, gone)
+    // (the face's name, shown for a moment after it changed, gone; and the
+    // change to "off" crossfaded to its end - 0.6 s of the clock, which
+    // frames run back to back do not pass)
     h.run_steps(50);
+    for _ in 0..30 {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        h.run_steps(1);
+    }
     assert!(!h.state().playing());
     let strip = |h: &mut Harness<'static, App>| {
         let img = h.render().expect("renders");

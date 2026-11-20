@@ -36,6 +36,12 @@ const SLOW_BUDGET_CORES: f64 = 0.35;
 const MIN_SLOW_FPS: f32 = 3.0;
 /// A calm face (the cover) needs few frames: its glow moves slowly.
 const CALM_FPS: f32 = 8.0;
+/// A new track's cover is shown at most this often (seconds), the last one
+/// asked for: skipping through an album changes it twice a second at
+/// most, not at the key's repeat (review 12: 30 transitions a second).
+const ART_EVERY: f64 = 0.5;
+/// The cover, the Glass backdrop made of it, crossfade over this long.
+const ART_FADE: f64 = 0.3;
 /// The least height the playlist keeps under the picture (three rows and
 /// its filter), whatever the window.
 const LEAST_LIST: f32 = 170.0;
@@ -77,6 +83,17 @@ pub struct App {
     /// The glass design's ground: the cover's haze, for the theme and
     /// accent it was made for (made again when either changes).
     haze: Option<(&'static str, Color32, TextureHandle)>,
+    /// A new track's cover (None: it has none) waiting for its turn (see
+    /// [`ART_EVERY`]).
+    art_pending: Option<Option<Arc<crate::engine::Art>>>,
+    /// When the cover changed last (egui's clock), and how far its
+    /// crossfade is (0 - 1).
+    art_at: f64,
+    art_fade: f32,
+    /// What showed before it, faded out over [`ART_FADE`]: the cover (None:
+    /// the ♫ placeholder) and the Glass backdrop.
+    cover_before: Option<Option<TextureHandle>>,
+    haze_before: Option<TextureHandle>,
     /// The cover at the sizes it is shown (made on the CPU, filtered).
     sizer: crate::cover::Sizer,
     /// The pictures' colours from the cover (when it has colour).
@@ -184,6 +201,11 @@ pub struct App {
     seek_pending: Option<f64>,
     /// The picture in a window of its own (the Python player's Detach).
     detached: bool,
+    /// The picture's own window full screen (double click, F11).
+    detached_full: bool,
+    /// A click on the picture's own window waiting for the double click's
+    /// time (when it was): none came, the next face.
+    detached_click: Option<f64>,
     /// The track asked for is still opening (a stream connects).
     opening: bool,
     /// Stopped (by Stop, or at the end of the list) rather than paused.
@@ -627,6 +649,11 @@ impl App {
             design_preview: None,
             cover_art: None,
             haze: None,
+            art_pending: None,
+            art_at: f64::NEG_INFINITY,
+            art_fade: 1.0,
+            cover_before: None,
+            haze_before: None,
             panel_rects: [egui::Rect::NOTHING; 2],
             pane_rect: egui::Rect::NOTHING,
             controls_rect: egui::Rect::NOTHING,
@@ -681,6 +708,8 @@ impl App {
             loaded: None,
             seek_pending: None,
             detached: false,
+            detached_full: false,
+            detached_click: None,
             opening: false,
             stopped: true,
             failures: 0,
@@ -926,6 +955,12 @@ impl App {
         &self.status
     }
 
+    /// Whether a cover is shown (tests).
+    #[doc(hidden)]
+    pub fn has_cover(&self) -> bool {
+        self.cover.is_some()
+    }
+
     /// Whether the track asked for last has been opened.
     pub fn is_loaded(&self) -> bool {
         self.loaded == Some(self.generation)
@@ -1143,12 +1178,9 @@ impl App {
         self.playlist.play(index);
         self.select(Some(index));
         self.info = TrackInfo::default();
-        self.cover = None;
-        self.cover_art = None;
-        self.haze = None;
-        self.viz_state.cover_thumb = None;
-        self.sizer.set(None);
-        self.cover_scheme = None;
+        // (the cover, the backdrop made of it and the faces' thumbnail stay
+        // until the new track's come - cleared here, every Next blinked
+        // to the ♫ placeholder and back: review 12)
         self.stream_title.clear();
         self.notice.clear();
         self.duration = (track.duration_ms > 0).then(|| track.duration_ms as f64 / 1000.0);
@@ -1227,23 +1259,7 @@ impl App {
             }
             self.playlist.version += 1;
         }
-        self.cover = info.art.as_deref().map(|art| cover_texture(ctx, art));
-        self.cover_art = info.art.clone();
-        self.haze = None;
-        self.viz_state.cover_thumb = info.art.as_deref().map(|art| {
-            std::sync::Arc::new(viz::Thumb::from_rgba(
-                art.width as usize,
-                art.height as usize,
-                &art.rgba,
-            ))
-        });
-        self.sizer.set(info.art.clone());
-        self.cover_scheme = info
-            .art
-            .as_deref()
-            .and_then(|art| viz::cover_scheme(&art.rgba));
-        self.cover_hue = info.art.as_deref().and_then(cover_hue);
-        self.update_theme(ctx);
+        self.offer_art(ctx, info.art.clone());
         self.art_url.clear();
         #[cfg(target_os = "linux")]
         if self.mpris.is_some() {
@@ -1265,6 +1281,77 @@ impl App {
         // (a seek asked while it opened: now)
         if let Some(secs) = self.seek_pending.take() {
             self.seek(secs);
+        }
+    }
+
+    /// A track's cover (None: it has none) to be shown: at once when the
+    /// last change is [`ART_EVERY`] ago, else when it is (the newest asked
+    /// wins: skipping, those between are never shown). The same picture
+    /// again (an album) changes nothing.
+    fn offer_art(&mut self, ctx: &egui::Context, art: Option<Arc<crate::engine::Art>>) {
+        let same = match (&self.cover_art, &art) {
+            (None, None) => true,
+            (Some(a), Some(b)) => {
+                Arc::ptr_eq(a, b) || (a.width == b.width && a.height == b.height && a.png == b.png)
+            }
+            _ => false,
+        };
+        self.art_pending = (!same).then_some(art);
+        self.show_art(ctx);
+    }
+
+    /// The cover waiting, when its turn has come; the crossfade's progress.
+    fn show_art(&mut self, ctx: &egui::Context) {
+        let now = ctx.input(|i| i.time);
+        self.art_fade = ((now - self.art_at) / ART_FADE).clamp(0.0, 1.0) as f32;
+        if self.art_fade < 1.0 {
+            ctx.request_repaint();
+        } else {
+            self.cover_before = None;
+            self.haze_before = None;
+        }
+        if self.art_pending.is_none() {
+            return;
+        }
+        let wait = ART_EVERY - (now - self.art_at);
+        if wait > 0.0 {
+            ctx.request_repaint_after(std::time::Duration::from_secs_f64(wait));
+            return;
+        }
+        let Some(art) = self.art_pending.take() else {
+            return;
+        };
+        // (what shows now fades out under it)
+        self.cover_before = Some(self.cover.clone());
+        self.haze_before = self.haze.take().map(|(_, _, texture)| texture);
+        self.art_at = now;
+        self.art_fade = 0.0;
+        ctx.request_repaint();
+        self.cover = art.as_deref().map(|art| cover_texture(ctx, art));
+        self.cover_art = art.clone();
+        self.viz_state.cover_thumb = art.as_deref().map(|art| {
+            std::sync::Arc::new(viz::Thumb::from_rgba(
+                art.width as usize,
+                art.height as usize,
+                &art.rgba,
+            ))
+        });
+        self.sizer.set(art.clone());
+        self.cover_scheme = art.as_deref().and_then(|art| viz::cover_scheme(&art.rgba));
+        self.cover_hue = art.as_deref().and_then(cover_hue);
+        self.update_theme(ctx);
+    }
+
+    /// The cover's layers, the lower first, each with its opacity: what
+    /// showed before under the new one coming in while they crossfade.
+    /// None is the ♫ placeholder.
+    pub(crate) fn cover_layers(
+        &self,
+        now: Option<TextureHandle>,
+    ) -> [(Option<TextureHandle>, f32); 2] {
+        match &self.cover_before {
+            Some(before) if self.art_fade < 1.0 => [(before.clone(), 1.0), (now, self.art_fade)],
+            _ => [(now, 1.0), (None, 0.0)],
         }
     }
 
@@ -2591,6 +2678,7 @@ impl App {
         let monitor = e.monitor.clone();
         let mut builder = egui::ViewportBuilder::default()
             .with_title(format!("axross-amp - {}", monitor.connector))
+            .with_icon(crate::icon::window_icon())
             .with_decorations(false)
             .with_fullscreen(true);
         if let Some((x, y)) = monitor.at {
@@ -2645,11 +2733,15 @@ impl App {
     }
 
     /// The picture in a window of its own (Detach): resizable, 640 x 360 at
-    /// first; V / Shift+V the face, Space play and pause; closed or Escape,
-    /// the picture is back in the main window.
+    /// first. As the picture in the main window (the Python player's Detach
+    /// moves that widget there): a click the next face, the right button
+    /// the face menu, a double click or F11 full screen and back; V /
+    /// Shift+V the face, Space play and pause; Escape out of full screen,
+    /// then - or closed - the picture is back in the main window.
     fn detached_view(&mut self, ctx: &egui::Context) {
         let builder = egui::ViewportBuilder::default()
             .with_title("axross-amp - Visualization")
+            .with_icon(crate::icon::window_icon())
             .with_inner_size(vec2(640.0, 360.0))
             .with_min_inner_size(vec2(160.0, 90.0));
         let mut close = false;
@@ -2657,8 +2749,24 @@ impl App {
             egui::ViewportId::from_hash_of("amp-detached"),
             builder,
             |ctx, _class| {
-                if ctx.input(|i| i.viewport().close_requested() || i.key_pressed(Key::Escape)) {
+                // (Escape closes an open menu first, then full screen, then
+                // the window)
+                let escape = ctx.input(|i| i.key_pressed(Key::Escape))
+                    && !egui::Popup::is_any_open(ctx);
+                let full = |ctx: &egui::Context, on: bool| {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(on));
+                };
+                if ctx.input(|i| i.viewport().close_requested()) {
                     close = true;
+                } else if escape && self.detached_full {
+                    self.detached_full = false;
+                    full(ctx, false);
+                } else if escape {
+                    close = true;
+                }
+                if ctx.input(|i| i.key_pressed(Key::F11)) {
+                    self.detached_full = !self.detached_full;
+                    full(ctx, self.detached_full);
                 }
                 if ctx.input(|i| i.key_pressed(Key::V)) {
                     let back = ctx.input(|i| i.modifiers.shift);
@@ -2676,7 +2784,7 @@ impl App {
                     .frame(egui::Frame::new().fill(Color32::BLACK))
                     .show(ctx, |ui| {
                         let rect = ui.max_rect();
-                        let (_, response) = ui.allocate_exact_size(rect.size(), Sense::hover());
+                        let (_, response) = ui.allocate_exact_size(rect.size(), Sense::click());
                         let name = viz::name(self.mode);
                         response.widget_info(|| {
                             egui::WidgetInfo::labeled(
@@ -2687,11 +2795,38 @@ impl App {
                         });
                         let hover = ui.input(|i| i.pointer.hover_pos());
                         self.draw_face(ui, rect, hover);
+                        // a click the next face - once the double click's
+                        // time is over without one; a double click full
+                        // screen and back
+                        let now = ui.input(|i| i.time);
+                        let wait = ui.ctx().options(|o| o.input_options.max_double_click_delay);
+                        if response.double_clicked() {
+                            self.detached_click = None;
+                            self.detached_full = !self.detached_full;
+                            full(ui.ctx(), self.detached_full);
+                        } else if response.clicked() {
+                            self.detached_click = Some(now);
+                        }
+                        if let Some(at) = self.detached_click {
+                            if now - at > wait {
+                                self.detached_click = None;
+                                self.mode = viz::next(self.mode);
+                                self.dirty = true;
+                            } else {
+                                ui.ctx().request_repaint_after(Duration::from_secs_f64(wait));
+                            }
+                        }
+                        let response = response.on_hover_text(format!(
+                            "{name} - click: next face, double-click (or F11): full screen, right click: faces and options"
+                        ));
+                        response.context_menu(|ui| self.visual_menu(ui));
                     });
             },
         );
         if close {
             self.detached = false;
+            self.detached_full = false;
+            self.detached_click = None;
         }
     }
 
@@ -2703,6 +2838,12 @@ impl App {
     /// Whether the picture is in a window of its own.
     pub fn detached(&self) -> bool {
         self.detached
+    }
+
+    /// Whether the picture's own window is full screen (tests).
+    #[doc(hidden)]
+    pub fn detached_fullscreen(&self) -> bool {
+        self.detached && self.detached_full
     }
 
     /// The track's title and artist over the display view's picture, for
@@ -3322,36 +3463,43 @@ impl App {
                     let side = (ui.available_width() * share).clamp(120.0, most);
                     let size = vec2(side, side);
                     let px = side * ui.ctx().pixels_per_point();
-                    if let Some(texture) = self.sizer.get(px).or(self.cover.as_ref()) {
-                        let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
-                        if wide {
-                            ui.painter().add(
-                                egui::epaint::Shadow {
-                                    offset: [0, 8],
-                                    blur: 28,
-                                    spread: 0,
-                                    color: Color32::from_black_alpha(110),
-                                }
-                                .as_shape(rect, CornerRadius::same(10)),
+                    let now = self.sizer.get(px).or(self.cover.as_ref()).cloned();
+                    let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
+                    let layers = self.cover_layers(now);
+                    if wide && layers.iter().any(|(t, a)| t.is_some() && *a > 0.0) {
+                        ui.painter().add(
+                            egui::epaint::Shadow {
+                                offset: [0, 8],
+                                blur: 28,
+                                spread: 0,
+                                color: Color32::from_black_alpha(110),
+                            }
+                            .as_shape(rect, CornerRadius::same(10)),
+                        );
+                    }
+                    for (texture, alpha) in layers {
+                        if alpha <= 0.0 {
+                            continue;
+                        }
+                        if let Some(texture) = texture {
+                            egui::Image::new(&texture)
+                                .corner_radius(CornerRadius::same(if wide { 10 } else { 8 }))
+                                .tint(Color32::from_white_alpha((alpha * 255.0).round() as u8))
+                                .paint_at(ui, rect);
+                        } else {
+                            ui.painter().rect_filled(
+                                rect,
+                                8.0,
+                                viz::mix(th().surface, self.accent, 0.3).gamma_multiply(alpha),
+                            );
+                            ui.painter().text(
+                                rect.center(),
+                                egui::Align2::CENTER_CENTER,
+                                "♫",
+                                egui::FontId::proportional(36.0),
+                                viz::mix(th().muted, th().strong, 0.4).gamma_multiply(alpha),
                             );
                         }
-                        egui::Image::new(texture)
-                            .corner_radius(CornerRadius::same(if wide { 10 } else { 8 }))
-                            .paint_at(ui, rect);
-                    } else {
-                        let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
-                        ui.painter().rect_filled(
-                            rect,
-                            8.0,
-                            viz::mix(th().surface, self.accent, 0.3),
-                        );
-                        ui.painter().text(
-                            rect.center(),
-                            egui::Align2::CENTER_CENTER,
-                            "♫",
-                            egui::FontId::proportional(36.0),
-                            viz::mix(th().muted, th().strong, 0.4),
-                        );
                     }
                     ui.vertical(|ui| {
                         let (title, by) = self.now_playing_text();
@@ -4989,6 +5137,20 @@ impl App {
         // (the light behind the panes, with a cover or without)
         crate::design::glass_light(ui.painter(), ui.max_rect().expand(10.0), th(), self.accent);
         let Some(art) = self.cover_art.as_ref() else {
+            // (none now: the one before fades out)
+            if let Some(before) = &self.haze_before {
+                let uv = egui::Rect::from_min_max(
+                    egui::pos2(0.0625, 0.0625),
+                    egui::pos2(0.9375, 0.9375),
+                );
+                let alpha = 200.0 * (1.0 - self.art_fade);
+                ui.painter().image(
+                    before.id(),
+                    ui.max_rect().expand(10.0),
+                    uv,
+                    Color32::from_white_alpha(alpha.round() as u8),
+                );
+            }
             return;
         };
         let t = th();
@@ -5007,17 +5169,32 @@ impl App {
                 .load_texture("haze", image, egui::TextureOptions::LINEAR);
             self.haze = Some((t.key, self.accent, texture));
         }
+        // (the texels' centres at the edges: no hard border of the outer
+        // cells' colour)
+        let uv = egui::Rect::from_min_max(egui::pos2(0.0625, 0.0625), egui::pos2(0.9375, 0.9375));
+        // (over the light, a little of it showing through: 200 of 255; in a
+        // crossfade the one before under the new one, together as opaque
+        // as one)
+        let new = if self.haze_before.is_some() {
+            200.0 * self.art_fade
+        } else {
+            200.0
+        };
+        if let Some(before) = &self.haze_before {
+            let under = (200.0 - new) / (1.0 - new / 255.0);
+            ui.painter().image(
+                before.id(),
+                ui.max_rect().expand(10.0),
+                uv,
+                Color32::from_white_alpha(under.round() as u8),
+            );
+        }
         if let Some((_, _, texture)) = &self.haze {
-            // (the texels' centres at the edges: no hard border of the
-            // outer cells' colour)
-            let uv =
-                egui::Rect::from_min_max(egui::pos2(0.0625, 0.0625), egui::pos2(0.9375, 0.9375));
-            // (over the light, a little of it showing through)
             ui.painter().image(
                 texture.id(),
                 ui.max_rect().expand(10.0),
                 uv,
-                Color32::from_white_alpha(200),
+                Color32::from_white_alpha(new.round() as u8),
             );
         }
     }
@@ -5183,6 +5360,7 @@ impl eframe::App for App {
     /// covered (and `ui` is not called at all).
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.handle_events(ctx);
+        self.show_art(ctx);
         self.poll_adding();
         self.poll_scanner();
         self.sleep_tick();

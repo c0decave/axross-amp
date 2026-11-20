@@ -84,8 +84,21 @@ fn a_python_state_reads_and_ours_is_written_for_python() {
     assert!(s.muted && s.shuffle);
     assert_eq!(s.repeat, "one");
     assert_eq!(s.visualizer, "radial");
-    assert_eq!(s.tracks.len(), 4);
+    assert_eq!(s.tracks.len(), 5, "{:?}", s.tracks);
     assert_eq!(s.tracks[3].path, "https://radio.example/live.mp3");
+    // a name that is no UTF-8, written by axross as the escape "\udce9" (a
+    // lone surrogate serde_json refuses: the whole file was dropped, review
+    // 12): its bytes as on the disk
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        assert_eq!(
+            axross_amp::fspath::to_path(&s.tracks[4].path)
+                .as_os_str()
+                .as_bytes(),
+            b"/music/caf\xe9 del mar.mp3"
+        );
+    }
     // (axross keeps durations in seconds)
     assert_eq!(s.tracks[0].duration_ms, 61_000);
     assert_eq!(s.tracks[2].duration_ms, 2_000);

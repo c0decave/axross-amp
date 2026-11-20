@@ -656,3 +656,66 @@ fn the_picture_goes_to_a_window_of_its_own_and_comes_back() {
     settle(&mut h, 2);
     assert!(!h.state().detached());
 }
+
+/// The picture's own window takes what the picture in the main window
+/// takes, as the Python player's Detach (it moves the same widget there):
+/// a click the next face, the right button the face menu, a double click
+/// (or F11) full screen and back, Escape out of full screen first, then
+/// back into the main window (review 12: it only knew hover).
+#[test]
+fn the_picture_in_its_own_window_takes_clicks_and_keys() {
+    let home = Scratch::new("detached-input");
+    let mut h = window(&home, track(&home));
+    assert!(until(&mut h, 5.0, |a| a.is_loaded()));
+    h.state_mut().set_detached(true);
+    settle(&mut h, 3);
+    // a click: the next face (after the double click's wait)
+    let before = h.state().mode().to_owned();
+    h.get_by_label_contains("Visualization: ").click();
+    settle(&mut h, 10);
+    assert_eq!(
+        h.state().mode(),
+        axross_amp::viz::next(&before),
+        "a click left the face"
+    );
+    // the right button: the face menu
+    h.get_by_label_contains("Visualization: ").click_secondary();
+    settle(&mut h, 3);
+    assert!(
+        h.query_by_label("Generative").is_some(),
+        "no face menu on the right button"
+    );
+    h.key_press(egui::Key::Escape);
+    settle(&mut h, 3);
+    // a double click: full screen, and again: back (the face stays)
+    let face = h.state().mode().to_owned();
+    h.get_by_label_contains("Visualization: ").click();
+    h.run_steps(1);
+    h.get_by_label_contains("Visualization: ").click();
+    settle(&mut h, 10);
+    assert!(
+        h.state().detached_fullscreen(),
+        "a double click: no full screen"
+    );
+    assert_eq!(h.state().mode(), face, "a double click changed the face");
+    // Escape: out of full screen first, the window stays
+    h.key_press(egui::Key::Escape);
+    settle(&mut h, 3);
+    assert!(
+        !h.state().detached_fullscreen(),
+        "Escape: still full screen"
+    );
+    assert!(
+        h.state().detached(),
+        "Escape left full screen and the window"
+    );
+    // F11: full screen; Escape twice: out of it, then back in the main window
+    h.key_press(egui::Key::F11);
+    settle(&mut h, 3);
+    assert!(h.state().detached_fullscreen(), "F11: no full screen");
+    h.key_press(egui::Key::Escape);
+    settle(&mut h, 3);
+    h.key_press(egui::Key::Escape);
+    settle(&mut h, 3);
+    assert!(!h.state().detached(), "Escape twice: still detached");
+}

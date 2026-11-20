@@ -94,7 +94,7 @@ fn the_photosensitivity_page_agrees_with_itself() {
 
 /// The README opens with the screenshots, then the ten punchlines, then the
 /// contents; the photosensitivity warning after them (review 11: the
-/// user's order for a README).
+/// user's order for a README), then the other pictures (review 12).
 #[test]
 fn the_readme_opens_with_screenshots_then_punchlines_then_contents() {
     let text = read("README.md");
@@ -112,6 +112,21 @@ fn the_readme_opens_with_screenshots_then_punchlines_then_contents() {
     );
     assert!(punchlines < contents, "the contents before the punchlines");
     assert!(contents < warning, "the warning before the contents");
+    // (the hero first; the gallery of the other pictures after the
+    // punchlines and the contents - review 12: it lay between the hero and
+    // the punchlines)
+    let gallery = at("docs/designs.png");
+    assert!(contents < gallery, "the gallery before the contents");
+    // (macOS 15 no longer opens an app it has not checked by right-click →
+    // Open: System Settings → Privacy & Security → Open Anyway)
+    for doc in ["README.md", "docs/README-extended.md"] {
+        let text = read(doc);
+        assert!(
+            !text.contains("right-click → Open"),
+            "{doc}: right-click → Open"
+        );
+        assert!(text.contains("Open Anyway"), "{doc}: no Open Anyway");
+    }
     // (ten punchlines)
     let count = text[punchlines..contents]
         .lines()

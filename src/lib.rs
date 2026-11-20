@@ -15,6 +15,7 @@ pub mod display;
 pub mod engine;
 pub mod eq;
 pub mod fspath;
+pub mod icon;
 pub mod limiter;
 pub mod meters;
 pub mod mixer;

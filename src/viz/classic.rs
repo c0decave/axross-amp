@@ -1622,8 +1622,12 @@ fn lissajous(f: &Frame<'_>, g: Area, cv: &mut Canvas, st: &mut State, trails: bo
                 pen.points.push(point(newest, k));
             }
             let k = (part + 1) as f32 / LISSAJOUS_FADE as f32;
-            if trails {
-                pen.line(4.0, glow(shown(s.high), 0.14 * k));
+            // (the glow is light added: a tangle's lines crossing over and
+            // over added it up past the faint light the tangle is drawn
+            // in - 10 transitions a second in white on black through gated
+            // stereo noise, review 12. It glows as bright as the figure is.)
+            if trails && bright > 0.0 {
+                pen.line(4.0, glow(shown(s.high), 0.14 * k * bright));
             }
             pen.line(TRACE, shown(mix(s.background, s.high, k)));
         }

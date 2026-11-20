@@ -146,16 +146,24 @@ fn run(
     }
     let app = Killed(command.spawn().expect("the player starts"));
     let pid = app.0.id();
-    // playing: 7 s to settle (the frame rate finds its budget), then 4 s
+    // (timed from its first frame - the track begins as the window comes
+    // up: from the start, a debug build's coming up on a busy machine took
+    // the "at rest" seconds into the track)
+    let up = Instant::now() + Duration::from_secs(60);
+    while frames(&stats) == 0 && Instant::now() < up {
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let first = Instant::now();
+    // playing: 5 s to settle (the frame rate finds its budget), then 4 s
     // counted
-    std::thread::sleep(Duration::from_secs(7));
+    std::thread::sleep(Duration::from_secs(5));
     let (f0, c0, t0) = (frames(&stats), cpu_seconds(pid), Instant::now());
     std::thread::sleep(Duration::from_secs(4));
     let secs = t0.elapsed().as_secs_f64();
     let (f1, c1) = (frames(&stats), cpu_seconds(pid));
-    // the track (13 s, begun a second or two after the start in a debug
-    // build) has ended: 4 s for the picture to fall to rest, 3 s counted
-    std::thread::sleep(Duration::from_secs(7));
+    // the track (13 s) has ended: 4 s for the picture to fall to rest,
+    // 3 s counted
+    std::thread::sleep((first + Duration::from_secs(17)).saturating_duration_since(Instant::now()));
     let (c2, t2) = (cpu_seconds(pid), Instant::now());
     std::thread::sleep(Duration::from_secs(3));
     let idle = (cpu_seconds(pid) - c2) / t2.elapsed().as_secs_f64();

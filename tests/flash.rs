@@ -13,6 +13,8 @@
 mod faces;
 #[path = "support/flashmeter.rs"]
 mod flashmeter;
+#[path = "support/m11.rs"]
+mod m11;
 #[path = "support/music11.rs"]
 mod music11;
 
@@ -49,6 +51,9 @@ struct Report {
     red_gamma: usize,
     /// By the swept reading (review 9's 100 ms one: see the meter).
     swept: usize,
+    /// By review 11 / 12's own meter (tests/support/m11.rs): its concurrent
+    /// area reading, luminance or red, the most.
+    review: usize,
     pattern_frames: usize,
     stripes: f32,
     /// The share of frames the guard's veil was on (over 0.3).
@@ -197,6 +202,7 @@ fn measure(
     let frames = ((secs - 0.3) * fps) as usize;
     let mut meter = Meter::with_fps(size.0 as usize, size.1 as usize, fps.round() as usize);
     let mut gamma = Meter::gamma_red(size.0 as usize, size.1 as usize, fps.round() as usize);
+    let mut review = m11::M11::new(size.0 as usize, size.1 as usize, fps);
     // (AMP_FLASH_DUMP=dir: frames 100 - 160 kept as pictures there)
     let dump = std::env::var("AMP_FLASH_DUMP").ok();
     let mut veiled = 0usize;
@@ -225,6 +231,7 @@ fn measure(
         }
         meter.push(&img);
         gamma.push(&img);
+        review.push_rgba(&img);
         if h.state().state.flash.strength > 0.3 {
             veiled += 1;
         }
@@ -268,6 +275,10 @@ fn measure(
             .max(gamma.most_strict().1)
             .max(gamma.area_red),
         swept: meter.most_swept(),
+        review: {
+            let r = review.reading();
+            r.c[0].max(r.c[1])
+        },
         pattern_frames: meter.pattern_frames,
         stripes: meter.stripes,
         veiled: veiled as f32 / frames.max(1) as f32,
@@ -1349,6 +1360,82 @@ fn the_stereo_scope_is_calm_through_uncorrelated_stereo() {
         }
     }
     assert!(failures.is_empty(), "{failures:#?}");
+}
+
+/// The stereo scope "with trails and a glow" (classic_plus) through review
+/// 12's stereo noise gated at 7 Hz, in Calm and Intense and the starkest
+/// schemes: within the limits. Its glow is light added, a tangle's lines
+/// crossing over and over added it up past the faint light the tangle is
+/// drawn in - 10 transitions a second in white on black, Calm too, by
+/// review 12's meter.
+#[test]
+fn the_stereo_scope_with_trails_is_calm_through_gated_stereo_noise() {
+    let mut failures = Vec::new();
+    for motion in [Motion::Calm, Motion::Intense] {
+        for scheme in ["bw", "wb", "classic", "fire"] {
+            let r = measure(
+                "lissajous",
+                Play {
+                    motion,
+                    scheme,
+                    size: (320.0, 180.0),
+                    fps: 60.0,
+                    music: music11::part("noisegate", 4.0, 5),
+                },
+                |state| state.classic_plus = true,
+            );
+            let line = format!(
+                "lissajous with trails {motion:?} {scheme}: transitions/s {} (strict {}) area {} red {}, review's meter {}",
+                r.transitions,
+                r.strict,
+                r.area,
+                r.red + r.strict_red + r.red_gamma,
+                r.review
+            );
+            println!("{line}");
+            // (the project's meter read it within the limit; review 12's
+            // own did not: both are asked)
+            if r.fails() || r.review > 6 {
+                failures.push(line);
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{failures:#?}");
+}
+
+/// Switching between a face and "off" quickly (every 4 frames, as a hand
+/// on V and the menu may): crossfaded as any change of face, and the guard
+/// watches it - "off" went by both, review 12 read 15 - 16 transitions a
+/// second switching plasma and off.
+#[test]
+fn switching_to_and_from_off_is_crossfaded_and_guarded() {
+    let mut h = faces::harness("plasma", vec2(320.0, 180.0), true, 1.0);
+    h.state_mut().sound = faces::signal(4.5);
+    let mut meter = Meter::with_fps(320, 180, 60);
+    let mut review = m11::M11::new(320, 180, 60.0);
+    for f in 0..240 {
+        if f % 4 == 0 {
+            let app = h.state_mut();
+            app.key = if app.key == "off" { "plasma" } else { "off" };
+        }
+        faces::frame(&mut h);
+        let img = h.render().unwrap();
+        meter.push(&img);
+        review.push_rgba(&img);
+    }
+    let (transitions, _) = meter.most();
+    let (strict, _) = meter.most_strict();
+    let r = review.reading();
+    let line = format!(
+        "plasma <-> off every 4 frames: transitions/s {transitions} (strict {strict}) area {}, review's meter {}",
+        meter.area,
+        r.c[0].max(r.c[1])
+    );
+    println!("{line}");
+    assert!(
+        transitions <= 6 && strict <= 6 && meter.area <= 6 && r.c[0].max(r.c[1]) <= 6,
+        "{line}"
+    );
 }
 
 /// Review 11's worst music (its music11.rs: chords gated at 6 - 10 Hz,

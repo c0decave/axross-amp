@@ -1411,8 +1411,15 @@ pub fn draw(f: &Frame<'_>, key: &str, state: &mut VizState) {
     let face = find(key).unwrap_or(&FACES[0]);
     state.gpu.drawn.clear();
     if state.shown != face.key {
-        if !state.shown.is_empty() && state.shown != "off" && face.key != "off" {
-            state.fading = Some((state.shown, 0.0));
+        // (to and from "off" too: it went by the crossfade and the guard -
+        // switching a face and off every few frames read 15 transitions a
+        // second, review 12; back to the face fading out, on from where
+        // the fade is, not that face whole again at once)
+        if !state.shown.is_empty() {
+            state.fading = Some(match state.fading {
+                Some((old, t)) if old == face.key => (state.shown, 1.0 - t),
+                _ => (state.shown, 0.0),
+            });
         }
         state.shown = face.key;
     }
@@ -1427,8 +1434,14 @@ pub fn draw(f: &Frame<'_>, key: &str, state: &mut VizState) {
         // (the old one whole, the new one over it ever more: a blend of
         // the two - the old one fading as well let the ground through, a
         // dip to dark halfway)
-        one(f, old, state, 1.0, true);
-        one(f, face.key, state, t, false);
+        if face.key == "off" {
+            // (into "off": the face before fades out over the ground)
+            one(f, old, state, 1.0 - t, true);
+            one(f, face.key, state, 1.0, false);
+        } else {
+            one(f, old, state, 1.0, true);
+            one(f, face.key, state, t, false);
+        }
         // (at the frame rate's cap, as the faces themselves)
         f.painter
             .ctx()
@@ -1437,7 +1450,7 @@ pub fn draw(f: &Frame<'_>, key: &str, state: &mut VizState) {
         one(f, face.key, state, 1.0, false);
     }
     // the flash guard: a veil over whatever would flash too fast
-    if face.key != "off" && !state.flash_off {
+    if !state.flash_off {
         let drawn = std::mem::take(&mut state.gpu.drawn);
         let texture = f.cover.map(|c| c.0).zip(state.cover_thumb.clone());
         state.flash.guard(

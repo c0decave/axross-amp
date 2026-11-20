@@ -59,7 +59,12 @@ fn folder(name: &str) -> scratch::Scratch {
     scratch::Scratch::new(&format!("engine-{name}"))
 }
 
-/// The output: `secs` of sound rendered at a device's pace (10 ms a call).
+/// The output: `secs` of sound rendered at a device's pace (10 ms a call),
+/// each 10 ms taken once the decoder has it ready (or has nothing more).
+/// (By the sound, not the clock: it played as much as the clock allowed, so
+/// on a busy machine too little - "advanced 2" and no end, a slice of 0.63
+/// s for 0.9 - and a decoder not given its turn ran the output dry: gaps.
+/// A device's buffer covers such a moment.)
 struct Output {
     state: RenderState,
     heard: Vec<f32>,
@@ -74,9 +79,19 @@ impl Output {
     }
 
     fn play(&mut self, engine: &Engine, secs: f32, mut each: impl FnMut(&Engine, &Event)) {
-        let end = Instant::now() + Duration::from_secs_f32(secs);
         let mut buf = vec![0.0f32; 480 * 2];
-        while Instant::now() < end {
+        for _ in 0..(secs * 100.0).round() as usize {
+            // (playing: the next 10 ms decoded first - at most 5 s)
+            let wait = Instant::now() + Duration::from_secs(5);
+            while engine
+                .shared
+                .playing
+                .load(std::sync::atomic::Ordering::Relaxed)
+                && !engine.shared.ready(480)
+                && Instant::now() < wait
+            {
+                std::thread::sleep(Duration::from_millis(1));
+            }
             engine.shared.render(&mut buf, 2, &mut self.state);
             self.heard.extend_from_slice(&buf);
             while let Ok(event) = engine.events.try_recv() {

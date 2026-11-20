@@ -2,7 +2,7 @@
 //! streams; shuffle and repeat as axross's player has them.
 
 use crate::state::{MAX_TRACKS, Track};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -678,68 +678,34 @@ pub fn read_playlist(path: &Path) -> Result<Vec<Track>, String> {
     {
         return Err("not a text file".into());
     }
-    // UTF-8 (a BOM allowed), else Windows' Latin-1 (axross's fallbacks),
-    // line by line
-    let lines =
-        reader
-            .split(b'\n')
-            .map_while(Result::ok)
-            .map(|bytes| match String::from_utf8(bytes) {
-                Ok(text) => text,
-                Err(e) => e.into_bytes().iter().map(|b| *b as char).collect(),
-            });
+    // UTF-8 (a BOM allowed), else Windows-1252 (axross's fallbacks; a
+    // Winamp playlist), line by line - and a line ends at CR too (an old
+    // Mac's playlist ends its lines with CR alone: it read as one line)
+    let lines = reader.split(b'\n').map_while(Result::ok).flat_map(|bytes| {
+        bytes
+            .split(|b| *b == b'\r')
+            .map(|part| match std::str::from_utf8(part) {
+                Ok(text) => text.to_owned(),
+                Err(_) => windows_1252(part),
+            })
+            .collect::<Vec<_>>()
+    });
     let base = path.parent().unwrap_or(Path::new("."));
     let pls = extension(path) == "pls";
-    let mut tracks = Vec::new();
-    let mut title = String::new();
-    let mut seconds = 0u64;
-    for raw in lines {
-        let line = raw.trim().trim_start_matches('\u{feff}');
-        if line.is_empty() || line.len() > MAX_LINE || line.contains('\0') {
-            continue;
-        }
-        let entry = if pls {
-            let Some((key, value)) = line.split_once('=') else {
-                continue;
-            };
-            let key = key.trim().to_ascii_lowercase();
-            if key.starts_with("title") {
-                if let Some(last) = tracks.last_mut() {
-                    let last: &mut Track = last;
-                    last.title = value.trim().to_owned();
-                }
-                continue;
-            }
-            if !key.starts_with("file") {
-                continue;
-            }
-            value.trim().to_owned()
-        } else {
-            if let Some(info) = line.strip_prefix("#EXTINF:") {
-                let (length, name) = info.split_once(',').unwrap_or((info, ""));
-                title = name.trim().to_owned();
-                // "-1" (a stream) or nonsense: unknown
-                seconds = length
-                    .split_whitespace()
-                    .next()
-                    .and_then(|l| l.parse::<f64>().ok())
-                    .filter(|l| l.is_finite() && *l > 0.0)
-                    .map(|l| l.min(1e9) as u64)
-                    .unwrap_or(0);
-                continue;
-            }
-            if line.starts_with('#') {
-                continue;
-            }
-            line.to_owned()
-        };
-        let entry = match entry.strip_prefix("file://") {
+    // where an entry is: a stream, a local path (a file: URL of this
+    // computer, relative to the playlist's folder), or nothing to play
+    let resolve = |entry: String| -> Option<String> {
+        let entry = if let Some(rest) = entry.strip_prefix("file://") {
             // a file: URL of this computer
-            Some(rest) => match rest.strip_prefix("localhost").unwrap_or(rest) {
+            match rest.strip_prefix("localhost").unwrap_or(rest) {
                 local if local.starts_with('/') => percent_decode(local),
-                _ => continue,
-            },
-            None => entry,
+                _ => return None,
+            }
+        } else if let Some(local) = entry.strip_prefix("file:").filter(|l| l.starts_with('/')) {
+            // (file:/path, one slash: a local path too, not a relative one)
+            percent_decode(local)
+        } else {
+            entry
         };
         // a Windows playlist's backslashes (on a system that has none in paths)
         let entry = if cfg!(not(windows)) && entry.contains('\\') && !entry.contains('/') {
@@ -747,10 +713,10 @@ pub fn read_playlist(path: &Path) -> Result<Vec<Track>, String> {
         } else {
             entry
         };
-        let resolved = if is_stream(&entry) {
-            entry
+        if is_stream(&entry) {
+            Some(entry)
         } else if entry.contains("://") {
-            continue; // (no other scheme: smb://, sftp:// ... are axross's own business)
+            None // (no other scheme: smb://, sftp:// ... are axross's own business)
         } else {
             let p = Path::new(&entry);
             let full = if p.is_absolute() {
@@ -758,10 +724,52 @@ pub fn read_playlist(path: &Path) -> Result<Vec<Track>, String> {
             } else {
                 base.join(p)
             };
-            if !is_audio(&full) {
+            is_audio(&full).then(|| absolute(&full))
+        }
+    };
+    let mut tracks = Vec::new();
+    // (a PLS by its entries' numbers, File10 after File3, each its TitleN)
+    let mut numbered: Vec<(u64, usize, String)> = Vec::new();
+    let mut titles: HashMap<u64, String> = HashMap::new();
+    let mut title = String::new();
+    let mut seconds = 0u64;
+    for raw in lines {
+        let line = raw.trim().trim_start_matches('\u{feff}');
+        if line.is_empty() || line.len() > MAX_LINE || line.contains('\0') {
+            continue;
+        }
+        if pls {
+            let Some((key, value)) = line.split_once('=') else {
                 continue;
+            };
+            let key = key.trim().to_ascii_lowercase();
+            let number = |name: &str| key.strip_prefix(name).and_then(|n| n.parse::<u64>().ok());
+            if let Some(n) = number("title") {
+                titles.insert(n, value.trim().to_owned());
+            } else if key.starts_with("file") && numbered.len() < MAX_TRACKS * 2 {
+                let n = number("file").unwrap_or(u64::MAX);
+                numbered.push((n, numbered.len(), value.trim().to_owned()));
             }
-            absolute(&full)
+            continue;
+        }
+        if let Some(info) = line.strip_prefix("#EXTINF:") {
+            let (length, name) = info.split_once(',').unwrap_or((info, ""));
+            title = name.trim().to_owned();
+            // "-1" (a stream) or nonsense: unknown
+            seconds = length
+                .split_whitespace()
+                .next()
+                .and_then(|l| l.parse::<f64>().ok())
+                .filter(|l| l.is_finite() && *l > 0.0)
+                .map(|l| l.min(1e9) as u64)
+                .unwrap_or(0);
+            continue;
+        }
+        if line.starts_with('#') {
+            continue;
+        }
+        let Some(resolved) = resolve(line.to_owned()) else {
+            continue;
         };
         tracks.push(Track {
             path: resolved,
@@ -773,7 +781,41 @@ pub fn read_playlist(path: &Path) -> Result<Vec<Track>, String> {
             break;
         }
     }
+    numbered.sort();
+    for (n, _, entry) in numbered {
+        let Some(resolved) = resolve(entry) else {
+            continue;
+        };
+        tracks.push(Track {
+            path: resolved,
+            title: titles.remove(&n).unwrap_or_default(),
+            ..Default::default()
+        });
+        if tracks.len() >= MAX_TRACKS {
+            break;
+        }
+    }
     Ok(tracks)
+}
+
+/// Windows-1252 (a Winamp playlist's): Latin-1 but for 0x80 - 0x9F, where
+/// it has "€", "’", "—" ... (read as Latin-1 they were C1 controls, and the
+/// tracks were not found); the five it leaves out as Latin-1's.
+fn windows_1252(bytes: &[u8]) -> String {
+    const HIGH: [char; 32] = [
+        '\u{20ac}', '\u{81}', '\u{201a}', '\u{192}', '\u{201e}', '\u{2026}', '\u{2020}',
+        '\u{2021}', '\u{2c6}', '\u{2030}', '\u{160}', '\u{2039}', '\u{152}', '\u{8d}', '\u{17d}',
+        '\u{8f}', '\u{90}', '\u{2018}', '\u{2019}', '\u{201c}', '\u{201d}', '\u{2022}', '\u{2013}',
+        '\u{2014}', '\u{2dc}', '\u{2122}', '\u{161}', '\u{203a}', '\u{153}', '\u{9d}', '\u{17e}',
+        '\u{178}',
+    ];
+    bytes
+        .iter()
+        .map(|&b| match b {
+            0x80..=0x9F => HIGH[usize::from(b - 0x80)],
+            _ => char::from(b),
+        })
+        .collect()
 }
 
 /// The playlist as an extended M3U (UTF-8): paths below `base` (the
@@ -1282,6 +1324,68 @@ mod tests {
         assert_eq!(p.tracks[back].title, "Gamma");
         let words = words("GAM  /z/");
         assert!(matches(&p.tracks[1], &words) && !matches(&p.tracks[0], &words));
+    }
+
+    /// Playlists from elsewhere (review 12): old Mac line ends (CR only:
+    /// read as 0 tracks), a Winamp playlist in Windows-1252 ("€", "’" read
+    /// as Latin-1's C1 controls: those tracks not found), a `file:/path`
+    /// URL (one slash: taken as relative), a PLS whose File10 comes before
+    /// File3 (taken in the file's order; titles by their numbers).
+    #[test]
+    fn playlists_from_elsewhere_read_as_meant() {
+        let dir = crate::testdir::Scratch::new("pl-elsewhere");
+        for name in ["a.mp3", "b.mp3", "c\u{20ac}.mp3", "d\u{2019}s.mp3", "e.mp3"] {
+            fs::write(dir.join(name), b"x").unwrap();
+        }
+        let at = |t: &Track| {
+            Path::new(&t.path)
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned()
+        };
+        fs::write(
+            dir.join("cr.m3u"),
+            "#EXTM3U\r#EXTINF:1,A\ra.mp3\rb.mp3\re.mp3\r",
+        )
+        .unwrap();
+        let cr = read_playlist(&dir.join("cr.m3u")).unwrap();
+        assert_eq!(
+            cr.iter().map(at).collect::<Vec<_>>(),
+            ["a.mp3", "b.mp3", "e.mp3"]
+        );
+        assert_eq!(cr[0].title, "A");
+        // (€ is 0x80, ’ 0x92 in Windows-1252)
+        fs::write(dir.join("w.m3u"), b"#EXTM3U\r\nc\x80.mp3\r\nd\x92s.mp3\r\n").unwrap();
+        let w = read_playlist(&dir.join("w.m3u")).unwrap();
+        assert_eq!(
+            w.iter().map(at).collect::<Vec<_>>(),
+            ["c\u{20ac}.mp3", "d\u{2019}s.mp3"]
+        );
+        fs::write(
+            dir.join("urls.m3u"),
+            format!(
+                "file:{}/a.mp3\nfile://{}/b.mp3\n",
+                dir.display(),
+                dir.display()
+            ),
+        )
+        .unwrap();
+        let urls = read_playlist(&dir.join("urls.m3u")).unwrap();
+        assert_eq!(urls.iter().map(at).collect::<Vec<_>>(), ["a.mp3", "b.mp3"]);
+        assert!(Path::new(&urls[0].path).exists(), "{}", urls[0].path);
+        fs::write(
+            dir.join("order.pls"),
+            "[playlist]\nNumberOfEntries=4\nFile1=a.mp3\nTitle1=T1\nFile2=b.mp3\nTitle2=T2\n\
+             File10=e.mp3\nTitle10=T10\nFile3=c\u{20ac}.mp3\nTitle3=T3\n",
+        )
+        .unwrap();
+        let pls = read_playlist(&dir.join("order.pls")).unwrap();
+        assert_eq!(
+            pls.iter().map(|t| t.title.as_str()).collect::<Vec<_>>(),
+            ["T1", "T2", "T3", "T10"]
+        );
+        assert_eq!(at(&pls[3]), "e.mp3");
     }
 
     #[test]

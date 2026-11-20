@@ -4,6 +4,48 @@ axross-amp is axross's Media Player as a program of its own, in Rust. The
 versions before 0.14.0 were not published; they are listed so the history
 reads whole.
 
+## 0.14.3 - 2026-11-20
+
+What independent review 12 (8.0 of 10) asked for. (0.14.2 was not
+released; its changes below come with this one.)
+
+### Fixed
+- **The shared state file** (media_player.json): a file name that is no
+  UTF-8, which axross writes as Python's surrogate escape ("\udce9"),
+  made the whole file unreadable - the player started empty and its next
+  save replaced axross's playlist. Such names are read as their bytes, any
+  other odd escape costs that string alone, and they are written back as
+  axross writes them.
+- **No blink on a track change** (the flash rule): Next and Previous no
+  longer clear the cover, the Glass backdrop and the faces' thumbnail;
+  the old ones stay until the new track's come, a new cover is shown at
+  most twice a second (the last one asked for while skipping) and they
+  crossfade. Holding N read up to 30 transitions a second; now 1.
+- **The stereo scope with trails and a glow** in white on black through
+  gated stereo noise read 10 transitions a second, Calm too: its glow is
+  as bright as the figure, none on a faint tangle.
+- **The flash guard** veils a flicker that starts within the rule and
+  speeds up (3 Hz to 4, 2 rising to 5) before its seventh transition in a
+  second: from the fifth when it comes at 2.6 Hz or quicker.
+- **"Off"** is crossfaded and guarded as any face (switching a face and
+  off quickly read 15 transitions a second).
+- **The picture's own window** takes clicks and keys as the picture in
+  the main window: a click the next face, the right button the face menu,
+  a double click or F11 full screen, Escape out of it.
+- **Playlists**: CR line ends, Windows-1252 (Winamp), `file:/path`, and a
+  PLS in its entries' order (File10 after File3).
+
+### Changed
+- The windows have the program's icon.
+- README: the hero picture, the punchlines and the contents first, the
+  other pictures after them; macOS 15's System Settings → Privacy &
+  Security → Open Anyway (right-click → Open no longer passes Gatekeeper).
+- LIMITATIONS: the flow field in Classic *Intense* shows a pattern for a
+  few frames.
+- Tests: the flash tests read with review 12's own meter too; the frame
+  costs are the drawing thread's CPU time; the meters, the sound and the
+  window tests go by the sound, not the clock (robust on a busy machine).
+
 ## 0.14.2 - 2026-11-20
 
 What independent review 11 (7.5 of 10) asked for.

@@ -60,7 +60,10 @@ fn a_slow_disk_leaves_no_gap_between_tracks() {
     let mut buf = vec![0.0f32; 480 * 2];
     let mut heard = Vec::new();
     let mut events = Vec::new();
-    let end = Instant::now() + Duration::from_secs(4);
+    // (to the end of the sound, at most 30 s: 4 s of the clock ended it
+    // before the second track on a busy machine; the output takes no more
+    // than a device would - 10 ms a 10 ms - so the decoder is not helped)
+    let end = Instant::now() + Duration::from_secs(30);
     while Instant::now() < end && !events.iter().any(|e| matches!(e, Event::Ended { .. })) {
         engine.shared.render(&mut buf, 2, &mut state);
         heard.extend(buf.chunks(2).map(|f| f[0]));

@@ -2,28 +2,7 @@
 
 axross's Media Player as a program of its own - written in Rust.
 
-## Screenshots
-
 ![The window](docs/window.png)
-
-<table>
-  <tr>
-    <td><img src="docs/designs.png" alt="The ten designs"></td>
-    <td><img src="docs/themes.png" alt="The twelve themes"></td>
-  </tr>
-  <tr>
-    <td><img src="docs/faces-classic.png" alt="The classic faces"></td>
-    <td><img src="docs/faces-generative.png" alt="The generative faces"></td>
-  </tr>
-  <tr>
-    <td><img src="docs/faces-analysis.png" alt="The analysis faces"></td>
-    <td><img src="docs/mixer.png" alt="The Mixer tab"></td>
-  </tr>
-</table>
-
-<sub>The track in the pictures is a demo synthesized for them (`docs/make_demo.py`);
-how each picture is made: [Extended README](docs/README-extended.md),
-[Faces](docs/FACES.md#the-face-sheets), [Themes](docs/THEMES.md), [Designs](docs/DESIGNS.md).</sub>
 
 - **Plays almost anything** - MP3, FLAC, Ogg Vorbis, Opus, AAC / M4A, ALAC, WAV, AIFF, CAF, folders, M3U / PLS and internet radio
 - **Truly gapless** - not a sample of silence between an album's tracks; an optional crossfade that never cuts into an album
@@ -53,13 +32,34 @@ how each picture is made: [Extended README](docs/README-extended.md),
 > *Intense* asks first. What is measured and what is not claimed:
 > [Photosensitivity](docs/FLASH_SAFETY.md).
 
+## Screenshots
+
+<table>
+  <tr>
+    <td><img src="docs/designs.png" alt="The ten designs"></td>
+    <td><img src="docs/themes.png" alt="The twelve themes"></td>
+  </tr>
+  <tr>
+    <td><img src="docs/faces-classic.png" alt="The classic faces"></td>
+    <td><img src="docs/faces-generative.png" alt="The generative faces"></td>
+  </tr>
+  <tr>
+    <td><img src="docs/faces-analysis.png" alt="The analysis faces"></td>
+    <td><img src="docs/mixer.png" alt="The Mixer tab"></td>
+  </tr>
+</table>
+
+<sub>The track in the pictures is a demo synthesized for them (`docs/make_demo.py`);
+how each picture is made: [Extended README](docs/README-extended.md),
+[Faces](docs/FACES.md#the-face-sheets), [Themes](docs/THEMES.md), [Designs](docs/DESIGNS.md).</sub>
+
 ## Install
 
 Each [release](https://github.com/c0decave/axross-amp/releases) has the files
 and their `SHA256SUMS`:
 
 - **Linux (x86_64)** - `axross-amp-VERSION-x86_64.AppImage` (`chmod +x` it and run it; from a terminal it goes to the background, `--foreground` keeps it there) or the `linux-x86_64.tar.gz`
-- **macOS** - `axross-amp-VERSION-macos-universal.dmg` (the app, Apple silicon and Intel) or the `.tar.gz` (not notarised: right-click → Open the first time)
+- **macOS** - `axross-amp-VERSION-macos-universal.dmg` (the app, Apple silicon and Intel) or the `.tar.gz` (not notarised: the first time, System Settings → Privacy & Security → Open Anyway - on macOS 15 and later the right-click way is gone - or `xattr -d com.apple.quarantine` on it once)
 - **Windows (x64)** - `axross-amp-VERSION-windows-x64.zip` (not signed: SmartScreen asks once)
 - **From source** - see [Building](#building)
 
