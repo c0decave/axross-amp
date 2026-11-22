@@ -11,7 +11,7 @@
 
 use super::*;
 use crate::design::{self, KeyLook};
-use egui::{Pos2, Rect, Shape, pos2};
+use egui::{Rect, Shape, pos2};
 
 /// What the glass and the soft designs leave the playlist at least (its
 /// switch, the filter and three rows).
@@ -412,19 +412,15 @@ impl App {
                 });
                 ui.add_space(12.0);
             }
-            ui.add(
-                egui::Label::new(RichText::new(&title).font(bold(22.0)).color(t.strong)).truncate(),
-            );
+            fit_label(ui, RichText::new(&title).font(bold(22.0)).color(t.strong));
             if !by.is_empty() {
-                ui.add(egui::Label::new(RichText::new(&by).size(14.0).color(t.text)).truncate());
+                fit_label(ui, RichText::new(&by).size(14.0).color(t.text));
             }
-            ui.add(
-                egui::Label::new(
-                    RichText::new(card_format(&self.info))
-                        .size(12.0)
-                        .color(t.muted),
-                )
-                .truncate(),
+            fit_label(
+                ui,
+                RichText::new(card_format(&self.info))
+                    .size(12.0)
+                    .color(t.muted),
             );
             ui.add_space(10.0);
             self.position(ui);
@@ -456,14 +452,9 @@ impl App {
             let (rect, _) = ui.allocate_exact_size(vec2(side, side), Sense::hover());
             self.cover_in(ui, rect, 10);
             ui.vertical(|ui| {
-                ui.add(
-                    egui::Label::new(RichText::new(&title).font(bold(18.0)).color(t.strong))
-                        .truncate(),
-                );
+                fit_label(ui, RichText::new(&title).font(bold(18.0)).color(t.strong));
                 if !by.is_empty() {
-                    ui.add(
-                        egui::Label::new(RichText::new(&by).size(13.0).color(t.text)).truncate(),
-                    );
+                    fit_label(ui, RichText::new(&by).size(13.0).color(t.text));
                 }
             });
         });
@@ -563,13 +554,11 @@ impl App {
                     } else {
                         format!("{title} · {by}")
                     };
-                    ui.add(
-                        egui::Label::new(
-                            RichText::new(words)
-                                .font(bold(if close { 15.0 } else { 19.0 }))
-                                .color(t.strong),
-                        )
-                        .truncate(),
+                    fit_label(
+                        ui,
+                        RichText::new(words)
+                            .font(bold(if close { 15.0 } else { 19.0 }))
+                            .color(t.strong),
                     );
                 });
                 self.position(ui);
@@ -669,14 +658,9 @@ impl App {
                 self.cover_in(ui, rect, 14);
                 ui.add_space(10.0);
                 let (title, by) = self.now_playing_text();
-                ui.add(
-                    egui::Label::new(RichText::new(title).font(bold(26.0)).color(th().strong))
-                        .truncate(),
-                );
+                fit_label(ui, RichText::new(title).font(bold(26.0)).color(th().strong));
                 if !by.is_empty() {
-                    ui.add(
-                        egui::Label::new(RichText::new(by).size(15.0).color(th().muted)).truncate(),
-                    );
+                    fit_label(ui, RichText::new(by).size(15.0).color(th().muted));
                 }
             });
             ui.add_space(8.0);
@@ -751,7 +735,9 @@ impl App {
         let display_h = if self.list_elsewhere {
             (all - 92.0 - 8.0).max(64.0)
         } else if all < 440.0 {
-            64.0
+            // (the time and the name both: at 64 the glass held the time
+            // alone)
+            78.0
         } else if compact {
             (all * 0.26).clamp(78.0, 120.0)
         } else {
@@ -766,28 +752,75 @@ impl App {
         let scope = Rect::from_min_max(pos2(vfd_rect.right() + 12.0, inner.top()), inner.max);
         let track = self.playlist.current.map_or(0, |i| i + 1);
         let (title, by) = self.now_playing_text();
-        // (the time's line whole in the readout's width: "01  0:00 / 0:40"
-        // is some nine of its type's heights wide)
-        let big = (inner.height() * 0.3)
-            .clamp(14.0, 34.0)
-            .min((vfd_rect.width() / 9.5).max(14.0));
         let times = self.times();
-        let lines: Vec<(String, f32)> = if compact {
-            vec![(format!("{track:02}  {times}"), big), (title.clone(), 12.0)]
-        } else {
-            vec![
-                (format!("{track:02}  {times}"), big),
-                (title.clone(), 14.0),
-                (by.clone(), 12.0),
-                (card_format(&self.info), 11.0),
-            ]
-        };
-        let refs: Vec<(&str, f32)> = lines.iter().map(|(s, z)| (s.as_str(), *z)).collect();
-        design::vfd(ui.painter(), vfd_rect, &refs, t);
+        let format = card_format(&self.info);
+        let p = ui.painter().with_clip_rect(vfd_rect.shrink(2.0));
+        let colours = design::vfd_glass(ui.painter(), vfd_rect, t);
+        let width = vfd_rect.width() - 20.0;
+        // (the readout said as a whole; under the tooltips of its words)
         let readout = ui.interact(vfd_rect, ui.scope_id().with("vfd"), Sense::hover());
-        let said = format!("{title} {by}, {times}");
+        let said = format!("{title} {by}, track {track}, {times}");
         readout
             .widget_info(|| egui::WidgetInfo::labeled(egui::accesskit::Role::Label, true, &said));
+        let (left, bottom) = (vfd_rect.left() + 10.0, vfd_rect.bottom() - 3.0);
+        // the time's line: the time whole, in the largest type that holds
+        // it (to 9 points); the track's number before it where there is
+        // room - smaller, then none (0.16.0: "02  0:00 / 0:40" was laid in
+        // a type for nine of its heights, and from track 2 on the number
+        // pushed the length and the name out of the glass)
+        let mut big = (inner.height() * 0.3).clamp(14.0, 34.0);
+        while big > 9.0 && design::vfd_width(&p, &times, big) > width {
+            big -= 0.5;
+        }
+        let number = format!("{track:02}");
+        let mut counter = None;
+        for size in [big, big * 0.75, big * 0.6] {
+            let need = design::vfd_width(&p, &number, size) + big;
+            if size >= 8.0 && need + design::vfd_width(&p, &times, big) <= width {
+                counter = Some((size, need));
+                break;
+            }
+        }
+        let mut y = vfd_rect.top() + if compact { 4.0 } else { 8.0 };
+        let mut x = left;
+        if let Some((size, need)) = counter {
+            // (the number on the time's baseline)
+            design::vfd_line(
+                &p,
+                pos2(x, y + (big - size) * 0.8),
+                &number,
+                size,
+                colours,
+                need,
+            );
+            x += need;
+        }
+        let (time_rect, _) = design::vfd_line(&p, pos2(x, y), &times, big, colours, width);
+        y = time_rect.bottom() + if compact { 1.0 } else { big * 0.2 };
+        // the words under it: as many lines as the glass holds, each cut to
+        // an ellipsis where it does not fit, its whole in a tooltip
+        let lines: Vec<(&str, f32)> = if compact {
+            vec![(title.as_str(), 11.0)]
+        } else {
+            vec![
+                (title.as_str(), 14.0),
+                (by.as_str(), 12.0),
+                (format.as_str(), 11.0),
+            ]
+        };
+        for (text, size) in lines {
+            if text.is_empty() {
+                continue;
+            }
+            if y + size * 1.2 > bottom {
+                break;
+            }
+            let (rect, elided) = design::vfd_line(&p, pos2(left, y), text, size, colours, width);
+            if elided {
+                tooltip_over(ui, rect, text);
+            }
+            y = rect.bottom() + size * 0.25;
+        }
         self.visual_in(ui, scope);
         ui.add_space(4.0);
         if all < 440.0 {
@@ -950,34 +983,53 @@ impl App {
         let lcd = Rect::from_min_size(body.min, vec2(lcd_w, body.height() * 0.48));
         sunken(ui.painter(), lcd, t);
         let pos = self.seek_drag.unwrap_or(self.shown_position());
-        design::lcd(
-            ui.painter(),
-            lcd.min + vec2(4.0, 4.0),
-            &clock(pos),
-            (lcd.height() * 0.5).clamp(14.0, 30.0),
-            t,
-        );
-        // (beside the time: the state and the track's number, small)
+        // beside the time, small, as many as the well holds: the length (it
+        // was shown nowhere in a large window), the state, the track's
+        // number - the number gives way first; the time in the largest type
+        // that leaves them room, never cut (0.16.0: "9:59:59" in 30 points
+        // ran out of its well over the spectrum)
         let state = if self.playing() {
             "▶ PLAY"
         } else {
             "‖ PAUSE"
         };
         let track = self.playlist.current.map_or(0, |i| i + 1);
-        if lcd.width() >= 170.0 {
-            ui.painter().text(
-                lcd.right_top() + vec2(-6.0, 6.0),
+        let total = match self.duration {
+            Some(d) if d > 0.0 => format!("/ {}", clock(d)),
+            _ => "/ --:--".to_owned(),
+        };
+        let small = egui::FontId::monospace(11.0);
+        let ink = crate::theme::ink_on_in(t, t.raised);
+        let rows = (((lcd.height() - 8.0) / 13.0).floor() as usize).max(1);
+        let time = clock(pos);
+        let p = ui.painter();
+        let width_of =
+            |text: &str, font: egui::FontId| p.layout_no_wrap(text.to_owned(), font, ink).size().x;
+        let mut side: Vec<String> = vec![total, state.to_owned(), format!("TRACK {track:02}")];
+        side.truncate(rows);
+        let (size, side) = loop {
+            let column = side
+                .iter()
+                .map(|s| width_of(s, small.clone()))
+                .fold(0.0f32, f32::max);
+            let room = lcd.width() - 8.0 - 16.0 - if side.is_empty() { 0.0 } else { column + 8.0 };
+            let mut size = (lcd.height() * 0.5).clamp(14.0, 30.0);
+            while size > 10.0 && width_of(&time, egui::FontId::monospace(size)) > room {
+                size -= 0.5;
+            }
+            if width_of(&time, egui::FontId::monospace(size)) <= room || side.len() <= 1 {
+                break (size, side);
+            }
+            side.pop();
+        };
+        design::lcd(p, lcd.min + vec2(4.0, 4.0), &time, size, t);
+        for (k, text) in side.iter().enumerate() {
+            p.text(
+                lcd.right_top() + vec2(-6.0, 5.0 + 13.0 * k as f32),
                 egui::Align2::RIGHT_TOP,
-                state,
-                egui::FontId::monospace(11.0),
-                crate::theme::ink_on_in(t, t.raised),
-            );
-            ui.painter().text(
-                lcd.right_bottom() + vec2(-6.0, -6.0),
-                egui::Align2::RIGHT_BOTTOM,
-                format!("TRACK {track:02}"),
-                egui::FontId::monospace(11.0),
-                crate::theme::ink_on_in(t, t.raised),
+                text,
+                small.clone(),
+                ink,
             );
         }
         let spectrum = Rect::from_min_max(
@@ -998,8 +1050,19 @@ impl App {
                     13.0,
                 ),
             ];
-            let refs: Vec<(&str, f32)> = lines.iter().map(|(s, z)| (s.as_str(), *z)).collect();
-            design::vfd(ui.painter(), spectrum.shrink(2.0), &refs, t);
+            let glass = spectrum.shrink(2.0);
+            let colours = design::vfd_glass(ui.painter(), glass, t);
+            let p = ui.painter().with_clip_rect(glass.shrink(2.0));
+            let mut y = glass.top() + 8.0;
+            for (text, size) in &lines {
+                if y + size * 1.2 > glass.bottom() - 2.0 {
+                    break;
+                }
+                let at = pos2(glass.left() + 10.0, y);
+                let (rect, _) =
+                    design::vfd_line(&p, at, text, *size, colours, glass.width() - 20.0);
+                y = rect.bottom() + size * 0.25;
+            }
         } else {
             self.visual_in(ui, spectrum.shrink(2.0));
         }
@@ -1017,24 +1080,19 @@ impl App {
             format!("{title} - {by}")
         };
         let line = format!("{line}   ({})", card_format(&self.info));
-        let marquee = ui.painter().with_clip_rect(words.shrink(2.0));
-        let font = egui::FontId::monospace(12.0);
-        let galley = marquee.layout_no_wrap(line.clone(), font, t.text);
-        // (a marquee: the words scroll slowly where they do not fit - 24
-        // points a second; still where the desktop asks for less motion)
-        let overflow = galley.size().x - words.width() + 8.0;
-        // (only while it plays: paused or stopped, the words stand and the
-        // window is not woken for them)
-        let shift = if overflow > 0.0 && self.playing() && !self.desktop_reduces_motion() {
-            let period = (overflow / 24.0) as f64 + 4.0;
-            let phase = (ui.input(|i| i.time) % period) as f32;
-            ui.ctx().request_repaint_after(Duration::from_millis(80));
-            (phase * 24.0 - 48.0).clamp(0.0, overflow)
-        } else {
-            0.0
-        };
-        marquee.galley(words.left_top() + vec2(4.0 - shift, 3.0), galley, t.text);
+        // (in one line, cut to an ellipsis where it does not fit, its whole
+        // in a tooltip - a marquee scrolled it, and paused it stood cut)
         let said = ui.interact(words, ui.scope_id().with("marquee"), Sense::hover());
+        fit_text(
+            ui,
+            ui.painter(),
+            words.left_center() + vec2(4.0, 0.0),
+            egui::Align2::LEFT_CENTER,
+            &line,
+            egui::FontId::monospace(12.0),
+            t.text,
+            words.width() - 8.0,
+        );
         said.widget_info(|| egui::WidgetInfo::labeled(egui::accesskit::Role::Label, true, &line));
         // the keys and the volume, in a row; the position under them
         let rows = Rect::from_min_max(pos2(body.left(), words.bottom() + 4.0), body.max);
@@ -1124,7 +1182,7 @@ impl App {
             // 400 x 150 points at 3000 x 1600, review 12)
             (all * 0.42)
                 .min(w * 0.34)
-                .clamp(200.0, if w >= 2000.0 { 640.0 } else { 380.0 })
+                .clamp(200.0, if w >= 2000.0 { 760.0 } else { 380.0 })
         };
         let (deck, _) = ui.allocate_exact_size(vec2(w, deck_h), Sense::hover());
         // the deck's face
@@ -1145,108 +1203,87 @@ impl App {
             120.0
         };
         let room = deck.shrink(10.0);
-        let cw = (room.width() - counter_w - 10.0).min(room.height() * 1.59);
-        let cassette = Rect::from_min_size(
+        // the cassette as IEC 60094 has it (100.4 x 63.8 mm), as large as
+        // the deck holds it beside the counter (0.16.0's was a box with a
+        // label and two large reels at its window's ends, over its edges)
+        let total = self.duration.unwrap_or(0.0).max(1.0);
+        let played = (self.shown_position() / total).clamp(0.0, 1.0) as f32;
+        let space = Rect::from_min_max(
+            room.min,
             pos2(
-                room.left() + (room.width() - counter_w - 10.0 - cw) / 2.0,
-                room.top(),
-            ),
-            vec2(cw, room.height()),
-        );
-        let shell = crate::theme::mix(t.surface, Color32::BLACK, if t.dark { 0.35 } else { 0.1 });
-        ui.painter().rect_filled(cassette, 10.0, shell);
-        // the label: what plays (a little taller on a low deck: one line)
-        let label = Rect::from_min_size(
-            cassette.min + vec2(cassette.width() * 0.06, cassette.height() * 0.07),
-            vec2(
-                cassette.width() * 0.88,
-                cassette.height() * if low { 0.36 } else { 0.3 },
+                room.right() - counter_w - if counter_w > 0.0 { 10.0 } else { 0.0 },
+                room.bottom(),
             ),
         );
-        let paper = crate::theme::mix(t.surface, Color32::WHITE, if t.dark { 0.08 } else { 0.6 });
-        ui.painter().rect_filled(label, 3.0, paper);
-        ui.painter().rect_filled(
-            Rect::from_min_size(label.min, vec2(label.width(), 4.0)),
-            0.0,
-            self.accent,
-        );
+        let c = design::cassette(space, played);
+        design::cassette_shell(ui.painter(), &c, t, self.accent);
+        // the label: what plays - two lines where both fit, else one; each
+        // cut to an ellipsis where it does not fit, its whole in a tooltip
+        let paper = design::cassette_paper(t);
         let ink = crate::theme::ink_on_in(t, paper);
         let (title, by) = self.now_playing_text();
-        let clip = ui.painter().with_clip_rect(label.shrink(4.0));
-        let size = (label.height() * 0.36).clamp(11.0, 26.0);
-        let by_size = (size * 0.6).max(10.0);
-        // (two lines where both fit under the label's stripe, else the
-        // title and the artist on one: at 420 x 420 and 1400 x 460 the
-        // label is some 20 points tall, and two lines lay over each other)
-        if label.height() >= 8.0 + (size + by_size) * 1.25 + 5.0 {
-            clip.text(
-                label.left_top() + vec2(8.0, 8.0),
+        let stripe = (c.label.height() * 0.12).clamp(2.0, 6.0);
+        let lines_room = Rect::from_min_max(
+            c.label.min + vec2(6.0, stripe + 2.0),
+            c.label.max - vec2(6.0, 2.0),
+        );
+        let clip = ui.painter().with_clip_rect(c.label);
+        let size = (lines_room.height() * 0.48).clamp(9.0, 26.0);
+        let by_size = (size * 0.62).max(9.0);
+        if !by.is_empty() && lines_room.height() >= (size + by_size) * 1.2 {
+            fit_text(
+                ui,
+                &clip,
+                lines_room.left_top(),
                 egui::Align2::LEFT_TOP,
                 &title,
                 bold(size),
                 ink,
+                lines_room.width(),
             );
-            clip.text(
-                label.left_bottom() + vec2(8.0, -5.0),
+            fit_text(
+                ui,
+                &clip,
+                lines_room.left_bottom(),
                 egui::Align2::LEFT_BOTTOM,
                 &by,
                 egui::FontId::proportional(by_size),
                 ink,
+                lines_room.width(),
             );
         } else {
-            let one = ((label.height() - 6.0) / 1.25).clamp(10.0, size);
+            let one = (lines_room.height() / 1.25).clamp(8.0, size);
             let line = if by.is_empty() {
                 title.clone()
             } else {
                 format!("{title} · {by}")
             };
-            clip.text(
-                pos2(label.left() + 8.0, label.center().y + 2.0),
+            fit_text(
+                ui,
+                &clip,
+                lines_room.left_center(),
                 egui::Align2::LEFT_CENTER,
-                line,
+                &line,
                 bold(one),
                 ink,
+                lines_room.width(),
             );
         }
-        let said = ui.interact(label, ui.scope_id().with("cassette-label"), Sense::hover());
+        let said = ui.interact(
+            c.label,
+            ui.scope_id().with("cassette-label"),
+            Sense::hover(),
+        );
         let words = format!("{title} {by}");
         said.widget_info(|| egui::WidgetInfo::labeled(egui::accesskit::Role::Label, true, &words));
-        // its window: the picture, the reels over it
-        let window = Rect::from_min_max(
-            pos2(
-                cassette.left() + cassette.width() * 0.14,
-                label.bottom() + cassette.height() * 0.07,
-            ),
-            pos2(
-                cassette.right() - cassette.width() * 0.14,
-                cassette.bottom() - cassette.height() * 0.12,
-            ),
-        );
-        self.visual_in(ui, window);
+        // its window: the picture behind, the packs and the hubs over it
+        self.visual_in(ui, c.window.shrink(1.0));
         let dt = ui.input(|i| i.stable_dt).min(0.1);
         if self.playing() && !self.desktop_reduces_motion() {
             self.reels_turn = (self.reels_turn + dt * 0.25).fract();
         }
-        let r = (window.height() * 0.5).min(window.width() * 0.17);
-        for (i, c) in [
-            pos2(window.left() + r * 0.9, window.center().y),
-            pos2(window.right() - r * 0.9, window.center().y),
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            // (the tape wound on: the left reel full at the start, the right one at the end)
-            let total = self.duration.unwrap_or(0.0).max(1.0);
-            let done = (self.shown_position() / total).clamp(0.0, 1.0) as f32;
-            let wound = if i == 0 { 1.0 - done } else { done };
-            reel(ui.painter(), c, r, 0.45 + 0.5 * wound, self.reels_turn, t);
-        }
-        ui.painter().rect_stroke(
-            window,
-            4.0,
-            Stroke::new(2.0, shell),
-            egui::StrokeKind::Inside,
-        );
+        design::cassette_reels(ui.painter(), &c, self.reels_turn, t);
+        self.cassette_drawn = Some(c);
         // the counter
         if counter_w > 0.0 {
             let c = Rect::from_min_size(
@@ -1370,38 +1407,36 @@ impl App {
         // now playing
         let (title, by) = self.now_playing_text();
         let lines = if compact { 2.0 } else { 4.0 };
-        let (bx, _) = ui.allocate_exact_size(vec2(w, 22.0 + lines * 17.0), Sense::hover());
+        let (bx, _) = ui.allocate_exact_size(vec2(w, 26.0 + lines * 17.0), Sense::hover());
         tui_box(ui.painter(), bx, "now playing", t);
+        // (under the box's name on its top edge - the first line ran into it)
         child(
             ui,
-            egui::UiBuilder::new().max_rect(bx.shrink2(vec2(12.0, 10.0))),
+            egui::UiBuilder::new().max_rect(Rect::from_min_max(
+                bx.min + vec2(12.0, 14.0),
+                bx.max - vec2(12.0, 10.0),
+            )),
             |ui| {
                 ui.spacing_mut().item_spacing.y = 1.0;
-                ui.add(
-                    egui::Label::new(
-                        RichText::new(format!("> {title}"))
-                            .monospace()
-                            .strong()
-                            .color(t.strong),
-                    )
-                    .truncate(),
+                fit_label(
+                    ui,
+                    RichText::new(format!("> {title}"))
+                        .monospace()
+                        .strong()
+                        .color(t.strong),
                 );
                 if !compact {
-                    ui.add(
-                        egui::Label::new(
-                            RichText::new(format!("  {by}"))
-                                .monospace()
-                                .color(self.accent),
-                        )
-                        .truncate(),
+                    fit_label(
+                        ui,
+                        RichText::new(format!("  {by}"))
+                            .monospace()
+                            .color(self.accent),
                     );
-                    ui.add(
-                        egui::Label::new(
-                            RichText::new(format!("  {}", card_format(&self.info)))
-                                .monospace()
-                                .color(t.muted),
-                        )
-                        .truncate(),
+                    fit_label(
+                        ui,
+                        RichText::new(format!("  {}", card_format(&self.info)))
+                            .monospace()
+                            .color(t.muted),
                     );
                 }
                 self.ascii_position(ui);
@@ -1544,22 +1579,18 @@ impl App {
         );
         child(ui, egui::UiBuilder::new().max_rect(words), |ui| {
             ui.spacing_mut().item_spacing.y = 0.0;
-            ui.add(
-                egui::Label::new(
-                    RichText::new(title.to_uppercase())
-                        .font(bold(huge))
-                        .color(t.strong),
-                )
-                .wrap_mode(egui::TextWrapMode::Truncate),
+            fit_label(
+                ui,
+                RichText::new(title.to_uppercase())
+                    .font(bold(huge))
+                    .color(t.strong),
             );
             if !compact {
-                ui.add(
-                    egui::Label::new(
-                        RichText::new(by.to_uppercase())
-                            .font(bold(18.0))
-                            .color(self.accent),
-                    )
-                    .truncate(),
+                fit_label(
+                    ui,
+                    RichText::new(by.to_uppercase())
+                        .font(bold(18.0))
+                        .color(self.accent),
                 );
                 ui.add_space(6.0);
                 let times = self.times();
@@ -1743,7 +1774,15 @@ impl App {
                 .map(str::to_uppercase)
                 .collect()
         };
+        // (the scraps in lines over the artist's line, never into it: what
+        // does not fit is left out - a scrap wider than the head cut to an
+        // ellipsis - and the whole title is in a tooltip; a long scrap
+        // turned less, its corners within its line)
+        let by_h = 18.0;
+        let floor = words_rect.bottom() - by_h - 4.0;
         let mut line_h: f32 = 0.0;
+        let mut bottom = words_rect.top();
+        let mut all_shown = true;
         for (i, piece) in pieces.iter().enumerate() {
             if piece == " " {
                 at.x += 14.0;
@@ -1755,16 +1794,23 @@ impl App {
             let mut font = fonts[(k / 2) % fonts.len()].clone();
             // (smaller in a low head: the scraps lay over the artist's line)
             font.size *= [1.0, 0.82, 1.12, 0.9, 1.05][k % 5] * if low { 0.72 } else { 1.0 };
-            let galley = clip.layout_no_wrap(piece.clone(), font, ink);
+            let galley = one_line(&clip, piece, font, ink, words_rect.width() - 20.0);
+            all_shown &= !galley.elided;
             let size = galley.size() + vec2(8.0, 4.0);
-            if at.x + size.x > words_rect.right() && at.x > words_rect.left() {
-                at = pos2(words_rect.left(), at.y + line_h + 6.0);
+            if at.x + size.x > words_rect.right() - 4.0 && at.x > words_rect.left() {
+                at = pos2(words_rect.left(), at.y + line_h + 8.0);
                 line_h = 0.0;
             }
-            line_h = line_h.max(size.y);
-            let tilt = [-0.07, 0.05, -0.03, 0.08, 0.0, -0.05][k % 6];
+            let tilt = [-0.07, 0.05, -0.03, 0.08, 0.0, -0.05][k % 6] * (60.0 / size.x).min(1.0);
             let lift = [0.0, 3.0, -2.0, 1.0][k % 4];
             let rect = Rect::from_min_size(at + vec2(0.0, lift), size);
+            let reach = size.x * 0.5 * tilt.abs() + 2.0;
+            if rect.bottom() + reach > floor {
+                all_shown = false;
+                break;
+            }
+            line_h = line_h.max(size.y);
+            bottom = bottom.max(rect.bottom() + reach);
             clip.add(Shape::convex_polygon(
                 design::turned(rect, tilt),
                 fill,
@@ -1775,17 +1821,26 @@ impl App {
             let (sn, cs) = tilt.sin_cos();
             let offset = vec2(half.x * cs - half.y * sn, half.x * sn + half.y * cs);
             clip.add(egui::epaint::TextShape::new(c - offset, galley, ink).with_angle(tilt));
-            at.x += size.x + 2.0;
+            at.x += size.x + 6.0;
         }
-        at.y += line_h - 40.0;
-        let by_at = pos2(words_rect.left(), (at.y + 44.0).min(head.bottom() - 18.0));
-        clip.text(
+        let by_at = pos2(
+            words_rect.left(),
+            (bottom + 4.0).min(words_rect.bottom() - by_h),
+        );
+        fit_text(
+            ui,
+            &clip,
             by_at,
             egui::Align2::LEFT_TOP,
             &by,
             egui::FontId::monospace(13.0),
             t.text,
+            words_rect.width() - 4.0,
         );
+        if !all_shown {
+            let scraps_rect = Rect::from_min_max(words_rect.min, pos2(words_rect.right(), bottom));
+            tooltip_over(ui, scraps_rect, &title);
+        }
         let said = ui.interact(head, ui.scope_id().with("collage-head"), Sense::hover());
         let words = format!("{title} {by}");
         said.widget_info(|| egui::WidgetInfo::labeled(egui::accesskit::Role::Label, true, &words));
@@ -1921,7 +1976,10 @@ impl App {
         let times = self.times();
         let font = egui::FontId::monospace(13.0);
         let cell = ui.fonts_mut(|f| f.glyph_width(&font, '#')).max(6.0);
-        let chars = (((ui.available_width() - 140.0) / cell) as usize).clamp(8, 80);
+        // (the bar as wide as the time leaves - the time whole: a long
+        // track's "9:59:59 / 10:00:00" ran out of the box)
+        let reserve = cell * (3 + times.chars().count()) as f32 + 4.0;
+        let chars = (((ui.available_width() - reserve) / cell) as usize).clamp(4, 80);
         let text = format!("  {} {times}", design::ascii_bar(share, chars));
         let galley = ui.painter().layout_no_wrap(text, font, th().text);
         let (rect, response) = ui.allocate_exact_size(
@@ -2162,26 +2220,4 @@ fn tui_box(p: &egui::Painter, rect: Rect, name: &str, t: &crate::theme::Theme) {
     let at = r.left_top() + vec2(12.0, -galley.size().y / 2.0);
     p.rect_filled(Rect::from_min_size(at, galley.size()), 0.0, t.ground);
     p.galley(at, galley, t.accent);
-}
-
-/// A tape reel: the hub with its spokes turned by `turn`, the tape wound
-/// round it to `full` (0..1 of its radius).
-fn reel(p: &egui::Painter, c: Pos2, r: f32, full: f32, turn: f32, t: &crate::theme::Theme) {
-    let tape = crate::theme::mix(t.ground, Color32::from_rgb(70, 45, 30), 0.7);
-    let flange = crate::theme::mix(t.surface, Color32::WHITE, if t.dark { 0.1 } else { 0.5 })
-        .gamma_multiply(0.85);
-    p.circle_filled(c, r, flange);
-    p.circle_filled(c, r * full.clamp(0.4, 0.98), tape);
-    let hub = r * 0.34;
-    p.circle_filled(c, hub, t.surface);
-    p.circle_stroke(c, hub, Stroke::new(1.0, t.border));
-    for k in 0..3 {
-        let a = (turn + k as f32 / 3.0) * std::f32::consts::TAU;
-        let d = vec2(a.cos(), a.sin());
-        p.line_segment(
-            [c + d * hub * 0.35, c + d * hub * 0.95],
-            Stroke::new(3.0, t.muted),
-        );
-    }
-    p.circle_stroke(c, r, Stroke::new(1.0, t.border));
 }

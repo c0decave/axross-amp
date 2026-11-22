@@ -342,6 +342,13 @@ pub struct App {
     /// cannot be played is then skipped; one the user chose stays, with why.
     automatic: bool,
     duration: Option<f64>,
+    /// The position shown, as if the engine were there (tests: [`App::pose`]).
+    posed_position: Option<f64>,
+    /// Where the playlist's rows were last drawn (tests: its rows are cut
+    /// at its edges as they scroll).
+    list_rect: egui::Rect,
+    /// The Cassette deck's cassette as it was last drawn (tests).
+    cassette_drawn: Option<crate::design::Cassette>,
     seek_drag: Option<f64>,
     /// A seek asked for and when: shown (the time, the slider) until the
     /// sound has caught up with it - at once, not a frame or two later -
@@ -843,6 +850,9 @@ impl App {
             art_url: String::new(),
             automatic: false,
             duration: None,
+            posed_position: None,
+            list_rect: egui::Rect::NOTHING,
+            cassette_drawn: None,
             seek_drag: None,
             seek_asked: None,
             output: String::new(),
@@ -1374,6 +1384,48 @@ impl App {
             })));
     }
 
+    /// A list of `tracks`, the one at `current` playing `position` s into
+    /// its `duration` s - what every now-playing area shows, without the
+    /// engine (tests: the texts fit their boxes).
+    #[doc(hidden)]
+    pub fn pose(
+        &mut self,
+        tracks: Vec<crate::state::Track>,
+        current: usize,
+        duration: f64,
+        position: f64,
+    ) {
+        // (what the file said of it: its tags, its album, its format)
+        let info = tracks.get(current).map(|t| TrackInfo {
+            duration: Some(duration),
+            title: t.title.clone(),
+            artist: t.artist.clone(),
+            album: t.album.clone(),
+            rate: 44_100,
+            channels: 2,
+            bitrate: Some(320),
+            codec: "MP3".into(),
+            seekable: true,
+            ..Default::default()
+        });
+        self.playlist.replace(tracks, Some(current));
+        self.info = info.unwrap_or_default();
+        self.duration = Some(duration);
+        self.posed_position = Some(position);
+    }
+
+    /// Where the playlist's rows were last drawn (tests).
+    #[doc(hidden)]
+    pub fn list_rect(&self) -> egui::Rect {
+        self.list_rect
+    }
+
+    /// The Cassette deck's cassette as it was last drawn (tests).
+    #[doc(hidden)]
+    pub fn cassette_drawn(&self) -> Option<crate::design::Cassette> {
+        self.cassette_drawn.clone()
+    }
+
     /// The details of the track that plays now.
     /// A track's information as if the engine had just read it (tests).
     #[doc(hidden)]
@@ -1545,6 +1597,9 @@ impl App {
     /// Where the track is, as shown: a seek just asked for until the sound
     /// has caught up with it (or a second has gone by), else the sound's.
     pub fn shown_position(&mut self) -> f64 {
+        if let Some(at) = self.posed_position {
+            return at;
+        }
         let heard = self.engine.shared.position();
         match self.seek_asked {
             Some((at, when))
@@ -3910,7 +3965,15 @@ impl App {
                             );
                         }
                     }
+                    // (what plays as wide as the up next's column leaves:
+                    // a long title ran under it - review of 0.16.0's Modern)
+                    let words = if next.is_some() {
+                        (ui.available_width() - 260.0 - 2.0 * ui.spacing().item_spacing.x).max(60.0)
+                    } else {
+                        ui.available_width()
+                    };
                     ui.vertical(|ui| {
+                        ui.set_max_width(words);
                         let (title, by) = self.now_playing_text();
                         // the type scale: the title bold and large, who in
                         // the accent, the album quieter, the format small
@@ -3930,39 +3993,26 @@ impl App {
                         } else {
                             title
                         };
-                        ui.add(
-                            egui::Label::new(
-                                RichText::new(title).font(title_font).color(th().strong),
-                            )
-                            .truncate(),
-                        );
+                        fit_label(ui, RichText::new(title).font(title_font).color(th().strong));
                         if !by.is_empty() {
-                            ui.add(
-                                egui::Label::new({
-                                    // (the collage: cut from another page -
-                                    // typewriter, slanted)
-                                    let by =
-                                        RichText::new(by.clone()).size(14.0).color(self.accent);
-                                    if collage {
-                                        by.monospace().italics()
-                                    } else {
-                                        by
-                                    }
-                                })
-                                .truncate(),
-                            );
+                            fit_label(ui, {
+                                // (the collage: cut from another page -
+                                // typewriter, slanted)
+                                let by = RichText::new(by.clone()).size(14.0).color(self.accent);
+                                if collage {
+                                    by.monospace().italics()
+                                } else {
+                                    by
+                                }
+                            });
                         }
                         // (the album, unless the line above names it)
                         if !self.info.album.is_empty() && !by.contains(&self.info.album) {
-                            ui.add(
-                                egui::Label::new({
-                                    let album = RichText::new(&self.info.album)
-                                        .size(13.5)
-                                        .color(th().muted);
-                                    if collage { album.italics() } else { album }
-                                })
-                                .truncate(),
-                            );
+                            fit_label(ui, {
+                                let album =
+                                    RichText::new(&self.info.album).size(13.5).color(th().muted);
+                                if collage { album.italics() } else { album }
+                            });
                         }
                         if self.info.rate > 0 {
                             ui.label(
@@ -3978,19 +4028,9 @@ impl App {
                             ui.set_max_width(260.0);
                             ui.vertical(|ui| {
                                 ui.label(RichText::new("Up next").size(11.5).color(th().muted));
-                                ui.add(
-                                    egui::Label::new(
-                                        RichText::new(title).size(15.0).color(th().strong),
-                                    )
-                                    .truncate(),
-                                );
+                                fit_label(ui, RichText::new(title).size(15.0).color(th().strong));
                                 if !by.is_empty() {
-                                    ui.add(
-                                        egui::Label::new(
-                                            RichText::new(by).size(12.5).color(th().muted),
-                                        )
-                                        .truncate(),
-                                    );
+                                    fit_label(ui, RichText::new(by).size(12.5).color(th().muted));
                                 }
                             });
                         });
@@ -4008,7 +4048,7 @@ impl App {
         if !(x.lcd || x.reels || x.needles || x.ascii) {
             return;
         }
-        let pos = self.engine.shared.position();
+        let pos = self.shown_position();
         let total = self.duration.unwrap_or(0.0);
         let dt = ui.input(|i| i.stable_dt).min(0.1);
         // (the reels turn while it plays, slowly - a quarter turn a
@@ -4189,7 +4229,7 @@ impl App {
             } else {
                 format!("{title} – {by}")
             };
-            ui.add(egui::Label::new(RichText::new(line).size(16.0).strong()).truncate());
+            fit_label(ui, RichText::new(line).size(16.0).strong());
         });
         ui.add_space(4.0);
     }
@@ -4682,8 +4722,15 @@ impl App {
             self.label_for = self.mode;
             self.label_until = now + 1.5;
         }
-        if now < self.label_until {
-            ui.painter().text(
+        // (not over "Visualization off": the face says so itself, and in a
+        // low picture the two ran into each other)
+        // (and not out of a small picture - the cassette's window)
+        if now < self.label_until
+            && self.mode != "off"
+            && rect.height() >= 48.0
+            && rect.width() >= 160.0
+        {
+            ui.painter().with_clip_rect(rect).text(
                 rect.center_top() + vec2(0.0, 18.0),
                 egui::Align2::CENTER_CENTER,
                 viz::name(self.mode),
@@ -5180,7 +5227,7 @@ impl App {
                 };
                 area = area.vertical_scroll_offset(wanted.max(0.0));
             }
-            area.show_rows(ui, row, count, |ui, range| {
+            let rows_area = area.show_rows(ui, row, count, |ui, range| {
                 for r in range {
                     let i = match &entries[r] {
                         Entry::Album(head) => {
@@ -5382,6 +5429,7 @@ impl App {
                     });
                 }
             });
+            self.list_rect = rows_area.inner_rect;
             if ui.input(|inp| inp.pointer.any_released()) {
                 self.dragging = None;
             }
@@ -6178,24 +6226,6 @@ fn album_head(
         }
     }
     let x = art.right() + 10.0;
-    painter.text(
-        egui::pos2(x, rect.center().y - 8.0),
-        egui::Align2::LEFT_CENTER,
-        &head.album,
-        bold(14.0),
-        th().strong,
-    );
-    painter.text(
-        egui::pos2(x, rect.center().y + 9.0),
-        egui::Align2::LEFT_CENTER,
-        if head.artist.is_empty() {
-            ""
-        } else {
-            head.artist.as_str()
-        },
-        egui::FontId::proportional(12.0),
-        accent,
-    );
     let tracks = if head.tracks == 1 {
         "1 track".to_owned()
     } else {
@@ -6206,13 +6236,38 @@ fn album_head(
     } else {
         String::new()
     };
-    painter.text(
+    // (the count at the right whole, the album and the artist up to it -
+    // a long album's name ran into it)
+    let count = painter.text(
         egui::pos2(rect.right() - 8.0, rect.center().y),
         egui::Align2::RIGHT_CENTER,
         format!("{tracks}{length}"),
         egui::FontId::proportional(12.0),
         th().muted,
     );
+    let room = count.left() - 12.0 - x;
+    fit_text(
+        ui,
+        painter,
+        egui::pos2(x, rect.center().y - 8.0),
+        egui::Align2::LEFT_CENTER,
+        &head.album,
+        bold(14.0),
+        th().strong,
+        room,
+    );
+    if !head.artist.is_empty() {
+        fit_text(
+            ui,
+            painter,
+            egui::pos2(x, rect.center().y + 9.0),
+            egui::Align2::LEFT_CENTER,
+            &head.artist,
+            egui::FontId::proportional(12.0),
+            accent,
+            room,
+        );
+    }
     painter.hline(
         rect.x_range(),
         rect.bottom() - 0.5,
@@ -6260,6 +6315,90 @@ fn host_of(url: &str) -> String {
     let rest = url.split_once("://").map(|(_, r)| r).unwrap_or(url);
     let authority = rest.split(['/', '?', '#']).next().unwrap_or(rest);
     authority.rsplit('@').next().unwrap_or(authority).to_owned()
+}
+
+/// `text` laid in one line at most `width` wide, cut to an ellipsis where
+/// it does not fit (anywhere: a word of 300 letters too).
+pub(crate) fn one_line(
+    painter: &egui::Painter,
+    text: &str,
+    font: egui::FontId,
+    colour: Color32,
+    width: f32,
+) -> std::sync::Arc<egui::Galley> {
+    let mut job = egui::text::LayoutJob::simple_singleline(text.to_owned(), font, colour);
+    job.wrap = egui::text::TextWrapping {
+        max_width: width.max(1.0),
+        max_rows: 1,
+        break_anywhere: true,
+        overflow_character: Some('…'),
+    };
+    painter.layout_job(job)
+}
+
+/// `text` painted at `pos` (`align` to it), in one line at most `width`
+/// wide: cut to an ellipsis where it does not fit, and then its whole in a
+/// tooltip (wrapped: a name of 150 letters as one line was wider than the
+/// window). Where it lies.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn fit_text(
+    ui: &Ui,
+    painter: &egui::Painter,
+    pos: egui::Pos2,
+    align: egui::Align2,
+    text: &str,
+    font: egui::FontId,
+    colour: Color32,
+    width: f32,
+) -> egui::Rect {
+    let galley = one_line(painter, text, font, colour, width);
+    let rect = align.anchor_size(pos, galley.size());
+    let elided = galley.elided;
+    painter.galley(rect.min, galley, colour);
+    if elided {
+        tooltip_over(ui, rect, text);
+    }
+    rect
+}
+
+/// The whole of a text cut to an ellipsis, on hover over `rect`.
+pub(crate) fn tooltip_over(ui: &Ui, rect: egui::Rect, text: &str) {
+    let id = ui
+        .scope_id()
+        .with(("whole", text, rect.min.x as i32, rect.min.y as i32));
+    let _ = whole_on_hover(ui.interact(rect, id, Sense::hover()), text);
+}
+
+/// `text` whole in a tooltip over `response`, wrapped within the window
+/// (as one line, or 500 points wide in a window of 420, it was cut).
+pub(crate) fn whole_on_hover(response: egui::Response, text: &str) -> egui::Response {
+    let text = text.to_owned();
+    response.on_hover_ui(move |ui| {
+        let most = (ui.ctx().content_rect().width() - 32.0).clamp(80.0, 480.0);
+        ui.set_max_width(most);
+        ui.add(egui::Label::new(text.as_str()).wrap());
+    })
+}
+
+/// A label in one line, cut to an ellipsis where it does not fit, its
+/// whole in a wrapped tooltip (egui's own laid it in one line, as wide as
+/// the window and more).
+pub(crate) fn fit_label(ui: &mut Ui, text: impl Into<egui::WidgetText>) -> egui::Response {
+    let text: egui::WidgetText = text.into();
+    let whole = text.text().to_owned();
+    let galley = text.into_galley(
+        ui,
+        Some(egui::TextWrapMode::Truncate),
+        ui.available_width(),
+        egui::TextStyle::Body,
+    );
+    let elided = galley.elided;
+    let response = ui.add(egui::Label::new(galley).show_tooltip_when_elided(false));
+    if elided {
+        whole_on_hover(response, &whole)
+    } else {
+        response
+    }
 }
 
 /// A length (a track's, the playlist's): to the nearest second, the same

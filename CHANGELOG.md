@@ -4,6 +4,46 @@ axross-amp is axross's Media Player as a program of its own, in Rust. The
 versions before 0.14.0 were not published; they are listed so the history
 reads whole.
 
+## 0.16.1 - 2026-11-22
+
+What three users saw in 0.16.0's designs.
+
+### Fixed
+- **The Hi-fi rack's display**: from the second track on, the length and
+  the track's name were cut off the readout - the line "02  0:00 / 0:40"
+  was laid in a type chosen for nine of its heights, and the track's
+  number took the room the length and the name needed. The time, position
+  and length, is laid whole in the largest type that holds it; the track's
+  number beside it where there is room, smaller, else not at all; the
+  name under it cut to an ellipsis where it does not fit, its whole in a
+  tooltip; the readout of a low window a little taller, the name in it
+  too.
+- **What plays, in every design, fits its box and runs into nothing**: in
+  Modern (the default) a long title ran under the "Up next" column; in
+  the 90s desktop a long track's time ran out of its well and the length
+  was shown nowhere in a large window (it is beside the time now), and
+  the words' marquee stood cut while paused (cut to an ellipsis now, its
+  whole in a tooltip); the Terminal's first line ran into its box's name
+  and its position's bar pushed the time out; the Collage's title scraps
+  ran into the artist's line; a long album's name in the playlist's album
+  rows ran into its track count. A name cut to an ellipsis has its whole
+  in a tooltip wrapped within the window (egui's own was one line, wider
+  than a small window). The face's name shown after a change no longer
+  lies over "Visualization off", nor out of a small picture. A new test
+  holds every design to it at eight sizes from 420 x 420 to 3000 x 1600,
+  for the 1st of 1 to the 999th of 999, names short and long, in CJK,
+  right to left, emoji and a word of 300 letters, tracks of 0:59, 59:59
+  and 10:00:00: no text of what plays cut, none in the window over
+  another.
+- **The Cassette deck's cassette** reads as a compact cassette (IEC
+  60094): a shell of 100.4 x 63.8 mm's proportions with rounded corners,
+  the label round the window, two hubs of six teeth 42 mm apart inside
+  the window, the tape packs - the left one shrinking as the side plays,
+  the right one growing, the tape's length the same -, the screws, the
+  write-protect tabs on the top edge, the trapezoid on the bottom edge
+  with the head's and the pinch rollers' openings. It was a box with a
+  label and two large reels at its window's ends, over its edges.
+
 ## 0.16.0 - 2026-11-20
 
 What independent reviews 13 (7.5 of 10), 14 (8.0), 15 (7.5) and 16 (7.5)

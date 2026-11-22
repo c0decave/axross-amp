@@ -1547,9 +1547,9 @@ pub fn counter(p: &Painter, rect: Rect, secs: f64, t: &Theme, still: bool) {
     let _ = ink;
 }
 
-/// Text in a vacuum fluorescent display's look: the digits and words lit
-/// in the accent on a dark glass, the unlit segments faint behind.
-pub fn vfd(p: &Painter, rect: Rect, lines: &[(&str, f32)], t: &Theme) {
+/// A vacuum fluorescent display's glass at `rect`: the colour its lit
+/// segments take (the accent made to read on it) and the glass's.
+pub fn vfd_glass(p: &Painter, rect: Rect, t: &Theme) -> (Color32, Color32) {
     let glass = crate::theme::mix(Color32::from_rgb(8, 14, 14), t.sunken, 0.25);
     p.rect_filled(rect, 3.0, glass);
     p.rect_stroke(
@@ -1558,33 +1558,56 @@ pub fn vfd(p: &Painter, rect: Rect, lines: &[(&str, f32)], t: &Theme) {
         Stroke::new(1.0, Color32::BLACK),
         egui::StrokeKind::Inside,
     );
-    // (the lit colour: the accent made to read on the glass)
     let lit = if crate::viz::contrast(t.accent, glass) >= 4.5 {
         t.accent
     } else {
         Color32::from_rgb(120, 230, 210)
     };
-    let mut y = rect.top() + 8.0;
-    for (text, size) in lines {
-        let font = egui::FontId::monospace(*size);
+    (lit, glass)
+}
+
+/// A line of a vacuum fluorescent display at `at` (its left top), lit in
+/// `lit`, its unlit segments (8s where the digits are) faint behind: at
+/// most `width` wide, cut to an ellipsis where it does not fit (a name -
+/// the time is given room for itself). Where it lies, and whether it was
+/// cut.
+pub fn vfd_line(
+    p: &Painter,
+    at: Pos2,
+    text: &str,
+    size: f32,
+    (lit, glass): (Color32, Color32),
+    width: f32,
+) -> (Rect, bool) {
+    let font = egui::FontId::monospace(size);
+    let galley = crate::app::one_line(p, text, font.clone(), lit, width);
+    if text.chars().any(|c| c.is_ascii_digit()) {
         let ghost: String = text
             .chars()
             .map(|c| if c.is_ascii_digit() { '8' } else { c })
             .collect();
-        let at = pos2(rect.left() + 10.0, y);
-        let clip = p.with_clip_rect(rect.shrink(2.0));
-        if text.chars().any(|c| c.is_ascii_digit()) {
-            clip.text(
-                at,
-                egui::Align2::LEFT_TOP,
-                ghost,
-                font.clone(),
-                crate::theme::mix(glass, lit, 0.1),
-            );
-        }
-        clip.text(at, egui::Align2::LEFT_TOP, *text, font, lit);
-        y += size * 1.25;
+        let unlit = crate::theme::mix(glass, lit, 0.1);
+        p.galley(
+            at,
+            crate::app::one_line(p, &ghost, font, unlit, width),
+            unlit,
+        );
     }
+    let rect = Rect::from_min_size(at, galley.size());
+    let elided = galley.elided;
+    p.galley(at, galley, lit);
+    (rect, elided)
+}
+
+/// The width of `text` in the display's type at `size`.
+pub fn vfd_width(p: &Painter, text: &str, size: f32) -> f32 {
+    p.layout_no_wrap(
+        text.to_owned(),
+        egui::FontId::monospace(size),
+        Color32::WHITE,
+    )
+    .size()
+    .x
 }
 
 /// The position as a bar of characters: "[#######-------] 1:23 / 4:05".
@@ -1721,4 +1744,202 @@ mod tests {
         assert_eq!(ascii_bar(2.0, 4), "[####]");
         assert_eq!(ascii_bar(-1.0, 4), "[----]");
     }
+}
+
+/// A compact cassette as IEC 60094 has it, laid in a rectangle: its shell
+/// (100.4 x 63.8 mm, the corners rounded), the paper label, the window
+/// the hubs and the tape packs show through, the screws, the write-protect
+/// tabs on the top edge, the trapezoid on the bottom edge with the head's
+/// and the pinch rollers' openings and the capstans' holes. All in points.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Cassette {
+    pub shell: Rect,
+    pub corner: f32,
+    /// The label's sheet (round the window, as a cassette's is), and the
+    /// part of it above the window the words are written on.
+    pub paper: Rect,
+    pub label: Rect,
+    pub window: Rect,
+    /// The hubs' centres (42 mm apart), the hubs' radius, the tape packs'
+    /// radii (the left one full at the start of the side).
+    pub hubs: [Pos2; 2],
+    pub hub: f32,
+    pub packs: [f32; 2],
+    pub screws: [Pos2; 5],
+    pub screw: f32,
+    pub tabs: [Rect; 2],
+    /// The trapezoid: its corners, top left, top right, bottom right,
+    /// bottom left.
+    pub ramp: [Pos2; 4],
+    /// The head's opening between the pinch rollers' two.
+    pub openings: [Rect; 3],
+    pub capstans: [Pos2; 2],
+}
+
+/// The shell's size (mm).
+pub const CASSETTE_MM: egui::Vec2 = egui::vec2(100.4, 63.8);
+/// The hubs apart (mm).
+pub const HUBS_APART_MM: f32 = 42.0;
+/// The hub's and the full tape pack's radii (mm).
+const HUB_MM: f32 = 6.0;
+const PACK_MM: f32 = 17.5;
+
+/// The cassette as large as `room` holds it, centred in it, `played` of
+/// the side played (0..1): the left pack shrinking as the right one grows,
+/// the tape's length the same (the packs' areas add up to one full pack
+/// and an empty hub).
+pub fn cassette(room: Rect, played: f32) -> Cassette {
+    let s = (room.width() / CASSETTE_MM.x).min(room.height() / CASSETTE_MM.y);
+    let size = CASSETTE_MM * s;
+    let shell = Rect::from_center_size(room.center(), size);
+    let at = |x: f32, y: f32| shell.min + egui::vec2(x, y) * s;
+    let rect = |x0: f32, y0: f32, x1: f32, y1: f32| Rect::from_min_max(at(x0, y0), at(x1, y1));
+    let mid = CASSETTE_MM.x / 2.0;
+    let hub_y = 29.0;
+    let played = played.clamp(0.0, 1.0);
+    let pack =
+        |share: f32| ((HUB_MM * HUB_MM + (PACK_MM * PACK_MM - HUB_MM * HUB_MM) * share).sqrt()) * s;
+    Cassette {
+        shell,
+        corner: 3.0 * s,
+        // (a window as large as clear shells have it: the picture behind
+        // it has room)
+        paper: rect(5.0, 3.5, CASSETTE_MM.x - 5.0, 44.0),
+        label: rect(5.0, 3.5, CASSETTE_MM.x - 5.0, 15.5),
+        window: rect(17.5, 17.0, CASSETTE_MM.x - 17.5, 41.0),
+        hubs: [
+            at(mid - HUBS_APART_MM / 2.0, hub_y),
+            at(mid + HUBS_APART_MM / 2.0, hub_y),
+        ],
+        hub: HUB_MM * s,
+        packs: [pack(1.0 - played), pack(played)],
+        screws: [
+            at(3.2, 3.2),
+            at(CASSETTE_MM.x - 3.2, 3.2),
+            at(3.2, CASSETTE_MM.y - 3.2),
+            at(CASSETTE_MM.x - 3.2, CASSETTE_MM.y - 3.2),
+            at(mid, 47.8),
+        ],
+        screw: 1.3 * s,
+        tabs: [
+            rect(12.0, 0.0, 18.0, 1.6),
+            rect(CASSETTE_MM.x - 18.0, 0.0, CASSETTE_MM.x - 12.0, 1.6),
+        ],
+        ramp: [
+            at(18.2, 51.5),
+            at(CASSETTE_MM.x - 18.2, 51.5),
+            at(CASSETTE_MM.x - 13.2, CASSETTE_MM.y),
+            at(13.2, CASSETTE_MM.y),
+        ],
+        openings: [
+            rect(26.0, 58.0, 32.0, CASSETTE_MM.y),
+            rect(mid - 5.0, 57.0, mid + 5.0, CASSETTE_MM.y),
+            rect(
+                CASSETTE_MM.x - 32.0,
+                58.0,
+                CASSETTE_MM.x - 26.0,
+                CASSETTE_MM.y,
+            ),
+        ],
+        capstans: [at(35.5, 59.5), at(CASSETTE_MM.x - 35.5, 59.5)],
+    }
+}
+
+/// The cassette's shell, its trapezoid and openings, its screws and tabs,
+/// and its label's paper (the accent along its top): under the picture
+/// that shows through the window.
+pub fn cassette_shell(p: &Painter, c: &Cassette, t: &Theme, accent: Color32) {
+    let shell = crate::theme::mix(t.surface, Color32::BLACK, if t.dark { 0.35 } else { 0.1 });
+    let edge = crate::theme::mix(shell, Color32::BLACK, 0.35);
+    let hole = crate::theme::mix(shell, Color32::BLACK, 0.7);
+    p.rect_filled(c.shell, c.corner, shell);
+    p.rect_stroke(
+        c.shell,
+        c.corner,
+        Stroke::new(1.0, edge),
+        egui::StrokeKind::Inside,
+    );
+    // the write-protect tabs: notches in the top edge
+    for tab in &c.tabs {
+        p.rect_filled(*tab, 0.0, hole);
+    }
+    // the trapezoid at the bottom edge, its openings and holes
+    p.add(Shape::convex_polygon(
+        c.ramp.to_vec(),
+        crate::theme::mix(shell, Color32::BLACK, 0.15),
+        Stroke::new(1.0, edge),
+    ));
+    for o in &c.openings {
+        p.rect_filled(*o, 1.0, hole);
+    }
+    for at in &c.capstans {
+        p.circle_filled(*at, c.screw, hole);
+    }
+    // the screws: a slot each
+    for at in &c.screws {
+        p.circle_filled(*at, c.screw, crate::theme::mix(shell, Color32::WHITE, 0.3));
+        p.line_segment(
+            [
+                *at - egui::vec2(c.screw * 0.7, 0.0),
+                *at + egui::vec2(c.screw * 0.7, 0.0),
+            ],
+            Stroke::new(1.0, edge),
+        );
+    }
+    p.rect_filled(c.paper, 2.0, cassette_paper(t));
+    // (the window's opening in the sheet: the shell's colour round it)
+    p.rect_filled(c.window.expand(1.5 * c.corner / 3.0), c.corner * 0.6, shell);
+    let stripe = (c.label.height() * 0.12).clamp(2.0, 6.0);
+    p.rect_filled(
+        Rect::from_min_size(c.label.min, egui::vec2(c.label.width(), stripe)),
+        0.0,
+        accent,
+    );
+}
+
+/// The paper of the cassette's label (what its text is drawn on).
+pub fn cassette_paper(t: &Theme) -> Color32 {
+    crate::theme::mix(t.surface, Color32::WHITE, if t.dark { 0.08 } else { 0.6 })
+}
+
+/// Through the window, over the picture: the tape packs, the hubs with
+/// their six teeth turned by `turn` (in turns), the window's frame.
+pub fn cassette_reels(p: &Painter, c: &Cassette, turn: f32, t: &Theme) {
+    let clip = p.with_clip_rect(c.window.intersect(p.clip_rect()));
+    let tape = crate::theme::mix(t.ground, Color32::from_rgb(70, 45, 30), 0.75);
+    let hub = crate::theme::mix(t.surface, Color32::WHITE, if t.dark { 0.12 } else { 0.55 });
+    let edge = crate::theme::mix(t.border, Color32::BLACK, 0.2);
+    for (k, centre) in c.hubs.iter().enumerate() {
+        clip.circle_filled(*centre, c.packs[k], tape);
+        clip.circle_stroke(*centre, c.packs[k], Stroke::new(1.0, edge));
+        clip.circle_filled(*centre, c.hub, hub);
+        clip.circle_stroke(*centre, c.hub, Stroke::new(1.0, edge));
+        // the hole the spindle takes, its six teeth
+        let inner = c.hub * 0.62;
+        clip.circle_filled(
+            *centre,
+            inner,
+            crate::theme::mix(t.ground, Color32::BLACK, 0.4),
+        );
+        for n in 0..6 {
+            let a = (turn + n as f32 / 6.0) * std::f32::consts::TAU;
+            let d = egui::vec2(a.cos(), a.sin());
+            let side = egui::vec2(-d.y, d.x) * inner * 0.16;
+            clip.add(Shape::convex_polygon(
+                vec![
+                    *centre + d * inner + side,
+                    *centre + d * inner * 0.55,
+                    *centre + d * inner - side,
+                ],
+                hub,
+                Stroke::NONE,
+            ));
+        }
+    }
+    p.rect_stroke(
+        c.window,
+        c.corner * 0.6,
+        Stroke::new(1.5, edge),
+        egui::StrokeKind::Inside,
+    );
 }

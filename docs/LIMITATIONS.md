@@ -67,6 +67,9 @@ Back to the [README](../README.md) - everything in detail: the [extended README]
   itself: one that crashes before its window is up is replaced by the
   program before it at the *next* start (the crash is not caught as it
   happens), and only where the program's folder can be written.
+- No CJK, Arabic or Hebrew font is bundled: such names are drawn as boxes
+  (they take their room, cut and in tooltips as any other), and a
+  right-to-left name is laid left to right.
 - The flash guard dims the line face in very fast music more often than
   needed (it over-estimates the moving fill); nothing flashes, the picture is
   just darker at times.
