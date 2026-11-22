@@ -103,7 +103,7 @@ LICENSE (Apache-2.0).
 | foldhash | 0.2.0 | Zlib |
 | font-types | 0.12.7 | MIT OR Apache-2.0 |
 | fontique | 0.11.1 | Apache-2.0 OR MIT |
-| form_urlencoded | 1.2.2 | MIT OR Apache-2.0 |
+| form_urlencoded | 1.2.3 | MIT OR Apache-2.0 |
 | futures | 0.3.34 | MIT OR Apache-2.0 |
 | futures-channel | 0.3.34 | MIT OR Apache-2.0 |
 | futures-core | 0.3.34 | MIT OR Apache-2.0 |
@@ -296,7 +296,7 @@ LICENSE (Apache-2.0).
 | untrusted | 0.9.0 | ISC |
 | ureq | 3.5.1 | MIT OR Apache-2.0 |
 | ureq-proto | 0.7.1 | MIT OR Apache-2.0 |
-| url | 2.5.8 | MIT OR Apache-2.0 |
+| url | 2.5.9 | MIT OR Apache-2.0 |
 | utf8-zero | 0.8.1 | MIT OR Apache-2.0 |
 | utf8_iter | 1.1.0 | Apache-2.0 OR MIT |
 | utf_types | 1.0.0 | Apache-2.0 OR MIT |
@@ -1023,7 +1023,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### ahash 0.8.12 (LICENSE-APACHE), arrayvec 0.7.8 (LICENSE-APACHE), async-channel 2.5.0 (LICENSE-APACHE), async-executor 1.14.1 (LICENSE-APACHE), async-io 2.6.0 (LICENSE-APACHE), async-lock 3.5.0 (LICENSE-APACHE), async-process 2.5.0 (LICENSE-APACHE), async-recursion 1.2.0 (LICENSE-APACHE), async-signal 0.2.14 (LICENSE-APACHE), async-task 4.7.1 (LICENSE-APACHE), atomic-waker 1.1.2 (LICENSE-APACHE), base64 0.23.1 (LICENSE-APACHE), bitflags 2.13.2 (LICENSE-APACHE), blocking 1.7.0 (LICENSE-APACHE), cfg-if 1.0.5 (LICENSE-APACHE), concurrent-queue 2.5.0 (LICENSE-APACHE), crossbeam-channel 0.5.17 (LICENSE-APACHE), crossbeam-utils 0.8.23 (LICENSE-APACHE), displaydoc 0.2.7 (LICENSE-APACHE), either 1.19.0 (LICENSE-APACHE), equivalent 1.0.3 (LICENSE-APACHE), errno 0.3.14 (LICENSE-APACHE), euclid 0.22.14 (LICENSE-APACHE), event-listener 5.4.2 (LICENSE-APACHE), event-listener-strategy 0.5.4 (LICENSE-APACHE), fastrand 2.5.0 (LICENSE-APACHE), fixedbitset 0.5.7 (LICENSE-APACHE), flate2 1.1.10 (LICENSE-APACHE), fontique 0.11.1 (LICENSE-APACHE), form_urlencoded 1.2.2 (LICENSE-APACHE), futures-lite 2.6.1 (LICENSE-APACHE), gethostname 1.1.0 (LICENSE), glow 0.17.0 (LICENSE-APACHE), hashbrown 0.15.5 (LICENSE-APACHE), hashbrown 0.16.1 (LICENSE-APACHE), hashbrown 0.17.1 (LICENSE-APACHE), httparse 1.10.1 (LICENSE-APACHE), idna 1.1.0 (LICENSE-APACHE), idna_adapter 1.2.2 (LICENSE-APACHE), indexmap 2.14.2 (LICENSE-APACHE), itertools 0.15.0 (LICENSE-APACHE), khronos-egl 6.0.0 (LICENSE-APACHE), lazy_static 1.5.1 (LICENSE-APACHE), linux-raw-sys 0.12.1 (LICENSE-APACHE), linux-raw-sys 0.4.15 (LICENSE-APACHE), lock_api 0.4.14 (LICENSE-APACHE), log 0.4.35 (LICENSE-APACHE), num-complex 0.4.6 (LICENSE-APACHE), num-integer 0.1.47 (LICENSE-APACHE), num-traits 0.2.19 (LICENSE-APACHE), once_cell 1.21.4 (LICENSE-APACHE), ordered-stream 0.2.0 (LICENSE-APACHE), parking 2.2.1 (LICENSE-APACHE), parking_lot 0.12.5 (LICENSE-APACHE), parking_lot_core 0.9.12 (LICENSE-APACHE), parlance 0.1.1 (LICENSE-APACHE), percent-encoding 2.3.2 (LICENSE-APACHE), petgraph 0.8.3 (LICENSE-APACHE), piper 0.2.5 (LICENSE-APACHE), png 0.18.1 (LICENSE-APACHE), polling 3.11.0 (LICENSE-APACHE), pollster 1.0.1 (LICENSE-APACHE), primal-check 0.3.4 (LICENSE-APACHE), regex-lite 0.1.9 (LICENSE-APACHE), renderdoc-sys 1.1.0 (LICENSE-APACHE), rustc-hash 1.1.0 (LICENSE-APACHE), rustix 0.38.44 (LICENSE-APACHE), rustix 1.1.6 (LICENSE-APACHE), rustls 0.23.46 (LICENSE-APACHE), scoped-tls 1.0.1 (LICENSE-APACHE), scopeguard 1.2.0 (LICENSE-APACHE), signal-hook-registry 1.4.8 (LICENSE-APACHE), smallvec 1.16.4 (LICENSE-APACHE), smol_str 0.2.2 (LICENSE-APACHE), stable_deref_trait 1.2.1 (LICENSE-APACHE), ttf-parser 0.25.1 (LICENSE-APACHE), unicode-properties 0.1.5 (LICENSE-APACHE), unicode-segmentation 1.13.3 (LICENSE-APACHE), unicode-width 0.2.3 (LICENSE-APACHE), url 2.5.8 (LICENSE-APACHE), uuid 1.29.0 (LICENSE-APACHE), weezl 0.1.12 (LICENSE-APACHE), wl-clipboard-rs 0.9.5 (LICENSE-APACHE)
+### ahash 0.8.12 (LICENSE-APACHE), arrayvec 0.7.8 (LICENSE-APACHE), async-channel 2.5.0 (LICENSE-APACHE), async-executor 1.14.1 (LICENSE-APACHE), async-io 2.6.0 (LICENSE-APACHE), async-lock 3.5.0 (LICENSE-APACHE), async-process 2.5.0 (LICENSE-APACHE), async-recursion 1.2.0 (LICENSE-APACHE), async-signal 0.2.14 (LICENSE-APACHE), async-task 4.7.1 (LICENSE-APACHE), atomic-waker 1.1.2 (LICENSE-APACHE), base64 0.23.1 (LICENSE-APACHE), bitflags 2.13.2 (LICENSE-APACHE), blocking 1.7.0 (LICENSE-APACHE), cfg-if 1.0.5 (LICENSE-APACHE), concurrent-queue 2.5.0 (LICENSE-APACHE), crossbeam-channel 0.5.17 (LICENSE-APACHE), crossbeam-utils 0.8.23 (LICENSE-APACHE), displaydoc 0.2.7 (LICENSE-APACHE), either 1.19.0 (LICENSE-APACHE), equivalent 1.0.3 (LICENSE-APACHE), errno 0.3.14 (LICENSE-APACHE), euclid 0.22.14 (LICENSE-APACHE), event-listener 5.4.2 (LICENSE-APACHE), event-listener-strategy 0.5.4 (LICENSE-APACHE), fastrand 2.5.0 (LICENSE-APACHE), fixedbitset 0.5.7 (LICENSE-APACHE), flate2 1.1.10 (LICENSE-APACHE), fontique 0.11.1 (LICENSE-APACHE), form_urlencoded 1.2.3 (LICENSE-APACHE), futures-lite 2.6.1 (LICENSE-APACHE), gethostname 1.1.0 (LICENSE), glow 0.17.0 (LICENSE-APACHE), hashbrown 0.15.5 (LICENSE-APACHE), hashbrown 0.16.1 (LICENSE-APACHE), hashbrown 0.17.1 (LICENSE-APACHE), httparse 1.10.1 (LICENSE-APACHE), idna 1.1.0 (LICENSE-APACHE), idna_adapter 1.2.2 (LICENSE-APACHE), indexmap 2.14.2 (LICENSE-APACHE), itertools 0.15.0 (LICENSE-APACHE), khronos-egl 6.0.0 (LICENSE-APACHE), lazy_static 1.5.1 (LICENSE-APACHE), linux-raw-sys 0.12.1 (LICENSE-APACHE), linux-raw-sys 0.4.15 (LICENSE-APACHE), lock_api 0.4.14 (LICENSE-APACHE), log 0.4.35 (LICENSE-APACHE), num-complex 0.4.6 (LICENSE-APACHE), num-integer 0.1.47 (LICENSE-APACHE), num-traits 0.2.19 (LICENSE-APACHE), once_cell 1.21.4 (LICENSE-APACHE), ordered-stream 0.2.0 (LICENSE-APACHE), parking 2.2.1 (LICENSE-APACHE), parking_lot 0.12.5 (LICENSE-APACHE), parking_lot_core 0.9.12 (LICENSE-APACHE), parlance 0.1.1 (LICENSE-APACHE), percent-encoding 2.3.2 (LICENSE-APACHE), petgraph 0.8.3 (LICENSE-APACHE), piper 0.2.5 (LICENSE-APACHE), png 0.18.1 (LICENSE-APACHE), polling 3.11.0 (LICENSE-APACHE), pollster 1.0.1 (LICENSE-APACHE), primal-check 0.3.4 (LICENSE-APACHE), regex-lite 0.1.9 (LICENSE-APACHE), renderdoc-sys 1.1.0 (LICENSE-APACHE), rustc-hash 1.1.0 (LICENSE-APACHE), rustix 0.38.44 (LICENSE-APACHE), rustix 1.1.6 (LICENSE-APACHE), rustls 0.23.46 (LICENSE-APACHE), scoped-tls 1.0.1 (LICENSE-APACHE), scopeguard 1.2.0 (LICENSE-APACHE), signal-hook-registry 1.4.8 (LICENSE-APACHE), smallvec 1.16.4 (LICENSE-APACHE), smol_str 0.2.2 (LICENSE-APACHE), stable_deref_trait 1.2.1 (LICENSE-APACHE), ttf-parser 0.25.1 (LICENSE-APACHE), unicode-properties 0.1.5 (LICENSE-APACHE), unicode-segmentation 1.13.3 (LICENSE-APACHE), unicode-width 0.2.3 (LICENSE-APACHE), url 2.5.9 (LICENSE-APACHE), uuid 1.29.0 (LICENSE-APACHE), weezl 0.1.12 (LICENSE-APACHE), wl-clipboard-rs 0.9.5 (LICENSE-APACHE)
 
 ```text
 Apache License
@@ -5435,7 +5435,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### form_urlencoded 1.2.2 (LICENSE-MIT)
+### form_urlencoded 1.2.3 (LICENSE-MIT)
 
 ```text
 Copyright (c) 2013-2016 The rust-url developers
@@ -6905,7 +6905,7 @@ Portions of ICU4X may have been adapted from ICU4C and/or ICU4J.
 ICU 1.8.1 to ICU 57.1 © 1995-2016 International Business Machines Corporation and others.
 ```
 
-### idna 1.1.0 (LICENSE-MIT), percent-encoding 2.3.2 (LICENSE-MIT), url 2.5.8 (LICENSE-MIT)
+### idna 1.1.0 (LICENSE-MIT), percent-encoding 2.3.2 (LICENSE-MIT), url 2.5.9 (LICENSE-MIT)
 
 ```text
 Copyright (c) 2013-2025 The rust-url developers
