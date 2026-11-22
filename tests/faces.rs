@@ -835,3 +835,37 @@ fn the_kinetic_typography_keeps_its_words_in_the_picture() {
         "{worst} bright pixels in the picture's top rows"
     );
 }
+
+/// Every face resized again and again, playing and with time standing
+/// still (paused): no buffer of a face or of the flash guard read past its
+/// end (review 15, H1: the guard's pattern cells kept the old grid's size;
+/// paused, F11 or a resize aborted the player).
+#[test]
+fn every_face_survives_resizes_paused_and_playing() {
+    let sizes = [
+        vec2(400.0, 240.0),
+        vec2(1100.0, 300.0),
+        vec2(200.0, 500.0),
+        vec2(640.0, 40.0),
+        vec2(800.0, 600.0),
+        vec2(90.0, 90.0),
+    ];
+    for face in FACES.iter().filter(|f| f.group != Group::Off) {
+        let mut h = faces::harness(face.key, sizes[0], true, 1.0);
+        for _ in 0..12 {
+            faces::frame(&mut h);
+        }
+        for (k, size) in sizes.iter().cycle().skip(1).take(12).enumerate() {
+            let paused = k % 2 == 0;
+            h.state_mut().fps = if paused { f32::INFINITY } else { 60.0 };
+            h.set_size(*size);
+            if paused {
+                h.step();
+                h.step();
+            } else {
+                faces::frame(&mut h);
+                faces::frame(&mut h);
+            }
+        }
+    }
+}

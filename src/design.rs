@@ -399,7 +399,7 @@ pub fn card_fill(d: &Design, t: &Theme, tint: Color32) -> Color32 {
 /// The glass design's ground: the cover made a haze - 8 x 8 colours, the
 /// texture's smoothing blurs them across the window - each taken toward the
 /// ground until every word and the accent still reads on it as on the
-/// ground itself.
+/// ground itself, and out of saturated red.
 pub fn haze(
     rgba: &[u8],
     width: usize,
@@ -446,7 +446,9 @@ pub fn haze(
                 k = (k + 0.05).min(1.0);
                 c = crate::theme::mix(raw, t.ground, k);
             }
-            *px = c;
+            // (never saturated red - it comes and goes with the covers, over
+            // the whole window: its luminance kept, so it reads the same)
+            *px = crate::viz::unred_level(c);
         }
     }
     egui::ColorImage::new([N, N], pixels)
@@ -469,7 +471,8 @@ pub fn glass_light(p: &Painter, rect: Rect, t: &Theme, accent: Color32) {
             k = (k + 0.05).min(1.0);
             c = crate::theme::mix(raw, t.ground, k);
         }
-        c
+        // (never saturated red: it changes with the cover's accent)
+        crate::viz::unred_level(c)
     };
     let second = Color32::from_rgb(accent.b(), accent.r(), accent.g());
     for (at, radius, raw) in [

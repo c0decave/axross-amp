@@ -87,8 +87,11 @@ pub fn rename_over(from: &Path, to: &Path) -> std::io::Result<()> {
     }
 }
 
+/// One of this module's characters for a byte that is no UTF-8 - 0x80 to
+/// 0xFF only: those for the bytes below stood for ASCII, so U+10FE2E
+/// twice and U+10FE2F made "../" of a name that has none (review 13).
 fn is_byte(c: char) -> bool {
-    (BASE..BASE + 256).contains(&(c as u32))
+    (BASE + 0x80..BASE + 256).contains(&(c as u32))
 }
 
 /// JSON as Python's `json.dumps` writes it (axross's media_player.json),
@@ -227,5 +230,15 @@ mod tests {
             to_path(read["a"].as_str().unwrap()).as_os_str(),
             OsStr::from_bytes(b"/m/caf\xe9.flac")
         );
+    }
+
+    /// Only the characters for the bytes that are no UTF-8 (0x80 - 0xFF)
+    /// become bytes: those for ASCII made "../" of a name (review 13, L13).
+    #[test]
+    fn no_character_becomes_a_byte_of_ascii() {
+        let text = "/m/\u{10FE2E}\u{10FE2E}\u{10FE2F}x.flac";
+        let path = to_path(text);
+        assert_eq!(path, PathBuf::from(text));
+        assert!(!path.as_os_str().as_bytes().windows(3).any(|w| w == b"../"));
     }
 }

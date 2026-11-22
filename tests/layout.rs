@@ -144,11 +144,20 @@ fn the_playlist_stays_in_sight_at_every_size() {
             }
             if let Some(b) = win.query_by_label_contains("Show the playlist") {
                 b.click();
-                settle(&mut win, 4);
-                let shown = win
-                    .query_all_by_label("t000")
-                    .filter(|n| window_rect.contains_rect(n.rect()))
-                    .count();
+                // (the window's layout changes at most twice a second: the
+                // list comes at its turn after F11's)
+                let mut shown = 0;
+                for _ in 0..16 {
+                    settle(&mut win, 1);
+                    shown = win
+                        .query_all_by_label("t000")
+                        .filter(|n| window_rect.contains_rect(n.rect()))
+                        .count();
+                    if shown >= 2 {
+                        break;
+                    }
+                }
+                settle(&mut win, 2);
                 if shown < 2 {
                     failures.push(format!("{name} large: the playlist did not come"));
                 }

@@ -30,7 +30,9 @@ back; it writes to ~/.cache/axross-amp/axross-amp.log (macOS:
 seconds is said there and then (exit status 1); one still starting after
 two seconds goes on in the background and says so (exit status 0).
 --foreground (-F) keeps it in the terminal. --version says which version
-it is, --help (-h) this.
+it is, --help (-h) this. (--self-test and --after-update are the updater's:
+a new release run once before it is put in place, and started by Restart
+now.)
 
 Keys: Space play / pause, Left / Right seek 5 s (Shift: 30 s), Ctrl+Left /
 Right previous / next, Up / Down or + / - volume, Home the track's start,
@@ -60,7 +62,50 @@ fn main() -> eframe::Result {
         println!("axross-amp {}", env!("CARGO_PKG_VERSION"));
         return Ok(());
     }
+    // (the updater runs a new release so before it replaces this one: it
+    // starts here - its libraries load, the window's are there)
+    if args.iter().any(|a| a == "--self-test") {
+        #[cfg(target_os = "linux")]
+        if let Some(missing) = window_library_missing() {
+            eprintln!("axross-amp: the window cannot be opened: {missing}");
+            std::process::exit(1);
+        }
+        println!(
+            "{}",
+            axross_amp::update::self_test_answer(axross_amp::update::Version::current())
+        );
+        return Ok(());
+    }
+    // (the first start of a program the updater put in place: watched -
+    // where the one before it never drew its window, the program it
+    // replaced is put back and run instead: review 16, M4)
+    {
+        use axross_amp::update::{FirstStart, Install, Version, first_start};
+        let install = Install::current();
+        if install.can_update()
+            && let FirstStart::RolledBack(old) = first_start(&install.target, Version::current())
+        {
+            eprintln!(
+                "axross-amp: {} did not start here; the program it replaced is back",
+                Version::current()
+            );
+            let mut command = std::process::Command::new(&old);
+            command.args(std::env::args_os().skip(1));
+            #[cfg(unix)]
+            {
+                use std::os::unix::process::CommandExt;
+                let e = command.exec();
+                eprintln!("axross-amp: {}: {e}", old.display());
+                std::process::exit(1);
+            }
+            #[cfg(not(unix))]
+            std::process::exit(command.status().ok().and_then(|s| s.code()).unwrap_or(1));
+        }
+    }
     let new_instance = args.iter().any(|a| a == "--new-instance");
+    // (started by the updater's Restart now: the player's name on the bus
+    // is taken when the program it replaces lets go of it)
+    let after_update = args.iter().any(|a| a == "--after-update");
     // (from a terminal: to the background - after the files are handed to a
     // player already running, where there is one: no process for nothing)
     let background = axross_amp::detach::wanted(&args);
@@ -76,7 +121,12 @@ fn main() -> eframe::Result {
     #[cfg(target_os = "linux")]
     {
         use axross_amp::mpris::{Claim, Mpris};
-        match Mpris::claim(None, (!new_instance).then_some(&files[..])) {
+        let claim = if after_update {
+            Mpris::claim_after(None)
+        } else {
+            Mpris::claim(None, (!new_instance).then_some(&files[..]))
+        };
+        match claim {
             Claim::Handed => return Ok(()),
             // (going to the background: the name let go - the child takes it)
             Claim::Mine(mpris) if background => drop(mpris),
@@ -85,7 +135,7 @@ fn main() -> eframe::Result {
         }
     }
     #[cfg(not(target_os = "linux"))]
-    let _ = new_instance;
+    let _ = (new_instance, after_update);
     if background {
         match axross_amp::detach::spawn(&passed) {
             axross_amp::detach::Start::Exit(0) => return Ok(()),

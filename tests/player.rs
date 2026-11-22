@@ -18,11 +18,21 @@ fn an_album_plays_through_without_gaps() {
     let mut output = RenderState::default();
     let mut heard = Vec::new();
     let mut order = vec![h.state().snapshot().current];
-    for _ in 0..30 {
+    // (by the program's own progress: until the last track has ended, at
+    // most 20 s - 3 s of the clock were not always 1.5 s of sound on a
+    // busy machine: review 14)
+    let end = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    let (mut quiet, mut played) = (0, false);
+    while std::time::Instant::now() < end && quiet < 5 {
         heard.extend(listen(&mut h, &mut output, 0.1));
         let current = h.state().snapshot().current;
         if order.last() != Some(&current) {
             order.push(current);
+        }
+        if h.state().playing() {
+            (quiet, played) = (0, true);
+        } else if played {
+            quiet += 1;
         }
     }
     assert_eq!(order, vec![0, 1, 2], "{}", h.state().status());
@@ -235,7 +245,11 @@ fn previous_on_a_radio_goes_to_the_track_before() {
     assert!(until(&mut h, 5.0, |a| a.is_loaded()));
     h.key_press(egui::Key::N);
     let mut output = RenderState::default();
-    for _ in 0..60 {
+    // (by the sound: up to 20 s for 3.2 s of it - a radio connects, fills
+    // its buffer and comes at its own pace; 6 s of the clock were not
+    // always enough on a busy machine - review 13)
+    let end = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    while std::time::Instant::now() < end {
         listen(&mut h, &mut output, 0.1);
         if h.state().is_loaded() && h.state().engine().shared.position() > 3.2 {
             break;

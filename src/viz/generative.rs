@@ -53,6 +53,8 @@ pub struct State {
     preset_blend: f32,
     preset_beat: u64,
     preset_age: f32,
+    /// The bands the feedback face's waves are drawn from, eased.
+    bands: [f32; 32],
     seed: u32,
     last_time: f64,
     clock: f32,
@@ -115,6 +117,7 @@ impl Default for State {
             preset_blend: 1.0,
             preset_beat: 0,
             preset_age: 0.0,
+            bands: [0.0; 32],
             morph: (3, 4, 1.0),
             morph_turn: 0.0,
             spiro: (0.4, 0.4, 0.6),
@@ -248,11 +251,20 @@ fn shaded(f: &Frame<'_>, shader: Shader, state: &mut VizState, dt: f32) {
             // swings, a zoom the bass pulls, a swirl with the middle
             let t = a.time as f32;
             let k = (dt * 60.0).clamp(0.0, 4.0);
+            // (the beat's turn and the bass's pull half what they were, the
+            // waves' bands eased over 0.3 s: through a chord gated at 2 to
+            // 5 Hz the face read 7 by the strict reading - review 13)
             let turn = (lerp(p0.turn, p1.turn)
                 + lerp(p0.swing, p1.swing) * (t * 0.13).sin()
-                + 0.02 * a.beat.pulse)
+                + 0.01 * a.beat.pulse)
                 * k;
-            let zoom = 1.0 - (lerp(p0.zoom, p1.zoom) + lerp(p0.pull, p1.pull) * a.bass) * k;
+            let zoom = 1.0 - (lerp(p0.zoom, p1.zoom) + 0.5 * lerp(p0.pull, p1.pull) * a.bass) * k;
+            let ease = 1.0 - (-dt / 0.3).exp();
+            for (i, b) in st.bands.iter_mut().enumerate() {
+                let v = &mut u.v[10 + i / 4][i % 4];
+                *b += (*v - *b) * ease;
+                *v = *b;
+            }
             let swirl = (lerp(p0.swirl, p1.swirl) + 0.004 * third(a, 1)) * k;
             // (never 1: what it drew fades, however loud)
             let decay = (lerp(p0.decay, p1.decay) + 0.02 * a.energy.min(1.0))

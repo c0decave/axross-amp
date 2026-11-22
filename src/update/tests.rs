@@ -5,7 +5,7 @@ use super::*;
 use crate::testdir::Scratch;
 use ring::signature::{Ed25519KeyPair, KeyPair};
 use std::io::Cursor;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 const TAG: &str = "v99.0.0";
 const PROGRAM: &[u8] = b"the new axross-amp\x7fELF...";
@@ -203,7 +203,7 @@ fn happy_a_signed_release_replaces_the_program_and_keeps_the_old_one_until_the_n
         .position(|u| u.ends_with("linux-x86_64"))
         .unwrap();
     assert!(asked.iter().position(|u| u.ends_with(SIG_NAME)).unwrap() < first_program);
-    let done = install(&got).unwrap();
+    let done = install(&got, |_, _| Ok(())).unwrap();
     assert_eq!(fs::read(&done.path).unwrap(), PROGRAM);
     assert_eq!(fs::read(&done.previous).unwrap(), b"the old axross-amp");
     #[cfg(unix)]
@@ -223,7 +223,11 @@ fn happy_a_signed_release_replaces_the_program_and_keeps_the_old_one_until_the_n
 fn restart_checks_the_file(done: &Installed) {
     let mut wrong = done.sha256;
     wrong[0] ^= 1;
-    assert!(restart(&done.path, &wrong).unwrap_err().contains("changed"));
+    assert!(
+        restart(&done.path, &wrong, Duration::ZERO)
+            .unwrap_err()
+            .contains("changed")
+    );
 }
 
 #[test]
@@ -539,7 +543,7 @@ fn edge_a_folder_that_cannot_be_written_keeps_the_program_and_says_where_the_fil
 }
 
 fn install_err(got: &Downloaded) -> String {
-    install(got).unwrap_err()
+    install(got, |_, _| Ok(())).unwrap_err()
 }
 
 #[test]
@@ -664,4 +668,466 @@ fn edge_cleanup_takes_a_file_only() {
     fs::create_dir(previous_of(&target)).unwrap();
     cleanup_previous(&target);
     assert!(previous_of(&target).is_dir());
+}
+
+/// A new program that does not start here (its self-test fails) is not
+/// put in place: the old one stays as it was (review 13, M4: it was never
+/// run before it replaced the old one).
+#[test]
+fn sad_a_new_program_that_does_not_start_here_is_not_put_in_place() {
+    let dir = Scratch::new("update-selftest");
+    let github = FakeGitHub::default();
+    let key = keypair();
+    let release = release(&github, &key);
+    let inst = linux(&dir);
+    let got = run(
+        &release,
+        &inst,
+        &github,
+        &[public(&key)],
+        &dir.join("cache"),
+    )
+    .unwrap();
+    let asked = Mutex::new(Vec::new());
+    let err = install(&got, |path, version| {
+        asked.lock().unwrap().push((path.to_path_buf(), version));
+        Err("it does not start here (exit status: 127: version `GLIBC_2.99' not found)".into())
+    })
+    .unwrap_err();
+    assert!(
+        err.contains("not installed") && err.contains("GLIBC_2.99"),
+        "{err}"
+    );
+    // it was asked of the file downloaded, for the release's version
+    assert_eq!(
+        *asked.lock().unwrap(),
+        [(got.path.clone(), Version(99, 0, 0))]
+    );
+    assert_eq!(fs::read(&inst.target).unwrap(), b"the old axross-amp");
+    // (nothing left but the note of the version refused here: never put
+    // in place by itself again)
+    assert_eq!(leftovers(&dir), ["axross-amp", "axross-amp.refused"]);
+    assert_eq!(refused(&inst.target), [Version(99, 0, 0)]);
+}
+
+/// The self-test runs the program and wants its answer.
+#[cfg(unix)]
+#[test]
+fn the_self_test_runs_the_new_program() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = Scratch::new("update-selftest-run");
+    let script = |name: &str, body: &str| {
+        let path = dir.join(name);
+        fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+        path
+    };
+    let v = Version(99, 0, 0);
+    let good = script(
+        "good",
+        &format!("[ \"$1\" = --self-test ] && echo '{}'", self_test_answer(v)),
+    );
+    assert_eq!(self_test(&good, v), Ok(()));
+    // another version, a failure, a program that is no program
+    assert!(self_test(&good, Version(98, 0, 0)).is_err());
+    let failing = script(
+        "failing",
+        "echo 'error while loading shared libraries: libfoo.so' >&2; exit 127",
+    );
+    let err = self_test(&failing, v).unwrap_err();
+    assert!(err.contains("libfoo.so"), "{err}");
+    let junk = dir.join("junk");
+    fs::write(&junk, PROGRAM).unwrap();
+    fs::set_permissions(&junk, fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(self_test(&junk, v).is_err());
+}
+
+/// A new program that ends at its start (Restart now): said, and the old
+/// one put back in its place; one that starts is left running.
+#[cfg(unix)]
+#[test]
+fn a_new_program_that_ends_at_its_start_is_rolled_back() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = Scratch::new("update-rollback");
+    let target = dir.join("axross-amp");
+    fs::write(&target, "#!/bin/sh\nexit 3\n").unwrap();
+    fs::set_permissions(&target, fs::Permissions::from_mode(0o755)).unwrap();
+    let previous = previous_of(&target);
+    fs::write(&previous, b"the old axross-amp").unwrap();
+    let installed = Installed {
+        path: target.clone(),
+        previous: previous.clone(),
+        sha256: sha256_of(&target).unwrap(),
+        version: Version(99, 0, 0),
+    };
+    let wait = std::time::Duration::from_secs(5);
+    let err = restart(&target, &installed.sha256, wait).unwrap_err();
+    assert!(err.contains("ended"), "{err}");
+    roll_back(&installed).unwrap();
+    assert_eq!(fs::read(&target).unwrap(), b"the old axross-amp");
+    assert!(!previous.exists());
+    // one that starts (its window up: "ok" on the pipe) or still runs
+    let up = dir.join("up");
+    fs::write(
+        &up,
+        "#!/bin/sh\necho ok > /dev/fd/$AXROSS_AMP_READY_FD\nsleep 2\n",
+    )
+    .unwrap();
+    fs::set_permissions(&up, fs::Permissions::from_mode(0o755)).unwrap();
+    let started = std::time::Instant::now();
+    assert_eq!(restart(&up, &sha256_of(&up).unwrap(), wait), Ok(()));
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(2),
+        "its word waited for"
+    );
+    let slow = dir.join("slow");
+    fs::write(&slow, "#!/bin/sh\nsleep 3\n").unwrap();
+    fs::set_permissions(&slow, fs::Permissions::from_mode(0o755)).unwrap();
+    let short = std::time::Duration::from_millis(500);
+    assert_eq!(restart(&slow, &sha256_of(&slow).unwrap(), short), Ok(()));
+}
+
+/// Restart now starts the new program waiting for this one's name on the
+/// bus (review 13, M5: --new-instance took a name of its own for good).
+#[test]
+fn the_new_program_is_started_to_take_over_the_name() {
+    assert_eq!(RESTART_ARGS, ["--after-update"]);
+}
+
+/// A build in a cargo folder of any name is no release file (review 13,
+/// L21: only a folder named "target" was known).
+#[test]
+fn edge_a_build_in_a_custom_target_dir_is_a_source_build() {
+    let dir = Scratch::new("update-custom-target");
+    let profile = dir.join("my-build/debug");
+    fs::create_dir_all(&profile).unwrap();
+    fs::write(profile.join(".cargo-lock"), b"").unwrap();
+    let exe = profile.join("axross-amp");
+    fs::write(&exe, b"x").unwrap();
+    assert_eq!(
+        detect("linux", "x86_64", &exe, None, None).kind,
+        Kind::Source
+    );
+    // the tests' binaries, deeper (build/<crate>/<hash>/out)
+    let top = dir.join("shared-target");
+    let deep = top.join("debug/build/axross-amp/0123456789abcdef/out");
+    fs::create_dir_all(&deep).unwrap();
+    fs::write(top.join("debug/.cargo-lock"), b"").unwrap();
+    let test = deep.join("update_window-0123456789abcdef");
+    fs::write(&test, b"x").unwrap();
+    assert_eq!(
+        detect("linux", "x86_64", &test, None, None).kind,
+        Kind::Source
+    );
+    // a release file copied elsewhere: one
+    let plain = dir.join("opt/axross-amp");
+    fs::create_dir_all(plain.parent().unwrap()).unwrap();
+    fs::write(&plain, b"x").unwrap();
+    assert_eq!(
+        detect("linux", "x86_64", &plain, None, None).kind,
+        Kind::Binary
+    );
+}
+
+/// A download that ended with its program (a closed window, a crash)
+/// leaves nothing for good: an hour old, it is removed at the next start
+/// (review 13, L8).
+#[test]
+fn edge_a_download_left_behind_is_removed() {
+    let dir = Scratch::new("update-leftover");
+    let old = dir.join(".axross-amp-update-123-abcdef");
+    let fresh = dir.join(".axross-amp-update-456-012345");
+    let other = dir.join("axross-amp");
+    for p in [&old, &fresh, &other] {
+        fs::write(p, b"x").unwrap();
+    }
+    let hours_ago = std::time::SystemTime::now() - std::time::Duration::from_secs(7200);
+    File::options()
+        .write(true)
+        .open(&old)
+        .unwrap()
+        .set_modified(hours_ago)
+        .unwrap();
+    File::options()
+        .write(true)
+        .open(&other)
+        .unwrap()
+        .set_modified(hours_ago)
+        .unwrap();
+    cleanup_downloads(&dir);
+    assert_eq!(
+        leftovers(&dir),
+        [".axross-amp-update-456-012345", "axross-amp"]
+    );
+}
+
+/// The checks in the background: at the start, then every 24 hours; an
+/// hour after one that could not be made.
+#[test]
+fn the_checks_come_at_the_start_and_then_once_a_day() {
+    let h = |hours: u64| Some(Duration::from_secs(hours * 3600));
+    assert!(check_due(None, false), "at the start");
+    assert!(!check_due(h(1), false));
+    assert!(!check_due(h(23), false));
+    assert!(check_due(h(24), false), "a day later");
+    assert!(!check_due(Some(Duration::from_secs(600)), true));
+    assert!(check_due(h(1), true), "an hour after one not made");
+    // not on an offline or a metered network (where the system says so)
+    assert!(network_allows(Network::default()));
+    assert!(!network_allows(Network {
+        offline: Some(true),
+        metered: None
+    }));
+    assert!(!network_allows(Network {
+        offline: Some(false),
+        metered: Some(true)
+    }));
+    assert!(network_allows(Network {
+        offline: Some(false),
+        metered: Some(false)
+    }));
+    // the settings' words
+    for m in UpdateMode::ALL {
+        assert_eq!(UpdateMode::from_key(m.key()), Some(m));
+    }
+    assert_eq!(UpdateMode::from_key("sometimes"), None);
+}
+
+/// An updater on a fake GitHub (a release of 99.0.0 signed by `key`) for
+/// the program in `dir`, the version running 0.15.0.
+fn updater(
+    dir: &Path,
+    github: Arc<FakeGitHub>,
+    key: &Ed25519KeyPair,
+    self_test: fn(&Path, Version) -> Result<(), String>,
+    network: fn() -> Network,
+) -> crate::update_ui::Updater {
+    crate::update_ui::Updater::with_source(
+        linux(dir),
+        crate::update_ui::Source {
+            web: github,
+            keys: vec![public(key)],
+            cache: dir.join("cache"),
+            self_test,
+            network,
+            current: Version(0, 15, 0),
+        },
+    )
+}
+
+/// Frames until the updater rests (no thread at work), at most 10 s.
+fn until_rest(u: &mut crate::update_ui::Updater, ctx: &egui::Context, mode: UpdateMode) {
+    use crate::update_ui::Stage;
+    let end = std::time::Instant::now() + Duration::from_secs(10);
+    while std::time::Instant::now() < end {
+        u.tick(ctx, mode);
+        u.poll(ctx);
+        if !matches!(u.stage, Stage::Checking | Stage::Downloading(_)) {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    panic!("the updater still works: {:?}", u.stage);
+}
+
+/// "Download and install by themselves": a newer signed release is fetched,
+/// checked, run once and put in place in the background - and nothing is
+/// restarted (what plays goes on; the new version runs from the next start
+/// or when asked).
+#[test]
+fn installed_by_itself_and_nothing_restarted() {
+    use crate::update_ui::Stage;
+    let dir = Scratch::new("update-auto");
+    let github = Arc::new(FakeGitHub::default());
+    let key = keypair();
+    release(&github, &key);
+    let mut u = updater(&dir, github.clone(), &key, |_, _| Ok(()), Network::default);
+    let ctx = egui::Context::default();
+    until_rest(&mut u, &ctx, UpdateMode::Install);
+    assert!(matches!(u.stage, Stage::Ready(_)), "{:?}", u.stage);
+    assert_eq!(fs::read(dir.join("axross-amp")).unwrap(), PROGRAM);
+    assert!(
+        fs::read(dir.join("axross-amp.previous")).is_ok(),
+        "the old one kept"
+    );
+    let said = u.take_notice().unwrap_or_default();
+    assert!(
+        said.contains("installed") && said.contains("next start"),
+        "{said}"
+    );
+    assert!(!u.closing(), "the player was closed");
+    // and no second check before a day is over
+    let asked = github.asked().len();
+    for _ in 0..5 {
+        u.tick(&ctx, UpdateMode::Install);
+        u.poll(&ctx);
+    }
+    assert_eq!(github.asked().len(), asked);
+}
+
+/// "Say when one is out" (the default): said, nothing fetched but the
+/// release's word.
+#[test]
+fn said_when_one_is_out_and_nothing_fetched() {
+    use crate::update_ui::Stage;
+    let dir = Scratch::new("update-notify");
+    let github = Arc::new(FakeGitHub::default());
+    let key = keypair();
+    release(&github, &key);
+    let mut u = updater(&dir, github.clone(), &key, |_, _| Ok(()), Network::default);
+    let ctx = egui::Context::default();
+    until_rest(&mut u, &ctx, UpdateMode::Notify);
+    assert!(matches!(u.stage, Stage::Available(_)), "{:?}", u.stage);
+    assert!(
+        u.take_notice()
+            .unwrap_or_default()
+            .contains("99.0.0 is out")
+    );
+    assert_eq!(
+        fs::read(dir.join("axross-amp")).unwrap(),
+        b"the old axross-amp"
+    );
+    assert!(
+        github.asked().iter().all(|u| u == LATEST_URL),
+        "{:?}",
+        github.asked()
+    );
+    // off: nothing asked at all
+    let quiet = Arc::new(FakeGitHub::default());
+    let mut off = updater(&dir, quiet.clone(), &key, |_, _| Ok(()), Network::default);
+    off.tick(&ctx, UpdateMode::Off);
+    std::thread::sleep(Duration::from_millis(100));
+    off.poll(&ctx);
+    assert!(quiet.asked().is_empty());
+}
+
+/// By themselves too: a release signed by another key, an older one, a
+/// new program that does not start here - none is put in place, the old
+/// program stays; on a metered network nothing is asked.
+#[test]
+fn installed_by_itself_only_when_every_check_holds() {
+    let key = keypair();
+    let ctx = egui::Context::default();
+    // another key
+    let dir = Scratch::new("update-auto-badsig");
+    let github = Arc::new(FakeGitHub::default());
+    release(&github, &keypair());
+    let mut u = updater(&dir, github, &key, |_, _| Ok(()), Network::default);
+    until_rest(&mut u, &ctx, UpdateMode::Install);
+    assert_eq!(
+        fs::read(dir.join("axross-amp")).unwrap(),
+        b"the old axross-amp"
+    );
+    assert!(!dir.join("axross-amp.previous").exists());
+    // no downgrade: the running version as new as the release
+    let dir = Scratch::new("update-auto-old");
+    let github = Arc::new(FakeGitHub::default());
+    release(&github, &key);
+    let mut u = crate::update_ui::Updater::with_source(
+        linux(&dir),
+        crate::update_ui::Source {
+            web: github,
+            keys: vec![public(&key)],
+            cache: dir.join("cache"),
+            self_test: |_, _| Ok(()),
+            network: Network::default,
+            current: Version(99, 0, 0),
+        },
+    );
+    until_rest(&mut u, &ctx, UpdateMode::Install);
+    assert_eq!(
+        fs::read(dir.join("axross-amp")).unwrap(),
+        b"the old axross-amp"
+    );
+    // the new program does not start here: the old one kept (its self-test)
+    let dir = Scratch::new("update-auto-selftest");
+    let github = Arc::new(FakeGitHub::default());
+    release(&github, &key);
+    let mut u = updater(
+        &dir,
+        github,
+        &key,
+        |_, _| Err("it does not start here".into()),
+        Network::default,
+    );
+    until_rest(&mut u, &ctx, UpdateMode::Install);
+    assert_eq!(
+        fs::read(dir.join("axross-amp")).unwrap(),
+        b"the old axross-amp"
+    );
+    assert!(
+        u.take_notice()
+            .unwrap_or_default()
+            .contains("not installed")
+    );
+    assert!(!u.closing());
+    // a metered network: nothing asked
+    let dir = Scratch::new("update-auto-metered");
+    let github = Arc::new(FakeGitHub::default());
+    release(&github, &key);
+    let asked_before = github.asked().len();
+    let mut u = updater(
+        &dir,
+        github.clone(),
+        &key,
+        |_, _| Ok(()),
+        || Network {
+            offline: Some(false),
+            metered: Some(true),
+        },
+    );
+    until_rest(&mut u, &ctx, UpdateMode::Install);
+    assert_eq!(
+        github.asked().len(),
+        asked_before,
+        "asked on a metered network"
+    );
+    assert_eq!(
+        fs::read(dir.join("axross-amp")).unwrap(),
+        b"the old axross-amp"
+    );
+}
+
+/// A program put in place: its first start watched, wherever it comes (by
+/// itself it runs from the next start, not by *Restart now*). The first
+/// frame drawn ends the watch; a start of that version that finds the one
+/// before never drew its window puts the old program back, to run instead,
+/// and that version is never put in place by itself again (review 16, M4:
+/// it ran with nothing watching, and was put in place again the next day).
+#[test]
+fn the_first_start_of_a_program_put_in_place_is_watched() {
+    let dir = Scratch::new("update-first-start");
+    let target = dir.join("axross-amp");
+    let previous = previous_of(&target);
+    let installed = Installed {
+        path: target.clone(),
+        previous: previous.clone(),
+        sha256: [0; 32],
+        version: Version(99, 0, 0),
+    };
+    // it starts, draws its window: nothing more
+    fs::write(&target, b"the new axross-amp").unwrap();
+    fs::write(&previous, b"the old axross-amp").unwrap();
+    mark_first_start(&installed);
+    assert_eq!(first_start(&target, Version(99, 0, 0)), FirstStart::Watched);
+    first_start_done(&target);
+    assert_eq!(first_start(&target, Version(99, 0, 0)), FirstStart::None);
+    assert_eq!(fs::read(&target).unwrap(), b"the new axross-amp");
+    // it starts and never draws its window: at its next start, the old one
+    // is back (and run), that version refused
+    mark_first_start(&installed);
+    assert_eq!(first_start(&target, Version(99, 0, 0)), FirstStart::Watched);
+    assert_eq!(
+        first_start(&target, Version(99, 0, 0)),
+        FirstStart::RolledBack(target.clone())
+    );
+    assert_eq!(fs::read(&target).unwrap(), b"the old axross-amp");
+    assert!(refused(&target).contains(&Version(99, 0, 0)));
+    assert!(!first_start_of(&target).exists());
+    // the old program's start: nothing to watch
+    assert_eq!(first_start(&target, Version(0, 15, 0)), FirstStart::None);
+    // a marker of another version (the program replaced by hand) is let go
+    mark_first_start(&installed);
+    assert_eq!(first_start(&target, Version(98, 0, 0)), FirstStart::None);
+    assert!(!first_start_of(&target).exists());
 }

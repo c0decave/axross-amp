@@ -173,11 +173,9 @@ fn the_bluetooth_tab_pairs_connects_and_makes_a_headset_the_output() {
         harness.state().bluetooth_page().message,
         "WH-1000XM4 is now this player's output (WH-1000XM4)."
     );
-    let audio = std::fs::read_to_string(dir.join(".config/axross/audio.json")).unwrap();
-    assert!(
-        audio.contains("bluez_output.AA_BB_CC_DD_EE_01.1"),
-        "{audio}"
-    );
+    // (kept in this program's own file: axross rewrites audio.json)
+    let own = std::fs::read_to_string(dir.join(".config/axross/axross-amp.json")).unwrap();
+    assert!(own.contains("bluez_output.AA_BB_CC_DD_EE_01.1"), "{own}");
 
     // a speaker that wants a PIN: typed into the dialog
     harness.get_by_label("Kitchen Speaker").click();

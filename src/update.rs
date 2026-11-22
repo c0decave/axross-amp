@@ -1,10 +1,13 @@
 //! Updates from axross-amp's GitHub releases, checked before anything runs.
 //!
-//! Off by default: nothing goes to the network unless *Options › Check for
-//! updates…* is clicked or *Check for updates at start* is ticked
-//! (`AXROSS_AMP_NO_UPDATE_CHECK=1` keeps the start check off whatever the
-//! setting says). A check is one request to
-//! `api.github.com/repos/c0decave/axross-amp/releases/latest`.
+//! How the updates are looked for is a setting ([`UpdateMode`]): not at all,
+//! said when one is out, or put in place by themselves - at the start, then
+//! once a day. A new installation says when one is out; a player updated
+//! from 0.15 keeps 0.15's choice - off (nothing goes to the network) unless
+//! *Check for updates at start* was ticked, then said
+//! ([`crate::state::read_amp`]). `AXROSS_AMP_NO_UPDATE_CHECK=1` keeps the
+//! checks in the background off whatever the setting says. A check is one
+//! request to `api.github.com/repos/c0decave/axross-amp/releases/latest`.
 //!
 //! Which file is fetched ([`Install`], [`asset_name`]):
 //!
@@ -285,6 +288,18 @@ pub struct Install {
     /// "linux", "macos", "windows".
     pub os: &'static str,
     pub arch: &'static str,
+    /// The file as it was when this program looked at it (its size and
+    /// time): another player that put a new program there meanwhile is
+    /// not followed by a second update, which kept the new program as
+    /// `.previous` and lost the old one (review 16, L2).
+    pub seen: Option<(u64, Option<std::time::SystemTime>)>,
+}
+
+/// A file's size and time (None: not there).
+fn seen(path: &Path) -> Option<(u64, Option<std::time::SystemTime>)> {
+    fs::metadata(path)
+        .ok()
+        .map(|m| (m.len(), m.modified().ok()))
 }
 
 impl Install {
@@ -305,6 +320,20 @@ impl Install {
         matches!(self.kind, Kind::Binary | Kind::MacApp | Kind::AppImage)
     }
 
+    /// Whether the program's folder can be written - a new program put in
+    /// place there - (a file made and removed again); None when it can.
+    pub fn unwritable(&self) -> Option<String> {
+        let folder = self.target.parent()?;
+        let probe = folder.join(format!(".axross-amp-update-{}", unique()));
+        match create_new(&probe) {
+            Ok(_) => {
+                let _ = fs::remove_file(&probe);
+                None
+            }
+            Err(e) => Some(format!("{} cannot be written ({e})", folder.display())),
+        }
+    }
+
     /// Why this program is not updated here (None: it is).
     pub fn why_not(&self) -> Option<String> {
         match self.kind {
@@ -323,6 +352,22 @@ impl Install {
     }
 }
 
+/// Whether *exe* lies in a cargo build folder of any name (a shared or
+/// custom `CARGO_TARGET_DIR`): the profile's folder - where cargo keeps its
+/// `.cargo-lock` - holds it, or its `deps` or `build` folder (the tests'
+/// binaries) - review 13: only a folder named `target` was known, a
+/// developer's build elsewhere was offered to be replaced by a release.
+fn built_by_cargo(exe: &Path) -> bool {
+    let profile = |dir: &Path| dir.join(".cargo-lock").is_file();
+    if exe.parent().is_some_and(profile) {
+        return true;
+    }
+    exe.ancestors().skip(1).take(5).any(|dir| {
+        dir.file_name().is_some_and(|n| n == "deps" || n == "build")
+            && dir.parent().is_some_and(profile)
+    })
+}
+
 /// How the program at *exe* runs. *appimage* / *appdir*: the AppImage
 /// runtime's `APPIMAGE` and `APPDIR` - an AppImage only when the program
 /// runs from inside `APPDIR` and `APPIMAGE` names an absolute
@@ -339,6 +384,7 @@ pub fn detect(
         target: target.to_path_buf(),
         os,
         arch,
+        seen: seen(target),
     };
     let parts: Vec<String> = exe
         .components()
@@ -354,7 +400,7 @@ pub fn detect(
                 .take(2)
                 .any(|p| p == "debug" || p == "release")
     });
-    if in_tree {
+    if in_tree || built_by_cargo(exe) {
         return install(Kind::Source, exe);
     }
     if n >= 3 && parts[n - 3] == ".cargo" && parts[n - 2] == "bin" {
@@ -633,6 +679,8 @@ pub struct Downloaded {
     pub target: PathBuf,
     /// Beside the program: [`install`] can put it in place.
     pub in_place: bool,
+    /// The program in place as this one found it ([`Install::seen`]).
+    pub seen: Option<(u64, Option<std::time::SystemTime>)>,
 }
 
 /// The new program in place.
@@ -730,6 +778,22 @@ pub fn download(
             asset.size
         ));
     }
+    // (the folder cannot be written and the checked file is in the cache
+    // already: kept, not fetched again at every start - review 16, M5)
+    let cached = cache.join(&name);
+    if install.unwritable().is_some()
+        && fs::symlink_metadata(&cached).is_ok_and(|m| m.file_type().is_file())
+        && sha256_of(&cached).is_ok_and(|d| d == expected)
+    {
+        return Ok(Downloaded {
+            path: cached,
+            sha256: expected,
+            version: release.version,
+            target: install.target.clone(),
+            in_place: false,
+            seen: install.seen,
+        });
+    }
     // beside the program (one rename puts it in place), else the cache
     let folder = install
         .target
@@ -801,6 +865,7 @@ pub fn download(
         version: release.version,
         target: install.target.clone(),
         in_place,
+        seen: install.seen,
     })
 }
 
@@ -839,9 +904,146 @@ pub fn previous_of(target: &Path) -> PathBuf {
     target.with_file_name(name)
 }
 
-/// Put *downloaded* in place of the program: checked once more, the old
-/// program kept as `<name>.previous`, one rename.
-pub fn install(downloaded: &Downloaded) -> Result<Installed, String> {
+/// What the new program's `--self-test` says when it can run here.
+pub fn self_test_answer(version: Version) -> String {
+    format!("axross-amp {version} ok")
+}
+
+/// The new program run once before it replaces this one (review 13: it
+/// never was - a release that cannot start on this system, a raised glibc
+/// floor or a library missing, left a broken player): `--self-test` must
+/// say [`self_test_answer`] within [`SELF_TEST_SECS`].
+pub fn self_test(path: &Path, version: Version) -> Result<(), String> {
+    let mut command = std::process::Command::new(path);
+    command
+        .arg("--self-test")
+        .env(NO_CHECK_ENV, "1")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    // (a group of its own: what it starts ends with it)
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
+    let mut child = command
+        .spawn()
+        .map_err(|e| format!("it cannot be run here ({e})"))?;
+    // (its output read as it comes, on threads of their own, the first
+    // 64 KB kept: unread, a program saying more than a pipe holds blocked
+    // and was judged dead; read after it ended, a child of it holding the
+    // pipe kept the reading - and the update - waiting past the bound for
+    // good: review 16, L5)
+    let reader = |pipe: Option<Box<dyn Read + Send>>| {
+        let (tx, rx) = std::sync::mpsc::channel();
+        if let Some(mut pipe) = pipe {
+            std::thread::spawn(move || {
+                let mut kept = Vec::new();
+                let mut buf = [0u8; 4096];
+                while let Ok(n) = pipe.read(&mut buf) {
+                    if n == 0 {
+                        break;
+                    }
+                    if kept.len() < 64 << 10 {
+                        kept.extend_from_slice(&buf[..n.min((64 << 10) - kept.len())]);
+                        // (the answer is a line: sent as it is complete)
+                        let _ = tx.send(kept.clone());
+                    }
+                }
+                let _ = tx.send(kept);
+            });
+        }
+        rx
+    };
+    let out = reader(
+        child
+            .stdout
+            .take()
+            .map(|p| Box::new(p) as Box<dyn Read + Send>),
+    );
+    let err = reader(
+        child
+            .stderr
+            .take()
+            .map(|p| Box::new(p) as Box<dyn Read + Send>),
+    );
+    let end = std::time::Instant::now() + std::time::Duration::from_secs(SELF_TEST_SECS);
+    let kill_group = |child: &mut std::process::Child| {
+        #[cfg(unix)]
+        // SAFETY: a signal to the process group the child leads (its own,
+        // made at its spawn); no memory is touched.
+        unsafe {
+            libc::kill(-(child.id() as i32), libc::SIGKILL);
+        }
+        let _ = child.kill();
+        let _ = child.wait();
+    };
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if std::time::Instant::now() < end => {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            Ok(None) => {
+                kill_group(&mut child);
+                return Err(format!("it did not answer within {SELF_TEST_SECS} s"));
+            }
+            Err(e) => {
+                kill_group(&mut child);
+                return Err(e.to_string());
+            }
+        }
+    };
+    // (what it said: the latest of each pipe, waited for a moment at most -
+    // a child it left may hold the pipe open; then its group ended)
+    let said = |rx: std::sync::mpsc::Receiver<Vec<u8>>| {
+        let mut text = Vec::new();
+        let until = std::time::Instant::now() + std::time::Duration::from_millis(500);
+        while let Some(left) = until.checked_duration_since(std::time::Instant::now()) {
+            match rx.recv_timeout(left) {
+                Ok(t) => text = t,
+                Err(_) => break,
+            }
+        }
+        String::from_utf8_lossy(&text).into_owned()
+    };
+    let out = said(out);
+    let err = said(err);
+    #[cfg(unix)]
+    // SAFETY: as above - the child's own group, a signal only.
+    unsafe {
+        libc::kill(-(child.id() as i32), libc::SIGKILL);
+    }
+    if status.success() && out.trim() == self_test_answer(version) {
+        return Ok(());
+    }
+    let said = err
+        .lines()
+        .chain(out.lines())
+        .map(str::trim)
+        .find(|l| !l.is_empty())
+        .unwrap_or("")
+        .chars()
+        .take(200)
+        .collect::<String>();
+    Err(if said.is_empty() {
+        format!("it does not start here ({status})")
+    } else {
+        format!("it does not start here ({status}: {said})")
+    })
+}
+
+/// The longest the new program's self-test may take.
+pub const SELF_TEST_SECS: u64 = 20;
+
+/// Put *downloaded* in place of the program: checked once more, run once
+/// (`test`: [`self_test`]), the old program kept as `<name>.previous`, one
+/// rename.
+pub fn install(
+    downloaded: &Downloaded,
+    test: impl Fn(&Path, Version) -> Result<(), String>,
+) -> Result<Installed, String> {
     if !downloaded.in_place {
         return Err(format!(
             "the program's folder cannot be written; the new program is in {}",
@@ -853,19 +1055,62 @@ pub fn install(downloaded: &Downloaded) -> Result<Installed, String> {
         return Err("the downloaded file changed since it was checked".into());
     }
     let target = &downloaded.target;
+    // (one player at a time puts a program in place)
+    let _lock = Lock::take(target)?;
+    if downloaded.seen.is_some() && seen(target) != downloaded.seen {
+        let _ = fs::remove_file(&downloaded.path);
+        return Err(format!(
+            "{} changed since this player started (another one updated it): \
+             it is the new program already",
+            target.display()
+        ));
+    }
+    if let Err(why) = test(&downloaded.path, downloaded.version) {
+        let _ = fs::remove_file(&downloaded.path);
+        // (never put in place by itself again: review 16, M4)
+        refuse(target, downloaded.version);
+        return Err(format!(
+            "axross-amp {} was not installed: {why}; this one is kept",
+            downloaded.version
+        ));
+    }
     let previous = previous_of(target);
     let fail = |e: std::io::Error| {
         let _ = fs::remove_file(&downloaded.path);
         format!("{}: {e}", target.display())
     };
-    if fs::symlink_metadata(&previous).is_ok_and(|m| m.is_file()) {
-        let _ = fs::remove_file(&previous);
+    // (`.previous` a file, or a link - removed itself, never followed: a
+    // link's file was overwritten by the copy below - review 16, L4; a
+    // folder of that name is not ours to remove)
+    match fs::symlink_metadata(&previous) {
+        Ok(m) if m.is_dir() => {
+            let _ = fs::remove_file(&downloaded.path);
+            return Err(format!(
+                "{} is a folder: move it away to update",
+                previous.display()
+            ));
+        }
+        Ok(_) => {
+            let _ = fs::remove_file(&previous);
+        }
+        Err(_) => {}
     }
     #[cfg(not(windows))]
     {
-        // the old one stays under .previous (a hard link: the same file)
+        // the old one stays under .previous (a hard link: the same file;
+        // else a copy made under a name of its own, then renamed)
         if fs::hard_link(target, &previous).is_err() {
-            fs::copy(target, &previous).map_err(fail)?;
+            let temp = target.with_file_name(format!(".axross-amp-update-{}", unique()));
+            let copied = create_new(&temp).and_then(|mut to| {
+                let mut from = File::open(target)?;
+                std::io::copy(&mut from, &mut to)?;
+                to.sync_all()
+            });
+            if let Err(e) = copied.and_then(|_| fs::rename(&temp, &previous)) {
+                let _ = fs::remove_file(&temp);
+                return Err(fail(e));
+            }
+            executable(&previous, target);
         }
         fs::rename(&downloaded.path, target).map_err(fail)?;
     }
@@ -891,8 +1136,9 @@ pub fn install(downloaded: &Downloaded) -> Result<Installed, String> {
     })
 }
 
-/// The new program has started: the old one (`.previous`) goes. Not a
-/// link, not a folder - a regular file of that name only.
+/// The new program has run [`KEEP_PREVIOUS_SECS`] (not only drawn its
+/// first frame): the old one (`.previous`) goes. Not a link, not a folder -
+/// a regular file of that name only.
 pub fn cleanup_previous(target: &Path) {
     let previous = previous_of(target);
     if fs::symlink_metadata(&previous).is_ok_and(|m| m.file_type().is_file()) {
@@ -900,18 +1146,328 @@ pub fn cleanup_previous(target: &Path) {
     }
 }
 
-/// Start the program at *path* when it is still the file checked; the
-/// caller then closes this one.
-pub fn restart(path: &Path, sha256: &[u8; 32]) -> Result<(), String> {
+/// How long the new program runs before the old one (`.previous`) goes.
+pub const KEEP_PREVIOUS_SECS: u64 = 60;
+
+/// Leftovers of a download that ended with its program (a closed window, a
+/// crash): `.axross-amp-update-*` in `folder` an hour old (review 13: up
+/// to 512 MiB each, kept for good).
+pub fn cleanup_downloads(folder: &Path) {
+    let Ok(entries) = fs::read_dir(folder) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        if !name.to_string_lossy().starts_with(".axross-amp-update-") {
+            continue;
+        }
+        let old = entry
+            .metadata()
+            .ok()
+            .filter(|m| m.file_type().is_file())
+            .and_then(|m| m.modified().ok())
+            .and_then(|t| t.elapsed().ok())
+            .is_some_and(|age| age > std::time::Duration::from_secs(3600));
+        if old {
+            let _ = fs::remove_file(entry.path());
+        }
+    }
+}
+
+/// The arguments the new program is started with: it waits for this one's
+/// name on the session bus and takes it when this one ends (with
+/// `--new-instance` it took a name of its own and the next file opened
+/// from the file manager started a second player - review 13).
+pub const RESTART_ARGS: [&str; 1] = ["--after-update"];
+
+/// Start the program at *path* when it is still the file checked, and
+/// watch its start for up to *wait*: Ok once its window is up (or it still
+/// runs after *wait*), Err when it ended before - then [`roll_back`]. The
+/// caller closes this one after Ok.
+pub fn restart(path: &Path, sha256: &[u8; 32], wait: std::time::Duration) -> Result<(), String> {
     if sha256_of(path).map_err(|e| e.to_string())? != *sha256 {
         return Err("the new program changed since it was checked; not started".into());
     }
-    std::process::Command::new(path)
-        .arg("--new-instance")
-        .stdin(std::process::Stdio::null())
-        .spawn()
-        .map(drop)
-        .map_err(|e| format!("{}: {e}", path.display()))
+    let mut command = std::process::Command::new(path);
+    command
+        .args(RESTART_ARGS)
+        .stdin(std::process::Stdio::null());
+    let mut ready = crate::detach::ready_pipe(&mut command);
+    let child = command.spawn();
+    if let Some(r) = ready.as_mut() {
+        r.spawned();
+    }
+    let mut child = child.map_err(|e| format!("{}: {e}", path.display()))?;
+    // its word once its window is up; without one, a while of it running
+    let watch = match ready.map(|r| r.wait(wait)) {
+        Some(crate::detach::Readiness::Up | crate::detach::Readiness::Starting) => return Ok(()),
+        Some(crate::detach::Readiness::Ended) => std::time::Duration::from_secs(2),
+        None => wait,
+    };
+    let end = std::time::Instant::now() + watch;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                return Err(format!("the new program ended at its start ({status})"));
+            }
+            Ok(None) if std::time::Instant::now() < end => {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            _ => return Ok(()),
+        }
+    }
+}
+
+/// The old program (`.previous`) put back in place of the new one, which
+/// did not start.
+pub fn roll_back(installed: &Installed) -> Result<(), String> {
+    // (never put in place by itself again: review 16, M4)
+    refuse(&installed.path, installed.version);
+    if !fs::symlink_metadata(&installed.previous).is_ok_and(|m| m.file_type().is_file()) {
+        return Err(format!("{} is not there", installed.previous.display()));
+    }
+    crate::fspath::rename_over(&installed.previous, &installed.path)
+        .map_err(|e| format!("{}: {e}", installed.path.display()))
+}
+
+/// `<name>` with a suffix (beside the program).
+fn beside(target: &Path, suffix: &str) -> PathBuf {
+    let mut name = target.file_name().unwrap_or_default().to_os_string();
+    name.push(suffix);
+    target.with_file_name(name)
+}
+
+/// The releases that did not start here (`<name>.refused`, beside the
+/// program: a version a line): never put in place by themselves again.
+pub fn refused_of(target: &Path) -> PathBuf {
+    beside(target, ".refused")
+}
+
+/// *version* noted as one that did not start here (its self-test failed,
+/// or it ended at its start and the old program was put back).
+pub fn refuse(target: &Path, version: Version) {
+    if refused(target).contains(&version) {
+        return;
+    }
+    let path = refused_of(target);
+    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(&path) {
+        let _ = writeln!(file, "{version}");
+    }
+}
+
+/// The versions noted by [`refuse`].
+pub fn refused(target: &Path) -> Vec<Version> {
+    let mut text = String::new();
+    if let Ok(file) = File::open(refused_of(target)) {
+        let _ = file.take(64 << 10).read_to_string(&mut text);
+    }
+    text.lines().filter_map(Version::parse).collect()
+}
+
+/// One player at a time putting a program in place: `<name>.update-lock`,
+/// made new (one left by a player that ended meanwhile, ten minutes old,
+/// is taken over), removed when dropped.
+struct Lock(PathBuf);
+
+impl Lock {
+    fn take(target: &Path) -> Result<Lock, String> {
+        let path = beside(target, ".update-lock");
+        for _ in 0..2 {
+            match create_new(&path) {
+                Ok(_) => return Ok(Lock(path)),
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                    let stale = fs::symlink_metadata(&path)
+                        .ok()
+                        .filter(|m| m.is_file())
+                        .and_then(|m| m.modified().ok())
+                        .and_then(|t| t.elapsed().ok())
+                        .is_some_and(|age| age > Duration::from_secs(600));
+                    if !stale {
+                        return Err("another axross-amp is putting an update in place".into());
+                    }
+                    let _ = fs::remove_file(&path);
+                }
+                Err(e) => return Err(format!("{}: {e}", path.display())),
+            }
+        }
+        Err("another axross-amp is putting an update in place".into())
+    }
+}
+
+impl Drop for Lock {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.0);
+    }
+}
+
+/// The new program's first start, watched: `<name>.first-start` says the
+/// version put in place and whether its first start has begun. Written when
+/// a program is put in place; at the start of a program of that version,
+/// "installed" becomes "starting"; the first frame drawn removes it
+/// ([`first_start_done`]). A start that finds "starting" of its own version
+/// follows one that never drew its window: the old program is put back
+/// (review 16, M4 - an update put in place by itself ran at the next start
+/// with nothing watching).
+pub fn first_start_of(target: &Path) -> PathBuf {
+    beside(target, ".first-start")
+}
+
+/// The marker for *installed*'s first start.
+pub fn mark_first_start(installed: &Installed) {
+    let _ = fs::write(
+        first_start_of(&installed.path),
+        format!("{}\ninstalled\n", installed.version),
+    );
+}
+
+/// What a program's start found of its first start.
+#[derive(Debug, PartialEq, Eq)]
+pub enum FirstStart {
+    /// Nothing to watch.
+    None,
+    /// This is the first start of a program put in place: watched.
+    Watched,
+    /// The first start before this one never drew its window: the old
+    /// program is back in place (and this version refused) - it is to run
+    /// instead.
+    RolledBack(PathBuf),
+}
+
+/// At the start of the program at *target* (version *current*): see
+/// [`first_start_of`].
+pub fn first_start(target: &Path, current: Version) -> FirstStart {
+    let marker = first_start_of(target);
+    let Ok(text) = fs::read_to_string(&marker) else {
+        return FirstStart::None;
+    };
+    let mut lines = text.lines();
+    let version = lines.next().and_then(Version::parse);
+    let state = lines.next().unwrap_or("");
+    if version != Some(current) {
+        // (another version runs: the marker is not this one's)
+        let _ = fs::remove_file(&marker);
+        return FirstStart::None;
+    }
+    if state == "installed" {
+        let _ = fs::write(&marker, format!("{current}\nstarting\n"));
+        return FirstStart::Watched;
+    }
+    let _ = fs::remove_file(&marker);
+    let previous = previous_of(target);
+    if !fs::symlink_metadata(&previous).is_ok_and(|m| m.file_type().is_file()) {
+        return FirstStart::None;
+    }
+    refuse(target, current);
+    match crate::fspath::rename_over(&previous, target) {
+        Ok(()) => FirstStart::RolledBack(target.to_path_buf()),
+        Err(_) => FirstStart::None,
+    }
+}
+
+/// The first frame drawn: the first start went well.
+pub fn first_start_done(target: &Path) {
+    let marker = first_start_of(target);
+    if fs::read_to_string(&marker).is_ok_and(|t| t.lines().nth(1) == Some("starting")) {
+        let _ = fs::remove_file(&marker);
+    }
+}
+
+/// How the updates are looked for (Options): not at all, said when one is
+/// out (the default), or fetched, checked and put in place by themselves -
+/// never a restart: the new version runs from the next start, or at once
+/// when asked (*Restart now*).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UpdateMode {
+    Off,
+    Notify,
+    Install,
+}
+
+impl UpdateMode {
+    pub const ALL: [UpdateMode; 3] = [UpdateMode::Off, UpdateMode::Notify, UpdateMode::Install];
+
+    pub fn key(self) -> &'static str {
+        match self {
+            UpdateMode::Off => "off",
+            UpdateMode::Notify => "notify",
+            UpdateMode::Install => "install",
+        }
+    }
+
+    pub fn from_key(key: &str) -> Option<UpdateMode> {
+        UpdateMode::ALL.into_iter().find(|m| m.key() == key)
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            UpdateMode::Off => "Off",
+            UpdateMode::Notify => "Say when one is out",
+            UpdateMode::Install => "Download and install by themselves",
+        }
+    }
+}
+
+/// How often the updates are looked for while the player runs (and at
+/// its start).
+pub const CHECK_EVERY: Duration = Duration::from_secs(24 * 3600);
+/// After a check that could not be made (no network, a metered one, an
+/// error): looked for again this much later.
+pub const CHECK_AGAIN: Duration = Duration::from_secs(3600);
+
+/// Whether a check is due: at the start (none made yet), then every
+/// [`CHECK_EVERY`] after the last one; [`CHECK_AGAIN`] after one that
+/// could not be made.
+pub fn check_due(since_last: Option<Duration>, last_failed: bool) -> bool {
+    match since_last {
+        None => true,
+        Some(d) if last_failed => d >= CHECK_AGAIN,
+        Some(d) => d >= CHECK_EVERY,
+    }
+}
+
+/// What the system says of the network (NetworkManager, where there is one).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Network {
+    /// No connection to the internet known (None: not said).
+    pub offline: Option<bool>,
+    /// Paid by the amount (a phone's hotspot, a mobile line).
+    pub metered: Option<bool>,
+}
+
+/// Whether the background checks and downloads may use the network: not
+/// when it is said to be offline or metered (a check asked for by hand is
+/// always made).
+pub fn network_allows(net: Network) -> bool {
+    net.offline != Some(true) && net.metered != Some(true)
+}
+
+/// What NetworkManager says (Linux; nothing elsewhere or without it):
+/// `Connectivity` (1: none) and `Metered` (1 yes, 3 guessed yes).
+pub fn network() -> Network {
+    #[cfg(target_os = "linux")]
+    {
+        let ask = || -> Option<Network> {
+            let conn = zbus::blocking::Connection::system().ok()?;
+            let proxy = zbus::blocking::Proxy::new(
+                &conn,
+                "org.freedesktop.NetworkManager",
+                "/org/freedesktop/NetworkManager",
+                "org.freedesktop.NetworkManager",
+            )
+            .ok()?;
+            let connectivity: Option<u32> = proxy.get_property("Connectivity").ok();
+            let metered: Option<u32> = proxy.get_property("Metered").ok();
+            Some(Network {
+                offline: connectivity.map(|c| c == 1),
+                metered: metered.map(|m| m == 1 || m == 3),
+            })
+        };
+        ask().unwrap_or_default()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        Network::default()
+    }
 }
 
 /// Whether the start check may run: the setting, unless

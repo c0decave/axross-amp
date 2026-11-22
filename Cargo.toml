@@ -1,6 +1,6 @@
 [package]
 name = "axross-amp"
-version = "0.15.1"
+version = "0.16.0"
 description = "axross's Media Player as a program of its own, in Rust: playlists, a ten-band equalizer, visualizations, internet radio"
 license = "Apache-2.0"
 repository = "https://github.com/c0decave/axross-amp"
@@ -52,8 +52,12 @@ zbus = "5.19"
 # (the tests render every face through seconds of music, frame by frame:
 # optimised a little they take minutes, not half an hour; debug assertions
 # stay on)
+# (and with line tables only for their debug information: a test binary
+# with full debug information is about 760 MB, the 45 of them filled a
+# disk - review 15; a panic's backtrace still has its files and lines)
 [profile.test]
 opt-level = 1
+debug = "line-tables-only"
 
 [profile.dev.package."*"]
 opt-level = 2

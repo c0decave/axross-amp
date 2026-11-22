@@ -10,8 +10,11 @@ ink-blue), *Frost*, *Dusk* (Solarized at sundown), *Night drive* (violet,
 magenta, a little cyan), *Forest*, *Espresso*, *Ocean*, *Sakura* (light pink,
 plum), *Studio* (greyscale, one orange signal), *Daylight* (light) and *High
 contrast* (black and white, yellow for what is chosen, a 3 px focus ring, 7 : 1
-text). The pointer on one in the menu shows it at once; a click keeps it (in
-axross-amp's own file). Optionally the desktop's light or dark decides (on Linux
+text). Each row of the menu shows the theme's swatch - its ground, cards,
+text and accent -; a click shows and keeps it (in axross-amp's own file). The
+window does not change as the pointer passes down the menu (shown at its pace,
+the whole window flashed 12 times a second - review 13), and it changes at
+most twice a second however fast one theme is clicked after another. Optionally the desktop's light or dark decides (on Linux
 asked of the XDG desktop portal, else GNOME's `color-scheme` - its "Default"
 is light, unless the GTK theme is a dark one - else GTK's setting; winit says
 nothing there; watched only while followed, on one D-Bus connection woken by

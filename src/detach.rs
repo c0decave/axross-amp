@@ -31,7 +31,7 @@ pub enum Start {
 pub const CHILD: &str = "AXROSS_AMP_DETACHED";
 /// The pipe's end the child writes "ok" to once its window is up.
 #[cfg_attr(not(unix), allow(dead_code))]
-const READY_FD: &str = "AXROSS_AMP_READY_FD";
+pub(crate) const READY_FD: &str = "AXROSS_AMP_READY_FD";
 
 /// Where a detached player writes what it says: `~/.cache/axross-amp/
 /// axross-amp.log` (macOS: `~/Library/Caches/axross-amp/axross-amp.log`; or
@@ -186,4 +186,98 @@ pub fn spawn(args: &[std::ffi::OsString]) -> Start {
 #[cfg(not(unix))]
 pub fn spawn(_args: &[std::ffi::OsString]) -> Start {
     Start::Run
+}
+
+/// What a program started with a [`ReadyPipe`] said.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Readiness {
+    /// Its window is up.
+    Up,
+    /// It ended (the pipe closed) without a word.
+    Ended,
+    /// Still starting when the wait was over.
+    Starting,
+}
+
+/// The pipe a program started by this one says "ok" on once its window is
+/// up ([`signal_ready`]): the updater's restart watches the new program's
+/// start with it.
+#[cfg(unix)]
+pub struct ReadyPipe {
+    reader: Option<std::io::PipeReader>,
+    writer: Option<std::io::PipeWriter>,
+}
+
+/// A [`ReadyPipe`] for `command` (its write end kept open across exec,
+/// named to it by [`READY_FD`]); None where there is none (not Unix).
+#[cfg(unix)]
+pub fn ready_pipe(command: &mut std::process::Command) -> Option<ReadyPipe> {
+    use std::os::fd::AsRawFd;
+    use std::os::unix::process::CommandExt;
+    let (reader, writer) = std::io::pipe().ok()?;
+    let fd = writer.as_raw_fd();
+    // (marked as a detached child: it never goes to the background itself)
+    command.env(READY_FD, fd.to_string()).env(CHILD, "1");
+    // SAFETY: between fork and exec only fcntl, async-signal-safe (the
+    // pipe's write end kept open across exec).
+    unsafe {
+        command.pre_exec(move || {
+            let flags = libc::fcntl(fd, libc::F_GETFD);
+            if flags < 0 || libc::fcntl(fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC) < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    Some(ReadyPipe {
+        reader: Some(reader),
+        writer: Some(writer),
+    })
+}
+
+#[cfg(unix)]
+impl ReadyPipe {
+    /// The program is started: this one's copy of the write end goes (the
+    /// reader sees the end when the program closes its own, or ends).
+    pub fn spawned(&mut self) {
+        self.writer = None;
+    }
+
+    /// Its word, waited for at most `wait`.
+    pub fn wait(mut self, wait: std::time::Duration) -> Readiness {
+        use std::io::BufRead;
+        let Some(reader) = self.reader.take() else {
+            return Readiness::Ended;
+        };
+        self.writer = None;
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            // (its first line: the pipe may stay open after it)
+            let mut said = String::new();
+            let _ = std::io::BufReader::new(reader).read_line(&mut said);
+            let _ = tx.send(said);
+        });
+        match rx.recv_timeout(wait) {
+            Ok(said) if said.starts_with("ok") => Readiness::Up,
+            Ok(_) => Readiness::Ended,
+            Err(_) => Readiness::Starting,
+        }
+    }
+}
+
+#[cfg(not(unix))]
+pub struct ReadyPipe;
+
+#[cfg(not(unix))]
+pub fn ready_pipe(_command: &mut std::process::Command) -> Option<ReadyPipe> {
+    None
+}
+
+#[cfg(not(unix))]
+impl ReadyPipe {
+    pub fn spawned(&mut self) {}
+
+    pub fn wait(self, _wait: std::time::Duration) -> Readiness {
+        Readiness::Starting
+    }
 }

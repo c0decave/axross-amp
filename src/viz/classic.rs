@@ -1422,7 +1422,50 @@ fn scope(f: &Frame<'_>, g: Area, cv: &mut Canvas, st: &mut State) {
     let start = (1..n / 2)
         .find(|&i| a.mono[i - 1] <= 0.0 && a.mono[i] > 0.0)
         .unwrap_or(0);
-    let wave = &a.mono[start.min(n)..(start + n / 2).min(n)];
+    let (mut start, mut end) = (start, (start + n / 2).min(n));
+    // (a steady tone: two of its periods, the time base following its
+    // pitch - nine to thirteen of a melody's notes across the face lay as a
+    // grating of light and dark, the pattern a photosensitive eye cannot
+    // bear: review 14. The first two periods alike - where a melody's next
+    // note begins in the window, those after it - are a tone; a mix and
+    // noise, whose crossings are not evenly apart, keep their time base
+    // and their dimming)
+    let rises: Vec<usize> = (start.max(1)..end)
+        .filter(|&i| a.mono[i - 1] <= 0.0 && a.mono[i] > 0.0)
+        .take(24)
+        .collect();
+    // (from three rises on: a low tone - a bass, a square wave at 110 Hz -
+    // has two and a half periods in the window, its edges as many lines
+    // across a row as a grating's: review 15)
+    if rises.len() >= 3 {
+        let alike = |i: usize| {
+            let (g0, g1) = (rises[i + 1] - rises[i], rises[i + 2] - rises[i + 1]);
+            let (lo, hi) = (g0.min(g1), g0.max(g1));
+            lo > 0
+                && hi * 4 <= lo * 5
+                && (i + 3 >= rises.len() || {
+                    let g2 = rises[i + 3] - rises[i + 2];
+                    g2 * 4 <= lo * 5 && g2 * 5 >= hi * 4
+                })
+        };
+        if let Some(i) = (0..rises.len().saturating_sub(2))
+            .take(8)
+            .find(|&i| alike(i))
+        {
+            (start, end) = (rises[i], rises[i + 2]);
+        } else if rises.len() <= 4 {
+            // (a low tone just begun - its first rise mid-period, after
+            // silence: from its last whole period, two of it at most)
+            let k = rises.len() - 2;
+            let gap = rises[k + 1] - rises[k];
+            (start, end) = (rises[k], end.min(rises[k + 1] + gap));
+        }
+    } else if rises.len() == 2 {
+        // (one period seen, the window longer: two of it at most - the
+        // first frame of a low tone gated on had two and a half)
+        end = end.min(rises[1] + (rises[1] - rises[0]));
+    }
+    let wave = &a.mono[start.min(n)..end.max(start.min(n))];
     // (while the guard holds the height - the wave would come and go
     // faster than it allows - the last wave it let through is shown, as
     // tall as it says; a new one only once they agree)

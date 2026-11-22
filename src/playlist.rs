@@ -862,30 +862,198 @@ pub fn to_m3u(tracks: &[Track], base: Option<&Path>) -> String {
 }
 
 /// `bytes` into `path` through a temporary file renamed over it (a crash
-/// leaves the old file whole); an existing file's mode is kept.
+/// leaves the old file whole); an existing file's mode is kept. Nothing is
+/// written through a link: the temporary file is made anew under a name of
+/// its own (O_EXCL - a link planted at that name is refused, not
+/// followed), its mode set on the open file, and a link at `path` itself
+/// is replaced by the playlist, never written through (review 13: the
+/// predictable name `.<name>.tmp-<pid>` planted as a link to another file
+/// in a shared folder overwrote that file and made it world-readable).
 pub fn write_atomically(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     use std::io::Write;
-    let tmp = path.with_file_name(format!(
-        ".{}.tmp-{}",
-        path.file_name()
-            .map(|n| n.to_string_lossy())
-            .unwrap_or_default(),
-        std::process::id()
-    ));
-    let mut file = fs::File::create(&tmp)?;
+    // (a link of the user's own - a playlist kept on a NAS, linked into
+    // ~/Music - is the list's place: the list it names is saved, in its own
+    // folder; a link someone else made in a shared folder is not followed -
+    // review 14: the user's own link was replaced and the list itself never
+    // updated)
+    let followed = match own_link_target(path) {
+        Linked::Follow(target) => Some(target),
+        Linked::Replace => None,
+        // (a link of the user's own that leads nowhere - a NAS not mounted,
+        // a loop, a chain past 40 links: the save refused, the link kept;
+        // it was replaced by a plain file - review 16, L10)
+        Linked::Refuse(why) => return Err(std::io::Error::other(why)),
+    };
+    let path = followed.as_deref().unwrap_or(path);
+    static WRITES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    // (the mode of the file there - of the file itself, not of what a
+    // link there points to)
+    let mode = fs::symlink_metadata(path)
+        .ok()
+        .filter(|m| m.file_type().is_file())
+        .map(|m| m.permissions());
+    let mut tries = 0;
+    let (tmp, mut file) = loop {
+        let n = WRITES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.subsec_nanos())
+            .unwrap_or(0);
+        let tmp = path.with_file_name(format!(
+            ".{name}.tmp-{}-{n}-{nanos:08x}",
+            std::process::id()
+        ));
+        let mut options = fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        match options.open(&tmp) {
+            Ok(file) => break (tmp, file),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists && tries < 16 => {
+                tries += 1;
+            }
+            Err(e) => return Err(e),
+        }
+    };
     let result = file
         .write_all(bytes)
-        .and_then(|_| file.sync_all())
-        .and_then(|_| {
-            if let Ok(meta) = fs::metadata(path) {
-                fs::set_permissions(&tmp, meta.permissions())?;
+        .and_then(|_| match &mode {
+            Some(m) => file.set_permissions(m.clone()),
+            None => {
+                // (a new playlist: as a file made by the user's umask would be)
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    file.set_permissions(fs::Permissions::from_mode(0o644 & !umask()))
+                }
+                #[cfg(not(unix))]
+                Ok(())
             }
-            crate::fspath::rename_over(&tmp, path)
-        });
+        })
+        .and_then(|_| file.sync_all())
+        .and_then(|_| crate::fspath::rename_over(&tmp, path));
     if result.is_err() {
         let _ = fs::remove_file(&tmp);
     }
     result
+}
+
+/// What a save does with a link at a playlist's name.
+#[derive(Debug, PartialEq)]
+enum Linked {
+    /// No link there, or one someone else made (or leading through
+    /// someone else's link, file or folder): the playlist takes its place.
+    Replace,
+    /// The user's own chain of links: the file at its end is saved.
+    Follow(std::path::PathBuf),
+    /// The user's own link leading nowhere (not there, a loop, more than
+    /// 40 links): not saved.
+    Refuse(String),
+}
+
+/// Where a link at `path` that this user made points - one link at a
+/// time, each one, the folder it lies in, and the file at the end, the
+/// user's own (a link of the user's pointing into a folder others may
+/// write in could be turned there to any other file of the user's: review
+/// 15; each folder's owner too: review 16, L10).
+fn own_link_target(path: &Path) -> Linked {
+    let mine = |_: &Path, meta: &fs::Metadata| -> bool {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            // SAFETY: geteuid has no preconditions and cannot fail.
+            meta.uid() == unsafe { libc::geteuid() }
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = meta;
+            true
+        }
+    };
+    link_target_by(path, &mine)
+}
+
+/// [`own_link_target`] by `mine`: whose each step is.
+fn link_target_by(path: &Path, mine: &dyn Fn(&Path, &fs::Metadata) -> bool) -> Linked {
+    let mut at = path.to_path_buf();
+    let is_link = fs::symlink_metadata(&at).is_ok_and(|m| m.file_type().is_symlink());
+    if !is_link {
+        return Linked::Replace;
+    }
+    // (as the system follows them: 40 at most)
+    for hop in 0..=40 {
+        let Ok(meta) = fs::symlink_metadata(&at) else {
+            return Linked::Refuse(format!(
+                "{} leads to {}, which is not there",
+                path.display(),
+                at.display()
+            ));
+        };
+        if !mine(&at, &meta) {
+            return Linked::Replace;
+        }
+        // (past the first: the folder it lies in the user's, or one only
+        // its owner may write in)
+        if hop > 0
+            && let Some(folder) = at.parent().filter(|f| !f.as_os_str().is_empty())
+            && let Ok(fm) = fs::metadata(folder)
+            && !mine(folder, &fm)
+            && others_write(&fm)
+        {
+            return Linked::Replace;
+        }
+        if meta.file_type().is_file() {
+            return Linked::Follow(at);
+        }
+        if !meta.file_type().is_symlink() {
+            return Linked::Replace;
+        }
+        let Ok(next) = fs::read_link(&at) else {
+            return Linked::Replace;
+        };
+        at = match at.parent() {
+            Some(parent) if next.is_relative() => parent.join(next),
+            _ => next,
+        };
+    }
+    Linked::Refuse(format!("{}: too many links (a loop?)", path.display()))
+}
+
+/// Whether others than a folder's owner may write in it.
+fn others_write(meta: &fs::Metadata) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        meta.permissions().mode() & 0o022 != 0
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = meta;
+        false
+    }
+}
+
+/// The process's umask, as Linux says it (/proc/self/status), else 022.
+#[cfg(unix)]
+fn umask() -> u32 {
+    static UMASK: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+    *UMASK.get_or_init(|| {
+        std::fs::read_to_string("/proc/self/status")
+            .ok()
+            .and_then(|s| {
+                s.lines()
+                    .find_map(|l| l.strip_prefix("Umask:"))
+                    .and_then(|v| u32::from_str_radix(v.trim(), 8).ok())
+            })
+            .unwrap_or(0o022)
+    })
 }
 
 /// A local path as a file:// URL (what is not plain, percent-encoded). On
@@ -1488,5 +1656,171 @@ mod tests {
         for name in ["x.opus", "x.webm", "x.OGG"] {
             assert!(is_audio(Path::new(name)), "{name}");
         }
+    }
+
+    /// A link planted where the temporary file would be, or at the
+    /// playlist's own name, is never written through (review 13, M11: a
+    /// link at `.<name>.tmp-<pid>` to another file overwrote that file and
+    /// made it mode 0666).
+    #[cfg(unix)]
+    #[test]
+    fn a_saved_playlist_writes_through_no_link() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+        let dir = crate::testdir::Scratch::new("pl-links");
+        let victim = dir.join("victim.txt");
+        fs::write(&victim, b"secret").unwrap();
+        fs::set_permissions(&victim, fs::Permissions::from_mode(0o600)).unwrap();
+        let list = dir.join("list.m3u");
+        // the names the temporary file had (the process's id)
+        symlink(
+            &victim,
+            dir.join(format!(".list.m3u.tmp-{}", std::process::id())),
+        )
+        .unwrap();
+        write_atomically(&list, b"#EXTM3U\n").unwrap();
+        assert_eq!(fs::read(&victim).unwrap(), b"secret");
+        let mode = |p: &Path| fs::symlink_metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&victim), 0o600);
+        assert!(fs::symlink_metadata(&list).unwrap().file_type().is_file());
+        assert_eq!(fs::read(&list).unwrap(), b"#EXTM3U\n");
+        // a link at the playlist's name made by someone else (as root,
+        // the test can make one so): replaced by the playlist, the file it
+        // pointed to left as it was
+        if unsafe { libc::geteuid() } == 0 {
+            let linked = dir.join("linked.m3u");
+            symlink(&victim, &linked).unwrap();
+            // (where the system lets root give it away: not in every sandbox)
+            if std::os::unix::fs::lchown(&linked, Some(65534), Some(65534)).is_ok() {
+                write_atomically(&linked, b"#EXTM3U\nx\n").unwrap();
+                assert_eq!(fs::read(&victim).unwrap(), b"secret");
+                assert_eq!(mode(&victim), 0o600);
+                assert!(fs::symlink_metadata(&linked).unwrap().file_type().is_file());
+            }
+        }
+        // a playlist's own mode kept
+        fs::set_permissions(&list, fs::Permissions::from_mode(0o640)).unwrap();
+        write_atomically(&list, b"#EXTM3U\ny\n").unwrap();
+        assert_eq!(mode(&list), 0o640);
+        // no temporary file left
+        let left: Vec<String> = fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|n| n.contains(".tmp-") && !n.ends_with(&format!("-{}", std::process::id())))
+            .collect();
+        assert!(left.is_empty(), "{left:?}");
+    }
+
+    /// A link of the user's own at the playlist's name (a list kept on a
+    /// NAS, linked into ~/Music): the list it names is saved, the link
+    /// stays (review 14, L4: the link was replaced, the list never updated).
+    #[cfg(unix)]
+    #[test]
+    fn a_playlist_saved_through_the_users_own_link_updates_the_list() {
+        let dir = crate::testdir::Scratch::new("pl-own-link");
+        std::fs::create_dir_all(dir.join("nas")).unwrap();
+        let real = dir.join("nas/list.m3u");
+        fs::write(&real, b"#EXTM3U\nold.mp3\n").unwrap();
+        let link = dir.join("list.m3u");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        write_atomically(&link, b"#EXTM3U\nnew.mp3\n").unwrap();
+        assert!(
+            fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert_eq!(fs::read(&real).unwrap(), b"#EXTM3U\nnew.mp3\n");
+        let left = fs::read_dir(dir.join("nas")).unwrap().count();
+        assert_eq!(left, 1, "a temporary file left");
+    }
+
+    /// A chain of links: each link, and the file at its end, the user's own,
+    /// else the playlist replaces the first link (review 15, L3: only the
+    /// first link's owner was asked).
+    #[cfg(unix)]
+    #[test]
+    fn a_chain_of_links_is_followed_only_while_each_is_the_users() {
+        use std::os::unix::fs::symlink;
+        let dir = crate::testdir::Scratch::new("pl-link-chain");
+        let real = dir.join("list-real.m3u");
+        fs::write(&real, b"#EXTM3U\nold\n").unwrap();
+        let middle = dir.join("middle.m3u");
+        symlink(&real, &middle).unwrap();
+        let first = dir.join("list.m3u");
+        symlink("middle.m3u", &first).unwrap();
+        write_atomically(&first, b"#EXTM3U\nnew\n").unwrap();
+        assert_eq!(fs::read(&real).unwrap(), b"#EXTM3U\nnew\n");
+        assert!(
+            fs::symlink_metadata(&first)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        // a link in the middle, or the file at the end, someone else's: not
+        // followed
+        let by = |other: &'static str| move |p: &Path, _: &fs::Metadata| !p.ends_with(other);
+        assert_eq!(link_target_by(&first, &by("middle.m3u")), Linked::Replace);
+        assert_eq!(
+            link_target_by(&first, &by("list-real.m3u")),
+            Linked::Replace
+        );
+        assert_eq!(
+            link_target_by(&first, &by("nobody")),
+            Linked::Follow(dir.join("list-real.m3u"))
+        );
+        // (and where the system lets root give the middle link away, the
+        // first link is replaced)
+        if unsafe { libc::geteuid() } == 0
+            && std::os::unix::fs::lchown(&middle, Some(65534), Some(65534)).is_ok()
+        {
+            write_atomically(&first, b"#EXTM3U\nmine\n").unwrap();
+            assert_eq!(fs::read(&real).unwrap(), b"#EXTM3U\nnew\n");
+            assert!(fs::symlink_metadata(&first).unwrap().file_type().is_file());
+        }
+    }
+
+    /// The user's own link leading nowhere (a NAS not mounted), or round in
+    /// a loop: the save is refused and the link kept - it was replaced by a
+    /// plain file; a chain of 20 links of the user's is followed (review 16,
+    /// L10: past 7 it was replaced).
+    #[cfg(unix)]
+    #[test]
+    fn a_link_leading_nowhere_is_kept_and_a_long_chain_followed() {
+        use std::os::unix::fs::symlink;
+        let dir = crate::testdir::Scratch::new("pl-link-nowhere");
+        let link = dir.join("list.m3u");
+        symlink(dir.join("nas/list.m3u"), &link).unwrap();
+        assert!(write_atomically(&link, b"#EXTM3U\nnew\n").is_err());
+        assert!(
+            fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        let looped = dir.join("loop.m3u");
+        symlink("loop.m3u", &looped).unwrap();
+        assert!(write_atomically(&looped, b"#EXTM3U\nnew\n").is_err());
+        assert!(
+            fs::symlink_metadata(&looped)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        let real = dir.join("real.m3u");
+        fs::write(&real, b"#EXTM3U\nold\n").unwrap();
+        let mut next = real.clone();
+        for k in 0..20 {
+            let hop = dir.join(format!("hop{k}.m3u"));
+            symlink(&next, &hop).unwrap();
+            next = hop;
+        }
+        write_atomically(&next, b"#EXTM3U\nnew\n").unwrap();
+        assert_eq!(fs::read(&real).unwrap(), b"#EXTM3U\nnew\n");
+        assert!(
+            fs::symlink_metadata(&next)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
     }
 }

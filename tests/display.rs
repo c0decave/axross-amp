@@ -100,13 +100,20 @@ fn the_pictures_go_to_a_display_and_come_back() {
     settle(&mut h, 2);
     assert_eq!(h.state().display_shown(), None);
     assert_eq!(h.state().guard_screen(), None);
-    // D shows them there again (the display remembered), D back
+    // D shows them there again (the display remembered), D back - each
+    // pressed at once after the change before: taken at its turn (the
+    // layout changes at most twice a second; review 15: a key pressed
+    // within the half second was dropped)
     h.key_press(egui::Key::D);
-    settle(&mut h, 2);
-    assert_eq!(h.state().display_shown(), Some("HDMI-1"));
+    assert!(
+        in_turn(&mut h, |a| a.display_shown() == Some("HDMI-1")),
+        "D: not shown"
+    );
     h.key_press(egui::Key::D);
-    settle(&mut h, 2);
-    assert_eq!(h.state().display_shown(), None);
+    assert!(
+        in_turn(&mut h, |a| a.display_shown().is_none()),
+        "D: not back"
+    );
 }
 
 #[test]
@@ -642,9 +649,13 @@ fn the_picture_goes_to_a_window_of_its_own_and_comes_back() {
     );
     // the face is drawn once, in its window (headless: inside this one)
     assert_eq!(h.query_all_by_label_contains("Visualization: ").count(), 1);
+    // (Escape soon after the window opened: taken at its turn - the layout
+    // changes at most twice a second)
     h.key_press(egui::Key::Escape);
-    settle(&mut h, 3);
-    assert!(!h.state().detached(), "Escape left it detached");
+    assert!(
+        in_turn(&mut h, |a| !a.detached()),
+        "Escape left it detached"
+    );
     assert!(
         h.query_by_label_contains("in a window of its own")
             .is_none()
@@ -653,8 +664,7 @@ fn the_picture_goes_to_a_window_of_its_own_and_comes_back() {
     h.state_mut().set_detached(true);
     settle(&mut h, 2);
     h.get_by_label_contains("in a window of its own").click();
-    settle(&mut h, 2);
-    assert!(!h.state().detached());
+    assert!(in_turn(&mut h, |a| !a.detached()));
 }
 
 /// The picture's own window takes what the picture in the main window
@@ -698,11 +708,11 @@ fn the_picture_in_its_own_window_takes_clicks_and_keys() {
         "a double click: no full screen"
     );
     assert_eq!(h.state().mode(), face, "a double click changed the face");
-    // Escape: out of full screen first, the window stays
+    // Escape: out of full screen first, the window stays (each key at
+    // once after the change before: taken at its turn)
     h.key_press(egui::Key::Escape);
-    settle(&mut h, 3);
     assert!(
-        !h.state().detached_fullscreen(),
+        in_turn(&mut h, |a| !a.detached_fullscreen()),
         "Escape: still full screen"
     );
     assert!(
@@ -711,11 +721,27 @@ fn the_picture_in_its_own_window_takes_clicks_and_keys() {
     );
     // F11: full screen; Escape twice: out of it, then back in the main window
     h.key_press(egui::Key::F11);
-    settle(&mut h, 3);
-    assert!(h.state().detached_fullscreen(), "F11: no full screen");
+    assert!(
+        in_turn(&mut h, |a| a.detached_fullscreen()),
+        "F11: no full screen"
+    );
     h.key_press(egui::Key::Escape);
     settle(&mut h, 3);
     h.key_press(egui::Key::Escape);
-    settle(&mut h, 3);
-    assert!(!h.state().detached(), "Escape twice: still detached");
+    assert!(
+        in_turn(&mut h, |a| !a.detached() && !a.detached_fullscreen()),
+        "Escape twice: still detached"
+    );
+}
+
+/// Frames until `done` holds, for as long as a change of the layout may
+/// wait its turn (half a second, and a little): whether it did.
+fn in_turn(h: &mut Harness<'static, App>, done: impl Fn(&App) -> bool) -> bool {
+    for _ in 0..16 {
+        if done(h.state()) {
+            return true;
+        }
+        settle(h, 1);
+    }
+    done(h.state())
 }

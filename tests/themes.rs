@@ -44,7 +44,7 @@ fn hover(h: &mut Harness<'static, App>, at: Pos2) {
 }
 
 #[test]
-fn the_picker_shows_a_theme_at_once_and_keeps_the_one_chosen() {
+fn the_picker_shows_a_theme_once_clicked_and_keeps_it() {
     let home = Scratch::new("theme-picker");
     let mut h = window(&home, vec![], egui::vec2(620.0, 860.0));
     settle(&mut h, 3);
@@ -64,17 +64,22 @@ fn the_picker_shows_a_theme_at_once_and_keeps_the_one_chosen() {
             t.name
         );
     }
-    // the pointer on Paper: shown at once
+    // the pointer on Paper: nothing changes (shown on the pointer's way
+    // down the list, the whole window flashed - review 13); its swatch is
+    // the preview
     let radio = |h: &Harness<'static, App>, name: &str| {
         h.get_by_role_and_label(egui::accesskit::Role::RadioButton, name)
             .rect()
     };
     let paper = radio(&h, "Paper");
     hover(&mut h, paper.center());
-    assert_eq!(h.state().theme_shown(), "paper", "no preview");
-    // off it again (on the submenu's title): back to the chosen one
+    assert_eq!(
+        h.state().theme_shown(),
+        "midnight",
+        "shown on the pointer's way"
+    );
     hover(&mut h, theme.center());
-    assert_eq!(h.state().theme_shown(), "midnight", "the preview stayed");
+    assert_eq!(h.state().theme_shown(), "midnight");
     // a click keeps one
     let sakura = radio(&h, "Sakura").center();
     hover(&mut h, sakura);

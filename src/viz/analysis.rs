@@ -3,7 +3,7 @@
 //! goniometer, the track's waveform (a click seeks), a chromagram with the
 //! circle of fifths and the key, a piano roll and a mel spectrogram.
 
-use super::{Canvas, Frame, Pen, Scheme, VizState, gpu, mix};
+use super::{Canvas, Frame, Pen, Scheme, VizState, gpu, luminance, mix, towards};
 use crate::analyzer::{Analyzer, fine};
 use egui::{Align2, Color32, FontId, Painter, Pos2, Rect, pos2, vec2};
 use std::f32::consts::{PI, TAU};
@@ -1185,6 +1185,34 @@ fn black(midi: usize) -> bool {
     matches!(midi % 12, 1 | 3 | 6 | 8 | 10)
 }
 
+/// How finely the piano roll's shades follow a level.
+const SHADES: usize = 32;
+
+/// `colour(v)` for levels 0..1 in [`SHADES`] steps, each within 0.075 of
+/// `ground`'s luminance.
+fn shades(colour: impl Fn(f32) -> Color32, ground: Color32) -> [Color32; SHADES + 1] {
+    std::array::from_fn(|k| within(colour(k as f32 / SHADES as f32), ground, 0.075))
+}
+
+/// `c` towards `ground` until its luminance is at most `d` from the
+/// ground's - or, on a light ground, until it is no darker than 0.82 (a
+/// stripe counts only where its darker part is below 0.8, as a flash does:
+/// WCAG, ITU-R BT.1702 - and grey lines 0.075 below a white ground were
+/// not to be seen).
+fn within(c: Color32, ground: Color32, d: f32) -> Color32 {
+    let (lc, lg) = (luminance(c), luminance(ground));
+    let light = lg >= 0.82;
+    let (lo, hi) = if light {
+        ((lg - d).min(0.82), 1.0)
+    } else {
+        (lg - d, lg + d)
+    };
+    if (lo..=hi).contains(&lc) {
+        return c;
+    }
+    towards(c, ground, lc.clamp(lo, hi))
+}
+
 fn pianoroll(f: &Frame<'_>, cv: &mut Canvas) {
     let (a, s, p) = (f.a, f.s, f.painter);
     let fine = &a.fine;
@@ -1223,6 +1251,27 @@ fn pianoroll(f: &Frame<'_>, cv: &mut Canvas) {
             .count()
             <= keys / 6
     };
+    // (the keys and the notes lie within a shade of the ground - their
+    // luminance at most 0.075 from it, as the lanes' and the octaves'
+    // lines are - so that keys lit an octave apart, and their notes beside
+    // them, are no grating: a chord in octaves, five keys alike in a
+    // column, was one by ITU-R BT.1702's reading, its light and dark 0.1
+    // apart or more; so was the keyboard itself, 61 light keys with dark
+    // gaps)
+    let ground = s.background;
+    let lit = shades(|v| s.at(v), ground);
+    // the notes as loud as they are: from the ground to their lit shade
+    let note = shades(|v| mix(ground, s.at(v), (v - 0.4) / 0.6), ground);
+    let shade = |table: &[Color32; SHADES + 1], v: f32| {
+        table[(v.clamp(0.0, 1.0) * SHADES as f32).round() as usize]
+    };
+    let white_key = within(mix(ground, s.peak, 0.75), ground, 0.045);
+    let levels = if notes(&fine.keys) {
+        Some(&fine.keys)
+    } else {
+        None
+    };
+    let level = |midi: usize| levels.map_or(0.0, |l| sounds(l, midi));
     cv.draw(p, |pen| {
         for midi in ROLL_LOW..=ROLL_HIGH {
             let y = y_of(midi);
@@ -1238,29 +1287,32 @@ fn pianoroll(f: &Frame<'_>, cv: &mut Canvas) {
                     s.grid(),
                 );
             }
-            let v = if notes(&fine.keys) {
-                sounds(&fine.keys, midi)
-            } else {
-                0.0
-            };
-            let key = if v > 0.0 {
-                s.at(v)
-            } else if black(midi) {
-                mix(s.background, Color32::BLACK, 0.4)
-            } else {
-                mix(s.background, s.peak, 0.75)
-            };
-            let width = if black(midi) {
-                board.width() * 0.62
-            } else {
-                board.width()
-            };
+        }
+        // the keyboard as a piano's: seven white keys an octave, as wide
+        // as each other, a hairline of the ground between them, the black
+        // keys the ground over them (lit, each a key of its own)
+        let octave = 12.0 * row;
+        for midi in (ROLL_LOW..=ROLL_HIGH).filter(|m| !black(*m)) {
+            let (base, step) = (midi - midi % 12, midi % 12);
+            let n = [0, 2, 4, 5, 7, 9, 11].iter().position(|w| *w == step);
+            let n = n.unwrap_or(0) as f32;
+            let bottom = r.bottom() - (base - ROLL_LOW) as f32 * row - n * octave / 7.0;
+            let top = (bottom - octave / 7.0).max(board.top());
+            let v = level(midi);
+            pen.rect(
+                Rect::from_x_y_ranges(board.x_range(), top + 0.5..=bottom - 0.5),
+                if v > 0.0 { shade(&lit, v) } else { white_key },
+            );
+        }
+        for midi in (ROLL_LOW..=ROLL_HIGH).filter(|m| black(*m)) {
+            let y = y_of(midi);
+            let v = level(midi);
             pen.rect(
                 Rect::from_min_size(
-                    pos2(board.left(), y + 0.5),
-                    vec2(width, (row - 1.0).max(0.5)),
+                    pos2(board.left(), y + 0.25),
+                    vec2(board.width() * 0.62, row - 0.5),
                 ),
-                key,
+                if v > 0.0 { shade(&lit, v) } else { ground },
             );
         }
     });
@@ -1278,7 +1330,7 @@ fn pianoroll(f: &Frame<'_>, cv: &mut Canvas) {
                     let y = y_of(midi);
                     pen.rect(
                         Rect::from_min_size(pos2(x, y), vec2(cell + 0.4, row)),
-                        mix(s.background, s.at(v), (v - 0.4) / 0.6),
+                        shade(&note, v),
                     );
                 }
             }

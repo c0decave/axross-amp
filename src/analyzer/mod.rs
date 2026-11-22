@@ -308,7 +308,11 @@ impl Analyzer {
             self.loudness = loudness::Meter::new(rate);
             self.beat = beat::Beat::new();
         }
-        let dt = dt.clamp(0.0, 0.25);
+        // (the music stopped: the picture falls to rest at the clock's pace
+        // also at a frame every second or two - a slow renderer's window
+        // held to its budget fell at a quarter of a second a frame, and
+        // went on drawing long after the music: review 13)
+        let dt = dt.clamp(0.0, if live { 0.25 } else { 2.0 });
         let frames = tap.len() / 2;
         let new = if written >= self.last_written {
             (written - self.last_written).min(frames as u64) as usize
@@ -692,6 +696,24 @@ mod tests {
         }
         assert!(a.bars.iter().all(|b| *b < 0.01));
         assert!(a.peaks.iter().all(|p| *p < 0.2));
+    }
+
+    /// At a frame every second or two (a slow renderer held to its budget)
+    /// the picture falls to rest in the same seconds as at 30 frames a
+    /// second, once the music has stopped (it fell a quarter of a second a
+    /// frame and the window went on drawing for long: review 13).
+    #[test]
+    fn at_a_frame_a_second_silence_falls_in_as_many_seconds() {
+        let tap = sine(48_000, 1000.0, 0.5, 4096);
+        let mut a = Analyzer::new();
+        let options = VisualOptions::default();
+        for _ in 0..8 {
+            run(&mut a, &tap, 4096, &options);
+        }
+        for _ in 0..3 {
+            a.update(&[], 4096, 48_000, &options, 1.0, false, Needs::default());
+        }
+        assert!(a.bars.iter().all(|b| *b < 0.01), "{:?}", a.bars);
     }
 
     #[test]

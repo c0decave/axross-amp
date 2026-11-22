@@ -90,10 +90,25 @@ them) are on a page of their own: [Known limitations](LIMITATIONS.md).
 - **Gapless**: the next track is opened before the current one ends and decoded on
   into the same buffer - not a sample of silence between the tracks of an album;
   AAC / ALAC in MP4 are trimmed by their edit list (encoder delay and padding).
+  A seek to the start lands where playing from the start does (an MP3's encoder
+  delay dropped once, an Opus file's pre-skip dropped).
+- **Chained Ogg** (Vorbis, Opus, FLAC: a new link at each song, as an Icecast
+  station sends it and a recording of one keeps it): every link plays, each
+  with its own decoder and rate, and an Ogg radio says each song's title; a
+  chained file's length is that of all its links and a seek goes into the link
+  it falls in. **An MP3 without a Xing header** (VBR, its length only
+  estimated from its first frames) plays whole: its frames are counted, its
+  length is theirs, a seek goes to its frame. A sample that is no number (NaN,
+  infinite) is silence, not the rest of the track; damage in the middle of a
+  file ends the track there.
 - **Sound**: resampled to the output's rate by a band-limited (windowed-sinc)
   resampler; 5.1 / 7.1 downmixed as ITU-R BS.775 has it; **ReplayGain** (track or
   album gain, pre-amp, held below the peak, a gain of its own for untagged tracks;
-  Opus R128 gains too); a ten-band **equalizer** with axross's presets; a volume curve
+  Opus R128 gains too); a ten-band **equalizer** with axross's presets and axross's
+  curve (the gains between the bands interpolated over the log of the frequency,
+  flat beyond the outer ones - within half a decibel of axross's for its presets,
+  by shelves and peaks whose gains are fitted to it, without axross's latency and
+  with no level taken off: the output's limiter holds a boost's peaks); a volume curve
   as axross's; pause, seek, stop and a new track fade (no clicks), and so does a
   dropout's edge. At unity gain the samples go out bit for bit (a master peaking just
   under full scale is not bent); a track ReplayGain makes louder goes through a
@@ -200,11 +215,15 @@ them) are on a page of their own: [Known limitations](LIMITATIONS.md).
 - **Shares its state with axross**: the playlist, the track and its position, the
   volume, the visualization (`~/.config/axross/media_player.json`) and axross's one
   equalizer (`~/.config/axross/audio.json`) - the player inside axross and this
-  program pick up where the other left off. Keys they do not know are kept. What
-  only this program has (window size, ReplayGain, crossfade, the cover's colours, the face options) is in
-  `~/.config/axross/axross-amp.json`, as axross rewrites its own file with its keys.
-  Files are written on a thread of their own, merged with what axross's player wrote
-  meanwhile (its playlist is not undone by a change of volume here).
+  program pick up where the other left off. Keys and values they do not know are
+  kept, in both programs. What only this program has (window size, ReplayGain,
+  crossfade, the cover's colours, the face options, its output device, a face axross
+  has not - the shared file then says the nearest of axross's 18) is in
+  `~/.config/axross/axross-amp.json`. Files are written on a thread of their own,
+  merged with what axross's player wrote meanwhile: its playlist is not undone by a
+  change of volume, a track's tags read or the next track here (the list is compared
+  by its paths; the track playing here stays current in axross's list), and opening
+  Options rewrites none of axross's values.
 
 ## Screenshots
 
@@ -283,11 +302,37 @@ The mouse wheel seeks over the position and sets the volume over its slider.
 ## Updates
 
 *Options › Check for updates…* asks GitHub for the latest release and, when
-it is newer, offers *Download and install*; *Check for updates at start*
-does the asking at every start. Both are off until used: nothing goes to the
-network otherwise (`AXROSS_AMP_NO_UPDATE_CHECK=1` keeps the start check off
-whatever the setting says). The window is calm: a bar that fills, no
-spinner, nothing blinking.
+it is newer, offers *Download and install*. In the background the player
+looks at its start and then once a day, on a thread of its own - never on a
+network the system says is offline or metered (NetworkManager on Linux),
+never blocking the window or what plays. What it does then is a setting
+(Options, and the Updates window; kept in `axross-amp.json`):
+
+- **Off** - nothing goes to the network unless asked;
+- **Say when one is out** - a word in the status line;
+- **Download and install by themselves** - the release is fetched, its
+  signature and checksum checked, the new program run once (`--self-test`)
+  and put in place, exactly as by hand; the player is never restarted: the
+  new version runs from the next start, or at once by *Restart now*. Its
+  first start is watched, wherever it comes: one that never draws its
+  window is replaced by the program before it at the next start, which
+  runs instead. A release whose self-test failed, or that was put back so,
+  is noted (`axross-amp.refused` beside the program) and never put in place
+  by itself again - it is said, and can still be installed by hand. Where
+  the program's folder cannot be written (a system-wide installation) the
+  release is not fetched by itself: the player says it is out and why;
+  fetched by hand, the checked file is kept in the cache and not fetched
+  again. Two players never both put a program in place.
+
+A new installation says when one is out. A player updated from 0.15 keeps
+0.15's choice: off - nothing to the network - unless *Check for updates at
+start* was ticked, then *Say when one is out*. The checks run while the
+window is minimised too, and the day is counted by the wall clock (a
+machine asleep keeps it).
+
+`AXROSS_AMP_NO_UPDATE_CHECK=1` keeps the background checks off whatever the
+setting says. The window is calm: a bar that fills, no spinner, nothing
+blinking.
 
 What is fetched is the release's file for this program - the Linux binary,
 the AppImage (the AppImage file itself is replaced), the program inside
@@ -305,11 +350,19 @@ Before anything is replaced:
 - the file has its entry in the signed `SHA256SUMS`, the size the release
   states (at most 512 MiB) and that SHA-256.
 
-The new file is written beside the program and put in place with one
+The new file is run once before it is put in place (`--self-test`: it must
+start here and say its version - a release that cannot run on this system,
+a library missing, never replaces this one), then put in place with one
 rename; the old one stays as `axross-amp.previous` (on Windows
 `axross-amp.exe.previous`: a running program can be renamed, not
-overwritten) until the new one has started. It takes effect at the next
-start; *Restart now* starts it at once. A folder that cannot be written
+overwritten) until the new one has run for a minute - to be put back by hand
+should it fail later. It takes effect at the next start; *Restart now*
+starts it at once and watches its start: should it end before its window is
+up, the old one is put back and this one goes on, saying so. The program
+started so waits for the player's name on the session bus and takes it when
+the old one ends (a file opened from the file manager then goes to it, not to
+a second player). What a download that was cut off (the window closed, a
+crash) left beside the program is removed at the next start. A folder that cannot be written
 (an app in a system folder) keeps the program as it is: the checked file is
 left in `~/.cache/axross-amp/update/` and the window says where. How a
 release is signed: [RELEASING.md](RELEASING.md).

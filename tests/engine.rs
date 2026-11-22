@@ -1278,3 +1278,499 @@ fn given_masters_crossfaded_stay_below_the_ceiling() {
     }
     assert!(tp <= -0.25, "{tp} dBTP");
 }
+
+// -- review 13: chained Ogg, VBR MP3 without a Xing header, NaN, a new output --
+
+fn media(name: &str) -> String {
+    format!("{}/tests/media/{name}", env!("CARGO_MANIFEST_DIR"))
+}
+
+/// The frequency of a tone in `frames` (interleaved stereo at RATE), by its
+/// zero crossings on the left.
+fn frequency(frames: &[f32]) -> f32 {
+    let left: Vec<f32> = frames.chunks(2).map(|f| f[0]).collect();
+    let crossings = left
+        .windows(2)
+        .filter(|w| (w[0] < 0.0) != (w[1] < 0.0))
+        .count();
+    crossings as f32 / 2.0 / (left.len() as f32 / RATE as f32)
+}
+
+/// A chained Ogg file - a new physical stream (another serial) for each
+/// link, as an Icecast station sends at each song - plays to the end of its
+/// last link and says its whole length; the second link of chained.ogg is
+/// at another rate than the first (review 13, H1: the engine dropped every
+/// packet after the first link).
+#[test]
+fn a_chained_ogg_file_plays_every_link() {
+    for name in ["chained.ogg", "chained.opus"] {
+        let (frames, info) = axross_amp::engine::decode_file(&media(name), RATE).unwrap();
+        let secs = frames as f64 / RATE as f64;
+        assert!((secs - 3.0).abs() < 0.06, "{name}: {secs:.3} s of 3");
+        let duration = info.duration.unwrap_or(0.0);
+        assert!(
+            (duration - 3.0).abs() < 0.06,
+            "{name}: said {duration:.3} s"
+        );
+        // what is heard: the first link's 440 Hz, then the second's 660 Hz
+        let engine = Engine::start_headless(|| {});
+        load(&engine, &media(name), 1);
+        let mut output = Output::new();
+        output.play(&engine, 3.4, |_, _| {});
+        let frames: Vec<f32> = output.heard.clone();
+        let first = frames.chunks(2).position(|f| f[0] != 0.0).unwrap();
+        let at = |s: f32| first * 2 + (s * RATE as f32) as usize * 2;
+        let (a, b) = (
+            frequency(&frames[at(0.3)..at(1.2)]),
+            frequency(&frames[at(1.8)..at(2.7)]),
+        );
+        assert!((a - 440.0).abs() < 8.0, "{name}: the first link at {a} Hz");
+        assert!((b - 660.0).abs() < 8.0, "{name}: the second link at {b} Hz");
+    }
+}
+
+/// A seek into a chained file's second link lands there.
+#[test]
+fn a_chained_ogg_file_seeks_into_a_later_link() {
+    for name in ["chained.ogg", "chained.opus"] {
+        let engine = Engine::start_headless(|| {});
+        engine.send(Command::Load {
+            path: media(name),
+            start_ms: 2000,
+            play: true,
+            generation: 1,
+        });
+        let mut output = Output::new();
+        output.play(&engine, 0.6, |_, _| {});
+        let first = output.heard.chunks(2).position(|f| f[0] != 0.0).unwrap();
+        let heard = &output.heard[first * 2..];
+        let hz = frequency(&heard[..heard.len().min(RATE as usize / 3 * 2)]);
+        assert!(
+            (hz - 660.0).abs() < 8.0,
+            "{name}: {hz} Hz after a seek to 2 s"
+        );
+        let position = engine.shared.position();
+        assert!((2.0..2.8).contains(&position), "{name}: at {position}");
+    }
+}
+
+/// An Ogg radio goes on across its songs (a new link each): its second
+/// song is heard, and its title said.
+#[test]
+fn an_ogg_radio_plays_on_into_the_next_song() {
+    let body = std::fs::read(media("chained.opus")).unwrap();
+    let (base, _) = server(move |_, mut socket| {
+        let _ = socket
+            .write_all(b"HTTP/1.0 200 OK\r\nContent-Type: audio/ogg\r\nicy-name: Ogg FM\r\n\r\n");
+        let _ = socket.write_all(&body);
+        std::thread::sleep(Duration::from_secs(8));
+    });
+    let engine = Engine::start_headless(|| {});
+    load(&engine, &format!("{base}/live.opus"), 1);
+    let mut output = Output::new();
+    let mut events = Vec::new();
+    output.play(&engine, 4.5, |_, e| events.push(describe(e)));
+    let sounding =
+        output.heard.chunks(2).filter(|f| f[0].abs() > 0.01).count() as f32 / RATE as f32;
+    assert!(sounding > 2.5, "{sounding:.2} s heard of 3; {events:?}");
+    assert!(
+        events.iter().any(|e| e == "title 1: Second"),
+        "the second song's title: {events:?}"
+    );
+}
+
+/// A VBR MP3 without a Xing or VBRI header: played whole, its length that
+/// of its frames (review 13, M3: cut at symphonia's estimate - half of it -
+/// or said to be ten times as long).
+#[test]
+fn a_vbr_mp3_without_a_xing_header_plays_whole_and_says_its_length() {
+    for name in ["vbr-noxing-short.mp3", "vbr-noxing-long.mp3"] {
+        let (frames, info) = axross_amp::engine::decode_file(&media(name), 44_100).unwrap();
+        let secs = frames as f64 / 44_100.0;
+        assert!((secs - 4.05).abs() < 0.08, "{name}: {secs:.3} s of 4.05");
+        let duration = info.duration.unwrap_or(0.0);
+        assert!(
+            (duration - 4.05).abs() < 0.08,
+            "{name}: said {duration:.3} s"
+        );
+    }
+    // and a seek beyond the estimate of the short one lands where asked
+    let engine = Engine::start_headless(|| {});
+    engine.send(Command::Load {
+        path: media("vbr-noxing-short.mp3"),
+        start_ms: 3000,
+        play: true,
+        generation: 1,
+    });
+    let mut output = Output::new();
+    output.play(&engine, 0.5, |_, _| {});
+    let first = output.heard.chunks(2).position(|f| f[0] != 0.0);
+    assert!(first.is_some(), "nothing heard after a seek to 3 s");
+    let position = engine.shared.position();
+    assert!((3.0..3.7).contains(&position), "at {position}");
+    let heard = &output.heard[first.unwrap() * 2..];
+    let hz = frequency(&heard[..heard.len().min(RATE as usize / 4 * 2)]);
+    assert!((hz - 440.0).abs() < 10.0, "{hz} Hz after the seek");
+}
+
+/// A float WAV of `samples` (interleaved stereo, 48 kHz).
+fn float_wav(samples: &[f32]) -> Vec<u8> {
+    let data = samples.len() as u32 * 4;
+    let mut out = Vec::new();
+    out.extend_from_slice(b"RIFF");
+    out.extend_from_slice(&(36 + data).to_le_bytes());
+    out.extend_from_slice(b"WAVEfmt ");
+    for v in [
+        16u32.to_le_bytes().as_slice(),
+        &3u16.to_le_bytes(),
+        &2u16.to_le_bytes(),
+        &RATE.to_le_bytes(),
+        &(RATE * 8).to_le_bytes(),
+        &8u16.to_le_bytes(),
+        &32u16.to_le_bytes(),
+    ] {
+        out.extend_from_slice(v);
+    }
+    out.extend_from_slice(b"data");
+    out.extend_from_slice(&data.to_le_bytes());
+    for s in samples {
+        out.extend_from_slice(&s.to_le_bytes());
+    }
+    out
+}
+
+/// One NaN or infinite sample does not silence the equalized track to its
+/// end (review 13, M1): what is heard is finite, and sound after it.
+#[test]
+fn a_nan_or_an_infinite_sample_does_not_poison_the_equalizer() {
+    let dir = folder("nan");
+    for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+        let mut samples = tone(330.0, 2.0);
+        samples[RATE as usize] = bad; // (at 0.5 s, the left channel)
+        let path = dir.join("bad.wav");
+        std::fs::write(&path, float_wav(&samples)).unwrap();
+        let engine = Engine::start_headless(|| {});
+        let mut gains = [0.0f32; 10];
+        gains[0] = 6.0;
+        engine.send(Command::Equalizer {
+            gains,
+            enabled: true,
+        });
+        load(&engine, &path.to_string_lossy(), 1);
+        let mut output = Output::new();
+        output.play(&engine, 1.6, |_, _| {});
+        let wrong = output.heard.iter().filter(|s| !s.is_finite()).count();
+        assert_eq!(wrong, 0, "{bad}: {wrong} samples not finite heard");
+        let first = output.heard.chunks(2).position(|f| f[0] != 0.0).unwrap();
+        let after = &output.heard[(first + RATE as usize) * 2..(first + RATE as usize * 3 / 2) * 2];
+        let loud = after.iter().fold(0.0f32, |m, s| m.max(s.abs()));
+        assert!(loud > 0.05, "{bad}: silent after it ({loud})");
+    }
+}
+
+/// The output lost (and opened again at the same rate) while the next
+/// track is decoded behind the current one: every frame of each heard once
+/// (review 13, M2: 96 ms of the next track were heard twice).
+#[test]
+fn a_new_output_while_the_next_track_is_queued_repeats_nothing() {
+    let dir = folder("reopen-gapless");
+    let dc = |v: f32| -> Vec<f32> { vec![v; RATE as usize * 2] };
+    let (a, b) = (dir.join("a.wav"), dir.join("b.wav"));
+    std::fs::write(&a, wav_of(RATE, &dc(0.25))).unwrap();
+    std::fs::write(&b, wav_of(RATE, &dc(0.5))).unwrap();
+    for lose in [false, true] {
+        let engine = Engine::start_headless(|| {});
+        load(&engine, &a.to_string_lossy(), 1);
+        engine.send(Command::Queue(Some(Queued {
+            path: b.to_string_lossy().into_owned(),
+            generation: 2,
+        })));
+        let mut output = Output::new();
+        output.play(&engine, 0.8, |_, _| {});
+        if lose {
+            engine.shared.simulate_output_loss();
+        }
+        output.play(&engine, 1.8, |_, _| {});
+        // (at the output's volume: B is twice as loud as A)
+        let loudest = output.heard.iter().fold(0.0f32, |m, s| m.max(*s));
+        let count = |v: f32| {
+            output
+                .heard
+                .chunks(2)
+                .filter(|f| (f[0] - v).abs() < 0.002)
+                .count() as i64
+        };
+        let (na, nb) = (count(loudest / 2.0), count(loudest));
+        assert!((na - RATE as i64).abs() <= 400, "lost {lose}: A {na}");
+        assert!((nb - RATE as i64).abs() <= 400, "lost {lose}: B {nb}");
+    }
+}
+
+/// Damage in the middle of a file ends the track there (what came before
+/// is played), where it failed the whole track (review 13, L3) - also an
+/// Ogg file whose damage symphonia's reader finds as it opens it (review
+/// 14, L2: refused at the opening).
+#[test]
+fn damage_in_the_middle_ends_the_track_there() {
+    for name in ["damaged.ogg", "damaged.opus"] {
+        let decoded = axross_amp::engine::decode_file(&media(name), RATE);
+        let (frames, _) = decoded.unwrap_or_else(|e| panic!("{name}: {e}"));
+        assert!(frames as u32 > RATE * 2 / 3, "{name}: {frames} frames");
+    }
+    // damage in the first page of sound: the whole pages after it play
+    // (review 15, L2: nothing came before it, and the file was refused)
+    for name in ["damaged-first.ogg", "damaged-first.opus"] {
+        let decoded = axross_amp::engine::decode_file(&media(name), RATE);
+        let (frames, _) = decoded.unwrap_or_else(|e| panic!("{name}: {e}"));
+        assert!(frames as u32 > RATE * 3 / 2, "{name}: {frames} frames");
+    }
+    // (review 13's file: its first two pages of sound damaged, the last -
+    // 14 ms - whole: opened, not refused)
+    let decoded = axross_amp::engine::decode_file(&media("corrupt-first-page.opus"), RATE);
+    decoded.unwrap_or_else(|e| panic!("corrupt-first-page.opus: {e}"));
+    let dir = folder("damaged");
+    for name in ["chained.opus", "chained.ogg"] {
+        let mut bytes = std::fs::read(media(name)).unwrap();
+        let n = bytes.len();
+        let mut seed = 3u32;
+        for frac in [0.4, 0.6] {
+            let at = (n as f64 * frac) as usize;
+            for b in &mut bytes[at..at + 2048] {
+                seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                *b = (seed >> 24) as u8;
+            }
+        }
+        let path = dir.join(name);
+        std::fs::write(&path, &bytes).unwrap();
+        let decoded = axross_amp::engine::decode_file(&path.to_string_lossy(), RATE);
+        let (frames, _) = decoded.unwrap_or_else(|e| panic!("{name}: {e}"));
+        assert!(frames as u32 > RATE * 4 / 5, "{name}: {frames} frames");
+    }
+}
+
+/// ReplayGain changed while the next track is opened ahead: the next one
+/// is heard at the new gain too (review 13, L4: it kept the old one).
+#[test]
+fn a_new_replaygain_reaches_the_next_track() {
+    let dir = folder("gain-next");
+    let dc = |v: f32| -> Vec<f32> { vec![v; RATE as usize * 2] };
+    let (a, b) = (dir.join("a.wav"), dir.join("b.wav"));
+    std::fs::write(&a, wav_of(RATE, &dc(0.4))).unwrap();
+    std::fs::write(&b, wav_of(RATE, &dc(0.4))).unwrap();
+    let engine = Engine::start_headless(|| {});
+    load(&engine, &a.to_string_lossy(), 1);
+    engine.send(Command::Queue(Some(Queued {
+        path: b.to_string_lossy().into_owned(),
+        generation: 2,
+    })));
+    let mut output = Output::new();
+    output.play(&engine, 0.4, |_, _| {});
+    // ReplayGain on: an untagged track at -6 dB
+    engine.send(Command::Loudness(axross_amp::engine::Loudness {
+        mode: axross_amp::engine::GainMode::Track,
+        preamp_db: 0.0,
+        untagged_db: -6.0,
+    }));
+    output.play(&engine, 2.0, |_, _| {});
+    let left: Vec<f32> = output.heard.chunks(2).map(|f| f[0]).collect();
+    let first = left.iter().position(|s| *s != 0.0).unwrap();
+    // A (decoded before the change, at 0 dB) at 0.1 .. 0.3 s, B at 1.2 ..
+    // 1.6 s: 6 dB lower
+    let level = |from: f32, to: f32| {
+        let part =
+            &left[first + (from * RATE as f32) as usize..first + (to * RATE as f32) as usize];
+        part.iter().sum::<f32>() / part.len() as f32
+    };
+    let (la, lb) = (level(0.1, 0.3), level(1.2, 1.6));
+    let db = 20.0 * (lb / la).log10();
+    assert!((db + 6.0).abs() < 0.2, "A {la}, B {lb}: {db} dB");
+}
+
+/// What is heard of `path` from its start: played at once (`seek` false),
+/// or loaded paused, sought to 0 and played (Stop, Home, Previous).
+fn start_of(path: &str, seek: bool) -> Vec<f32> {
+    let engine = Engine::start_headless(|| {});
+    engine.send(Command::Load {
+        path: path.to_owned(),
+        start_ms: 0,
+        play: !seek,
+        generation: 1,
+    });
+    if seek {
+        wait_for(&engine, 5.0, |e| matches!(e, Event::Loaded { .. }));
+        std::thread::sleep(Duration::from_millis(300));
+        engine.send(Command::Seek(0.0));
+        std::thread::sleep(Duration::from_millis(300));
+        engine.send(Command::Play);
+    }
+    let mut output = Output::new();
+    output.play(&engine, 0.5, |_, _| {});
+    let left: Vec<f32> = output.heard.chunks(2).map(|f| f[0]).collect();
+    let first = left.iter().position(|s| s.abs() > 1e-4).unwrap_or(0);
+    left[first..].to_vec()
+}
+
+/// A seek to 0 lands where playing from the start does - the encoder's
+/// delay of a LAME MP3 dropped once (not twice), an Opus file's pre-skip
+/// dropped (not played) (review 13, L1: 331 to 1204 frames of an MP3 lost,
+/// 312 of pre-skip heard).
+#[test]
+fn a_seek_to_the_start_lands_where_the_start_is() {
+    for name in ["chirp.mp3", "chirp.opus"] {
+        let (a, b) = (start_of(&media(name), false), start_of(&media(name), true));
+        // the lag of b against a, by a window of a after its start
+        let window = &a[2000..4000];
+        let mut best = (f32::MAX, 0i64);
+        for lag in -1500i64..1500 {
+            let at = 2000 + lag;
+            if at < 0 || at as usize + 2000 > b.len() {
+                continue;
+            }
+            let at = at as usize;
+            let error: f32 = window
+                .iter()
+                .zip(&b[at..at + 2000])
+                .map(|(x, y)| (x - y).powi(2))
+                .sum();
+            if error < best.0 {
+                best = (error, lag);
+            }
+        }
+        assert!(best.1.abs() <= 2, "{name}: shifted by {} frames", best.1);
+    }
+}
+
+/// A recording of an Ogg station - its granule positions begin hours in,
+/// where it joined the station: as long as it is, and sought within (review
+/// 14, M2: a 2 s recording said 10 802 s, a seek to 1 s ended it, a second
+/// song after it could not be reached).
+#[test]
+fn a_recording_of_an_ogg_station_is_timed_and_sought_as_it_is() {
+    for (name, secs) in [("capture1.ogg", 2.0), ("capture.ogg", 4.0)] {
+        let (frames, info) = axross_amp::engine::decode_file(&media(name), RATE).unwrap();
+        let played = frames as f64 / RATE as f64;
+        assert!((played - secs).abs() < 0.1, "{name}: {played:.3} s");
+        let said = info.duration.unwrap_or(0.0);
+        assert!((said - secs).abs() < 0.1, "{name}: said {said:.3} s");
+    }
+    for (name, at, hz) in [("capture1.ogg", 1000, 440.0), ("capture.ogg", 3000, 660.0)] {
+        let engine = Engine::start_headless(|| {});
+        engine.send(Command::Load {
+            path: media(name),
+            start_ms: at,
+            play: true,
+            generation: 1,
+        });
+        let mut output = Output::new();
+        output.play(&engine, 0.5, |_, _| {});
+        let first = output.heard.chunks(2).position(|f| f[0] != 0.0);
+        let first = first.unwrap_or_else(|| panic!("{name}: nothing after a seek to {at} ms"));
+        let heard = &output.heard[first * 2..];
+        let found = frequency(&heard[..heard.len().min(RATE as usize / 4 * 2)]);
+        assert!((found - hz).abs() < 10.0, "{name} at {at} ms: {found} Hz");
+        let position = engine.shared.position() * 1000.0;
+        assert!(
+            (at as f64..at as f64 + 700.0).contains(&position),
+            "{name}: at {position} ms"
+        );
+    }
+}
+
+/// An equalizer of cuts alone can still raise a frequency a little (its
+/// fit to axross's curve ripples): a master at full scale there is held
+/// below it by the output's limiter, not clipped (review 14, L3: the
+/// limiter held only where a band was above 0 dB).
+#[test]
+fn an_equalizer_of_cuts_only_never_clips_a_hot_master() {
+    let mut gains = [0.0f32; 10];
+    for g in gains.iter_mut().skip(1).step_by(2) {
+        *g = -12.0;
+    }
+    let mut eq = axross_amp::eq::Equalizer::new(RATE);
+    eq.set_gains(gains);
+    let hz = (0..400)
+        .map(|i| 20.0 * 1000f64.powf(i as f64 / 399.0))
+        .max_by(|a, b| eq.response_db(*a).total_cmp(&eq.response_db(*b)))
+        .unwrap();
+    assert!(
+        eq.response_db(hz) > 0.3,
+        "cuts only raise {hz} Hz by {}",
+        eq.response_db(hz)
+    );
+    let dir = folder("cuts-only");
+    let peak = 10f32.powf(-0.1 / 20.0);
+    let master: Vec<f32> = (0..RATE as usize * 2)
+        .flat_map(|i| {
+            let v = (std::f64::consts::TAU * hz * i as f64 / RATE as f64).sin() as f32 * peak;
+            [v, v]
+        })
+        .collect();
+    std::fs::write(dir.join("hot.wav"), wav_of(RATE, &master)).unwrap();
+    let engine = Engine::start_headless(|| {});
+    engine.shared.set_volume(1.0);
+    engine.send(Command::Equalizer {
+        gains,
+        enabled: true,
+    });
+    load(&engine, &dir.join("hot.wav").to_string_lossy(), 1);
+    let mut output = Output::new();
+    output.play(&engine, 1.6, |_, _| {});
+    let heard = heard_from_start(&output.heard);
+    let at_top = heard.iter().filter(|v| v.abs() >= 0.9999).count();
+    assert_eq!(at_top, 0, "{at_top} samples clipped at full scale");
+}
+
+/// The playlist's lengths (read before a track plays) are the measured
+/// ones (review 14, L5: a VBR MP3 without a Xing header said 40 s for 4, a
+/// chained Ogg its first link's length).
+#[test]
+fn a_tracks_length_before_it_plays_is_the_measured_one() {
+    for (name, secs) in [
+        ("vbr-noxing-long.mp3", 4.05),
+        ("vbr-noxing-short.mp3", 4.05),
+        ("chained.ogg", 3.0),
+        ("capture1.ogg", 2.0),
+    ] {
+        let info = axross_amp::engine::probe(&media(name)).unwrap();
+        let said = info.duration.unwrap_or(0.0);
+        assert!((said - secs).abs() < 0.1, "{name}: {said:.2} s");
+    }
+}
+
+/// Vorbis paged as libogg (oggenc) pages it, beginning with seconds of
+/// silence (its first page holds them all): its length and its seeks as
+/// they are (review 15, M2: taken for a station's recording - 6.24 s said
+/// for 8, a seek to 5 s at 6.76 s).
+#[test]
+fn an_ogg_file_beginning_quietly_is_timed_and_sought_as_it_is() {
+    for (name, secs) in [("lo-sil3-2tone.ogg", 8.0), ("lo-sil2-2tone.ogg", 7.0)] {
+        let (frames, info) = axross_amp::engine::decode_file(&media(name), RATE).unwrap();
+        assert!(
+            (frames as f64 / RATE as f64 - secs).abs() < 0.1,
+            "{name}: decoded"
+        );
+        let said = info.duration.unwrap_or(0.0);
+        assert!((said - secs).abs() < 0.1, "{name}: said {said:.2} s");
+        let probed = axross_amp::engine::probe(&media(name))
+            .unwrap()
+            .duration
+            .unwrap_or(0.0);
+        assert!((probed - secs).abs() < 0.1, "{name}: probed {probed:.2} s");
+    }
+    // 3 s of silence, 2.5 s at 440 Hz, 2.5 s at 660 Hz: 5 s is the first tone
+    let engine = Engine::start_headless(|| {});
+    engine.send(Command::Load {
+        path: media("lo-sil3-2tone.ogg"),
+        start_ms: 5000,
+        play: true,
+        generation: 1,
+    });
+    let mut output = Output::new();
+    output.play(&engine, 0.5, |_, _| {});
+    let first = output.heard.chunks(2).position(|f| f[0] != 0.0).unwrap();
+    let heard = &output.heard[first * 2..];
+    let hz = frequency(&heard[..heard.len().min(RATE as usize / 4 * 2)]);
+    assert!((hz - 440.0).abs() < 10.0, "{hz} Hz after a seek to 5 s");
+    let position = engine.shared.position();
+    assert!((5.0..5.7).contains(&position), "at {position}");
+}

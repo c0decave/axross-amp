@@ -1715,3 +1715,748 @@ fn white_strobe(hz: f32, secs: f32) -> (usize, f32) {
     }
     (meter.most().0, veiled as f32 / frames as f32)
 }
+
+/// Review 13's music (48 kHz stereo, interleaved): an A chord in octaves
+/// (55 - 3520 Hz, sines summed / 4) - "swell4" swelling four times a
+/// second, "gate34" gated at 3.4 Hz, "gatestep" gated on and off with the
+/// gate stepping 2 -> 3 -> 4 -> 5 Hz each second; "pingpong" noise left
+/// and right in turn 3.5 times a second, "bands4" bass alone and treble
+/// alone four times a second.
+fn r13_music(kind: &str, secs: f32) -> Vec<f32> {
+    let rate = 48_000.0f32;
+    let n = (secs * rate) as usize;
+    let mut out = Vec::with_capacity(n * 2);
+    let mut seed = 77u32;
+    let mut noise = move || {
+        seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+        (seed >> 9) as f32 / (1u32 << 23) as f32 - 0.5
+    };
+    let tau = std::f32::consts::TAU;
+    for i in 0..n {
+        let t = i as f32 / rate;
+        let chord: f32 = [55.0f32, 110.0, 220.0, 440.0, 880.0, 1760.0, 3520.0]
+            .iter()
+            .map(|f| (t * f * tau).sin())
+            .sum::<f32>()
+            / 4.0;
+        let (l, r) = match kind {
+            "swell4" => {
+                let k = 0.5 - 0.5 * (t * 4.0 * tau).cos();
+                (chord * k, chord * k)
+            }
+            "gate34" => {
+                let g = if (t * 3.4).fract() < 0.5 { 1.0 } else { 0.0 };
+                (chord * g, chord * g)
+            }
+            "gatestep" => {
+                let hz = 2.0 + (t as u32 % 4) as f32;
+                let g = if (t * hz).fract() < 0.5 { 1.0 } else { 0.0 };
+                (chord * g, chord * g)
+            }
+            "pingpong" => {
+                let g = (t * 3.5).fract() < 0.5;
+                let v = noise() * 1.8;
+                if g { (v, 0.0) } else { (0.0, v) }
+            }
+            "bands4" => {
+                let g = (t * 4.0).fract() < 0.5;
+                let v = if g {
+                    (t * 60.0 * tau).sin()
+                } else {
+                    noise() * 1.5
+                };
+                (v, v)
+            }
+            _ => (chord, chord),
+        };
+        out.push((l * 0.9).clamp(-1.0, 1.0));
+        out.push((r * 0.9).clamp(-1.0, 1.0));
+    }
+    out
+}
+
+/// A face through review 13's music, Intense, 320 x 180 at 60 frames a
+/// second, its readings printed.
+fn r13_case(key: &'static str, scheme: &str, music: &str, secs: f32) -> (Report, String) {
+    let r = measure(
+        key,
+        Play {
+            motion: Motion::Intense,
+            scheme,
+            size: (320.0, 180.0),
+            fps: 60.0,
+            music: r13_music(music, secs),
+        },
+        |_| {},
+    );
+    let line = format!(
+        "{key} Intense {scheme} {music}: transitions/s {} (strict {}) area {} red {}/{}/{} gamma red {} swept {} stripes {:.2} ({} frames)",
+        r.transitions,
+        r.strict,
+        r.area,
+        r.red,
+        r.strict_red,
+        r.area_red,
+        r.red_gamma,
+        r.swept,
+        r.stripes,
+        r.pattern_frames
+    );
+    println!("{line}");
+    (r, line)
+}
+
+/// Review 13 (M10): the piano roll through a chord in octaves - its keys
+/// lit an octave apart and their notes' lanes beside them - was a grating
+/// by the meter's pattern reading (swell4: 13 frames in Classic, 28 in
+/// black on white; gatestep: 87 in Classic). Its keyboard is now a
+/// low-contrast strip.
+#[test]
+fn the_pianoroll_through_octave_chords_is_no_grating() {
+    let mut failures = Vec::new();
+    for (scheme, music) in [
+        ("classic", "swell4"),
+        ("wb", "swell4"),
+        ("bw", "swell4"),
+        ("classic", "gatestep"),
+    ] {
+        let (r, line) = r13_case("pianoroll", scheme, music, 6.0);
+        if r.fails() {
+            failures.push(line);
+        }
+    }
+    assert!(failures.is_empty(), "{failures:#?}");
+}
+
+/// Review 13 (M10): the feedback face through a chord gated on and off
+/// at 2 to 5 Hz read 7 by the strict reading (its zoom pulled by the bass,
+/// its waves drawn from the bands as they are), over the six enforced -
+/// now within them as it plays and in each of its looks.
+#[test]
+fn milkdrop_through_a_stepping_gate_keeps_within_six() {
+    let mut failures = Vec::new();
+    let (r, line) = r13_case("milkdrop", "classic", "gatestep", 6.0);
+    if r.fails() {
+        failures.push(line);
+    }
+    let only = std::env::var("AMP_LOOKS").ok();
+    for k in 0..axross_amp::viz::FEEDBACK_LOOKS {
+        if only
+            .as_deref()
+            .is_some_and(|o| !o.split(',').any(|w| w == k.to_string()))
+        {
+            continue;
+        }
+        let r = measure(
+            "milkdrop",
+            Play {
+                motion: Motion::Intense,
+                scheme: "classic",
+                size: (320.0, 180.0),
+                fps: 60.0,
+                music: r13_music("gatestep", 8.0),
+            },
+            |s| axross_amp::viz::set_feedback_preset(s, k),
+        );
+        let line = format!(
+            "milkdrop look {k} gatestep: transitions/s {} (strict {}) area {} red {}/{}/{} gamma red {} swept {} ({} pattern frames)",
+            r.transitions,
+            r.strict,
+            r.area,
+            r.red,
+            r.strict_red,
+            r.area_red,
+            r.red_gamma,
+            r.swept,
+            r.pattern_frames
+        );
+        println!("{line}");
+        if r.fails() {
+            failures.push(line);
+        }
+    }
+    assert!(failures.is_empty(), "{failures:#?}");
+}
+
+/// Review 14's music (48 kHz stereo, interleaved): A in octaves swelling
+/// four times a second ("swell4"), gated with the gate stepping 2 -> 5 Hz
+/// ("gatestep"), every note of four octaves in turn ("keys"), two notes a
+/// tritone apart in turn six times a second ("tritone6"), chords gated at
+/// 2.5 Hz ("gate25").
+fn r14_music(kind: &str, secs: f32) -> Vec<f32> {
+    let rate = 48_000.0f32;
+    let n = (secs * rate) as usize;
+    let mut out = Vec::with_capacity(n * 2);
+    let chord = |t: f32| -> f32 {
+        // A in octaves: 55 .. 3520 Hz
+        let mut s = 0.0;
+        for k in 0..7 {
+            s += (std::f32::consts::TAU * 55.0 * 2f32.powi(k) * t).sin();
+        }
+        s / 7.0
+    };
+    for i in 0..n {
+        let t = i as f32 / rate;
+        let v = match kind {
+            // a 4 Hz swell
+            "swell4" => chord(t) * (0.5 - 0.5 * (std::f32::consts::TAU * 4.0 * t).cos()),
+            // gated, the gate stepping 2 -> 5 Hz (a second each)
+            "gatestep" => {
+                let hz = 2.0 + (t as usize % 4) as f32;
+                if (t * hz).fract() < 0.5 {
+                    chord(t)
+                } else {
+                    0.0
+                }
+            }
+            // every note of four octaves in turn, 8 a second, as a run up and down
+            "keys" => {
+                let step = (t * 8.0) as usize % 96;
+                let k = if step < 48 { step } else { 95 - step };
+                let f = 110.0 * 2f32.powf(k as f32 / 12.0);
+                let env = 1.0 - (t * 8.0).fract();
+                (std::f32::consts::TAU * f * t).sin() * env
+            }
+            // two notes a tritone apart in turn at 6 Hz, loud
+            "tritone6" => {
+                let f = if ((t * 6.0) as usize).is_multiple_of(2) {
+                    440.0
+                } else {
+                    622.25
+                };
+                (std::f32::consts::TAU * f * t).sin()
+            }
+            // silence and full chords in turn at 2.5 Hz (5 transitions a second)
+            "gate25" => {
+                if (t * 2.5).fract() < 0.5 {
+                    chord(t)
+                } else {
+                    0.0
+                }
+            }
+            // (review 15's) a 110 Hz square wave gated at 3 Hz
+            "square3" => {
+                if (t * 3.0).fract() < 0.5 {
+                    if (t * 110.0).fract() < 0.5 { 0.8 } else { -0.8 }
+                } else {
+                    0.0
+                }
+            }
+            other => panic!("music {other}"),
+        };
+        out.push(v * 0.9);
+        out.push(v * 0.9);
+    }
+    out
+}
+
+/// A face through review 14's music, 320 x 180 at 60 frames a second.
+fn r14_case(key: &'static str, motion: Motion, scheme: &str, music: &str) -> (Report, String) {
+    let r = measure(
+        key,
+        Play {
+            motion,
+            scheme,
+            size: (320.0, 180.0),
+            fps: 60.0,
+            music: r14_music(music, 8.0),
+        },
+        |_| {},
+    );
+    let line = format!(
+        "{key} {motion:?} {scheme} {music}: transitions/s {} (strict {}) area {} red {}/{}/{} gamma red {} stripes {:.2} ({} pattern frames)",
+        r.transitions,
+        r.strict,
+        r.area,
+        r.red,
+        r.strict_red,
+        r.area_red,
+        r.red_gamma,
+        r.stripes,
+        r.pattern_frames
+    );
+    println!("{line}");
+    (r, line)
+}
+
+/// Review 14 (M1): the piano roll through octave chords, gated or
+/// swelling - 44 to 159 pattern frames by the project's meter.
+#[test]
+fn the_pianoroll_through_review_14s_music_is_no_grating() {
+    let mut failures = Vec::new();
+    for (scheme, music) in [
+        ("classic", "gatestep"),
+        ("bw", "gatestep"),
+        ("bw", "swell4"),
+        ("redcustom", "gate25"),
+    ] {
+        let (r, line) = r14_case("pianoroll", Motion::Intense, scheme, music);
+        if r.fails() {
+            failures.push(line);
+        }
+    }
+    assert!(failures.is_empty(), "{failures:#?}");
+}
+
+/// Review 14 (M4): the oscilloscope - one of axross's faces - through a
+/// two-note melody, in the default scheme and motion: a steady tone's nine
+/// to thirteen periods across the face lay as a grating (8 - 14 pattern
+/// frames).
+#[test]
+fn the_oscilloscope_through_a_two_note_melody_is_no_grating() {
+    let mut failures = Vec::new();
+    for (motion, scheme) in [
+        (Motion::Calm, "classic"),
+        (Motion::Intense, "classic"),
+        (Motion::Calm, "redcustom"),
+        (Motion::Intense, "redcustom"),
+    ] {
+        let (r, line) = r14_case("scope", motion, scheme, "tritone6");
+        if r.fails() {
+            failures.push(line);
+        }
+    }
+    // (review 15, L1: a square wave gated at 3 Hz, Intense: 3 frames)
+    for scheme in ["classic", "bw", "redcustom"] {
+        let (r, line) = r14_case("scope", Motion::Intense, scheme, "square3");
+        if r.fails() {
+            failures.push(line);
+        }
+    }
+    assert!(failures.is_empty(), "{failures:#?}");
+}
+
+/// The pattern stage softening a picture, then the picture resized while
+/// time stands still (paused, then F11 or the window resized): the guard
+/// draws on (review 15, H1: its pattern cells kept the old grid's size and
+/// the player aborted - spectrum, mirror, waterfall).
+#[test]
+fn a_resize_while_paused_after_a_pattern_draws_on() {
+    for key in ["spectrum", "mirror"] {
+        let mut h = faces::harness(key, vec2(640.0, 40.0), true, 1.0);
+        h.state_mut().state.flash.screen_is = None;
+        h.state_mut().fps = 60.0;
+        h.state_mut().sound = r14_music("gatestep", 10.0);
+        h.state_mut().analyzer.motion = Motion::Intense;
+        h.state_mut().scheme = "custom".into();
+        for (k, v) in [
+            ("background", "#000000"),
+            ("low", "#ffffff"),
+            ("high", "#ffffff"),
+            ("peak", "#ffffff"),
+        ] {
+            h.state_mut().custom.insert(k.into(), v.into());
+        }
+        let found = (0..560).find(|_| {
+            faces::frame(&mut h);
+            h.state().state.flash.pattern_strength >= 0.01
+        });
+        assert!(
+            found.is_some(),
+            "{key}: no pattern softened - the case is not made"
+        );
+        // paused: no time passes; the picture narrower and taller
+        h.state_mut().fps = f32::INFINITY;
+        for size in [vec2(200.0, 300.0), vec2(900.0, 120.0), vec2(320.0, 180.0)] {
+            h.set_size(size);
+            h.step();
+        }
+        // and on again
+        h.state_mut().fps = 60.0;
+        for _ in 0..10 {
+            faces::frame(&mut h);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Review 16: new adversarial music, every face, the starkest schemes.
+
+/// Stereo, interleaved, 48 kHz.
+fn r16_music(kind: &str, secs: f32) -> Vec<f32> {
+    let rate = 48_000.0f32;
+    let n = (secs * rate) as usize;
+    let mut out = Vec::with_capacity(n * 2);
+    let tau = std::f32::consts::TAU;
+    let chord = |t: f32| -> f32 {
+        let mut s = 0.0;
+        for k in 0..7 {
+            s += (tau * 55.0 * 2f32.powi(k) * t).sin();
+        }
+        s / 7.0
+    };
+    let mut seed = 0x1234_5678u32;
+    let mut noise = move || {
+        seed ^= seed << 13;
+        seed ^= seed >> 17;
+        seed ^= seed << 5;
+        (seed as f32 / u32::MAX as f32) * 2.0 - 1.0
+    };
+    let mut phase = 0.0f32;
+    for i in 0..n {
+        let t = i as f32 / rate;
+        let (l, r) = match kind {
+            // full-scale square below hearing: the wave jumps rail to rail
+            "infra4" => {
+                let v = if (t * 4.0).fract() < 0.5 { 0.95 } else { -0.95 };
+                (v, v)
+            }
+            "infra7" => {
+                let v = 0.95 * (tau * 7.0 * t).sin();
+                (v, v)
+            }
+            // a DC step at 3.5 Hz under a tone
+            "dcstep" => {
+                let dc = if (t * 3.5).fract() < 0.5 { 0.5 } else { -0.5 };
+                let v = dc + 0.4 * (tau * 440.0 * t).sin();
+                (v, v)
+            }
+            // 20 ms bursts of full-band noise at 7 Hz
+            "clicks7" => {
+                let v = if (t * 7.0).fract() < 0.14 {
+                    noise()
+                } else {
+                    0.0
+                };
+                (v, v)
+            }
+            // 3.5 Hz: kick, and a hat between
+            "beat35" => {
+                let b = (t * 3.5).fract() / 3.5;
+                let kick = (-b * 18.0).exp() * (tau * (50.0 + 120.0 * (-b * 30.0).exp()) * b).sin();
+                let h = ((t * 7.0).fract() - 0.5).abs() < 0.03;
+                let v = kick * 0.95 + if h { 0.4 * noise() } else { 0.0 };
+                (v, v)
+            }
+            // a 55 Hz saw opened and closed by a 4 Hz wobble
+            "wobble4" => {
+                let lfo = 0.5 - 0.5 * (tau * 4.0 * t).cos();
+                let top = 1.0 + 60.0 * lfo;
+                let mut s = 0.0;
+                let mut k = 1.0;
+                while k <= top {
+                    s += (tau * 55.0 * k * t).sin() / k;
+                    k += 1.0;
+                }
+                (0.6 * s, 0.6 * s)
+            }
+            // a sweep 40 Hz - 16 kHz, 4 a second
+            "chirp4" => {
+                let u = (t * 4.0).fract();
+                let f = 40.0 * (400.0f32).powf(u);
+                phase += tau * f / rate;
+                let v = 0.9 * phase.sin();
+                (v, v)
+            }
+            // the chord left, then right, 3.5 times a second
+            // a chord stab on each beat (120 BPM) in the middle, its echoes
+            // an eighth apart, left and right in turn, each 0.6 of the last
+            "ppdelay" => {
+                let stab = |u: f32| {
+                    if (0.0..0.12).contains(&u) {
+                        chord(u + 1.0) * (1.0 - u / 0.12)
+                    } else {
+                        0.0
+                    }
+                };
+                let beat = t % 0.5;
+                let mut l = stab(beat);
+                let mut r = l;
+                let mut g = 0.6f32;
+                for e in 1..8 {
+                    let u = (t - e as f32 * 0.125).rem_euclid(0.5);
+                    let v = stab(u) * g;
+                    if e % 2 == 1 {
+                        l += v
+                    } else {
+                        r += v
+                    }
+                    g *= 0.6;
+                }
+                (l * 0.8, r * 0.8)
+            }
+            k if k.starts_with("pingpong") => {
+                let hz: f32 = k.trim_start_matches("pingpong").parse().unwrap_or(3.5);
+                let left = (t * hz).fract() < 0.5;
+                let v = chord(t);
+                if left { (v, 0.0) } else { (0.0, v) }
+            }
+            // the chord in antiphase, gated at 3.5 Hz (the mono sum silent)
+            "antiphase" => {
+                let v = if (t * 3.5).fract() < 0.5 {
+                    chord(t)
+                } else {
+                    0.0
+                };
+                (v, -v)
+            }
+            // pink-ish noise, -60 dB and 0 dB in turn every 150 ms
+            "quietloud" => {
+                let loud = ((t / 0.15) as usize).is_multiple_of(2);
+                let v = noise() * if loud { 0.9 } else { 0.001 };
+                (v, v)
+            }
+            // a pure tone jumping 9 times a second over 30 Hz - 15 kHz
+            "jumps9" => {
+                let step = (t * 9.0) as u32;
+                let h = step.wrapping_mul(2654435761) >> 22; // 0..1023
+                let f = 30.0 * (500.0f32).powf(h as f32 / 1023.0);
+                phase += tau * f / rate;
+                let v = 0.9 * phase.sin();
+                (v, v)
+            }
+            other => panic!("music {other}"),
+        };
+        out.push(l.clamp(-1.0, 1.0));
+        out.push(r.clamp(-1.0, 1.0));
+    }
+    out
+}
+
+fn r16_case(
+    key: &'static str,
+    motion: Motion,
+    scheme: &str,
+    music: &str,
+    size: (f32, f32),
+) -> (Report, String) {
+    let r = measure(
+        key,
+        Play {
+            motion,
+            scheme,
+            size,
+            fps: 60.0,
+            music: r16_music(music, 6.0),
+        },
+        |_| {},
+    );
+    let line = format!(
+        "{key} {motion:?} {scheme} {music}: tr {} strict {} area {} red {}/{}/{} gamma {} m11 {} swept {} pattern {}",
+        r.transitions,
+        r.strict,
+        r.area,
+        r.red,
+        r.strict_red,
+        r.area_red,
+        r.red_gamma,
+        r.review,
+        r.swept,
+        r.pattern_frames
+    );
+    println!("{line}");
+    (r, line)
+}
+
+/// R16_FACES (default: axross's 18, or "all"), R16_MUSIC, R16_SCHEMES,
+/// R16_MOTIONS (calm,intense).
+#[test]
+#[ignore]
+fn r16_sweep() {
+    let env = |k: &str, d: &str| std::env::var(k).unwrap_or(d.into());
+    let axross = [
+        "spectrum",
+        "mirror",
+        "radial",
+        "scope",
+        "vu",
+        "line",
+        "waterfall",
+        "polar",
+        "lissajous",
+        "starfield",
+        "led",
+        "particles",
+        "ribbon",
+        "ridges",
+        "terrain",
+        "ring",
+        "kaleidoscope",
+        "bells",
+    ];
+    let faces_env = env("R16_FACES", "");
+    let faces: Vec<&'static str> = FACES
+        .iter()
+        .filter(|f| f.group != Group::Off)
+        .map(|f| f.key)
+        .filter(|k| match faces_env.as_str() {
+            "" => axross.contains(k),
+            "all" => true,
+            list => list.split(',').any(|x| x == *k),
+        })
+        .collect();
+    let mut failures = Vec::new();
+    for music in env(
+        "R16_MUSIC",
+        "infra4,clicks7,beat35,wobble4,chirp4,pingpong,antiphase,quietloud,jumps9,dcstep,infra7",
+    )
+    .split(',')
+    {
+        for scheme in env("R16_SCHEMES", "bw,redbg").split(',') {
+            for motion in env("R16_MOTIONS", "intense").split(',') {
+                let motion = if motion == "calm" {
+                    Motion::Calm
+                } else {
+                    Motion::Intense
+                };
+                for key in &faces {
+                    let size = env("R16_SIZE", "320x180");
+                    let (w, h) = size.split_once('x').unwrap();
+                    let (r, line) = r16_case(
+                        key,
+                        motion,
+                        scheme,
+                        music,
+                        (w.parse().unwrap(), h.parse().unwrap()),
+                    );
+                    if r.fails() || r.review > 6 {
+                        failures.push(line);
+                    }
+                }
+            }
+        }
+    }
+    println!("FAILURES: {failures:#?}");
+    assert!(failures.is_empty(), "{failures:#?}");
+}
+
+/// Wide bands across the whole picture at a new angle and light every
+/// frame (what the stereo scope drew of a line turning back on itself,
+/// review 16 H1), drawn through the flash guard (`guarded`) or not: the
+/// project's normal and strict readings and the review's.
+struct Bands {
+    frame: usize,
+    guarded: bool,
+    guard: axross_amp::viz::flashguard::FlashGuard,
+}
+
+impl eframe::App for Bands {
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        egui::CentralPanel::default()
+            .frame(egui::Frame::NONE)
+            .show(ui, |ui| {
+                let rect = ui.max_rect();
+                let painter = ui.painter();
+                let layer = painter.layer_id();
+                let first = painter
+                    .ctx()
+                    .graphics(|g| g.get(layer).map_or(0, |l| l.next_idx().0));
+                painter.rect_filled(rect, 0.0, egui::Color32::from_rgb(17, 19, 24));
+                // (a hash of the frame: the band's angle, its place, its light)
+                let h = |k: u32| {
+                    let mut x = (self.frame as u32)
+                        .wrapping_mul(2_654_435_761)
+                        .wrapping_add(k.wrapping_mul(40_503));
+                    x ^= x >> 15;
+                    x = x.wrapping_mul(2_246_822_519);
+                    x ^= x >> 13;
+                    (x % 10_000) as f32 / 10_000.0
+                };
+                let angle = h(1) * std::f32::consts::PI;
+                let (dx, dy) = (angle.cos(), angle.sin());
+                let centre =
+                    rect.center() + egui::vec2(-dy, dx) * (h(2) - 0.5) * rect.height() * 0.6;
+                let reach = rect.width() + rect.height();
+                let light = if h(3) < 0.5 { 0.45 } else { 1.0 };
+                let colour = egui::Color32::from_rgb(
+                    (200.0 * light) as u8,
+                    (90.0 * light) as u8,
+                    (80.0 * light) as u8,
+                );
+                painter.line_segment(
+                    [
+                        centre - egui::vec2(dx, dy) * reach,
+                        centre + egui::vec2(dx, dy) * reach,
+                    ],
+                    egui::Stroke::new(rect.height() * 0.12, colour),
+                );
+                if self.guarded {
+                    self.guard
+                        .guard(painter, first, rect, &[], None, 1.0 / 60.0);
+                }
+            });
+    }
+}
+
+fn bands(guarded: bool, (w, h): (usize, usize), secs: f32) -> (usize, usize, usize) {
+    let mut guard = axross_amp::viz::flashguard::FlashGuard::default();
+    guard.screen_is = Some(vec2(w as f32, h as f32));
+    let mut app = Some(Bands {
+        frame: 0,
+        guarded,
+        guard,
+    });
+    let mut harness = egui_kittest::Harness::builder()
+        .with_size(vec2(w as f32, h as f32))
+        .wgpu()
+        .build_eframe(move |_| app.take().unwrap());
+    let mut meter = Meter::with_fps(w, h, 60);
+    let mut review = m11::M11::new(w, h, 60.0);
+    for f in 0..(secs * 60.0) as usize {
+        harness.state_mut().frame = f;
+        harness.step();
+        let img = harness.render().unwrap();
+        meter.push(&img);
+        review.push_rgba(&img);
+        if std::env::var_os("AMP_FLASH_TRACE").is_some() && guarded && f % 6 == 0 {
+            let g = &harness.state().guard;
+            let (est, cols, rows) = g.estimated();
+            let lit = est.iter().filter(|v| **v > 0.1).count();
+            println!(
+                "frame {f}: guard {:?} veil {:.2} cells {cols}x{rows} lit {lit}",
+                g.pressure(),
+                g.strength
+            );
+        }
+    }
+    let r = review.reading();
+    (meter.most().0, meter.most_strict().0, r.c[0])
+}
+
+/// The flash guard holds a picture changing over large areas at random
+/// every frame - wide bands across it, a new angle and light each time -
+/// within the rule by every reading (review 16, H1: the stereo scope's
+/// bands, the guard on, read 9 by the review's meter and 13 - 16 strictly).
+#[test]
+fn bands_across_the_picture_every_frame_are_held_by_the_guard() {
+    let mut failures = Vec::new();
+    for size in [(320, 180), (640, 360)] {
+        let bare = bands(false, size, 4.0);
+        let (normal, strict, review) = bands(true, size, 4.0);
+        let line = format!(
+            "{size:?}: unguarded {bare:?}; guarded normal {normal} strict {strict} review {review}"
+        );
+        println!("{line}");
+        if normal > 6 || strict > 6 || review > 6 {
+            failures.push(line);
+        }
+    }
+    assert!(failures.is_empty(), "{failures:#?}");
+}
+
+/// The stereo faces through a chord panned hard left and right in turn
+/// two and three times a second (a square-wave auto-pan), in the default
+/// scheme and motion: within the rule by every reading (review 16, H1:
+/// the stereo scope's figure of one channel alone goes to and fro along
+/// its diagonal, and each of its turns back was drawn as a wide band
+/// across the whole picture - m11 9 - 20, strictly 13 - 19).
+#[test]
+fn the_stereo_faces_through_a_hard_auto_pan_keep_within_the_rule() {
+    let mut failures = Vec::new();
+    for key in ["lissajous", "goniometer", "phase", "vu", "scope"] {
+        for music in ["pingpong2", "pingpong3"] {
+            let sizes: &[(f32, f32)] = if key == "lissajous" {
+                &[(320.0, 180.0), (640.0, 360.0)]
+            } else {
+                &[(320.0, 180.0)]
+            };
+            for &size in sizes {
+                let (r, line) = r16_case(key, Motion::Calm, "classic", music, size);
+                if r.fails() || r.review > 6 {
+                    failures.push(format!("{size:?} {line}"));
+                }
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{failures:#?}");
+}

@@ -53,7 +53,9 @@ fn atoms(file: &mut File, start: u64, end: u64) -> Vec<Atom> {
         } else if size == 0 {
             size = end - pos;
         }
-        if size < header || pos + size > end {
+        // (an atom's size past the file - or past u64, a hostile one: the
+        // sum wrapped in a release build, panicked in a debug one)
+        if size < header || pos.checked_add(size).is_none_or(|e| e > end) {
             break;
         }
         out.push(Atom {
@@ -204,6 +206,20 @@ mod tests {
         };
         assert_eq!(edit.frames(44_100), (2111, Some(132_300)));
         std::fs::write(&path, b"not an mp4 at all").unwrap();
+        assert_eq!(read_edit(&path), None);
+    }
+
+    /// An atom whose 64-bit size runs past u64 is the end of what is read,
+    /// not an overflow (a panic in a debug build: review 13, L15).
+    #[test]
+    fn an_atom_too_large_for_any_file_is_read_as_the_end() {
+        let mut huge = 1u32.to_be_bytes().to_vec();
+        huge.extend_from_slice(b"moov");
+        huge.extend_from_slice(&(u64::MAX - 4).to_be_bytes());
+        let file = [atom(b"ftyp", b"M4A \0\0\0\0"), huge].concat();
+        let dir = crate::testdir::Scratch::new("huge-atom");
+        let path = dir.join("x.m4a");
+        std::fs::write(&path, file).unwrap();
         assert_eq!(read_edit(&path), None);
     }
 }

@@ -433,9 +433,10 @@ pub struct Shared {
 /// What goes to the device: the sample as it is within full scale (bit for
 /// bit - nothing bends a hot master at unity gain); beyond it, full scale.
 /// A track made louder is kept below the ceiling before it gets here
-/// ([`crate::limiter`]), and the equalizer makes room for its boosts.
+/// ([`crate::limiter`]), and so are the equalizer's boosts (the output's
+/// limiter). A NaN is silence.
 pub fn clip(x: f32) -> f32 {
-    x.clamp(-1.0, 1.0)
+    if x.is_nan() { 0.0 } else { x.clamp(-1.0, 1.0) }
 }
 
 /// The fades that keep pause, seek, stop and a new track from clicking.
@@ -1232,6 +1233,47 @@ struct Decoding {
     limiter: crate::limiter::Limiter,
     /// At its end (and the resampler's tail given out).
     eof: bool,
+    /// The file (None: a stream), to be opened again at a chained Ogg
+    /// file's link or an MP3's frame ([`crate::seektable`]); the links and
+    /// the one read now; the frames of an MP3 without a Xing header.
+    file: Option<String>,
+    links: Option<Vec<crate::seektable::Link>>,
+    link: usize,
+    mp3: Option<crate::seektable::Mp3Frames>,
+    options: AudioDecoderOptions,
+    /// The rate of the link read now (another than `rate` in a chained
+    /// file: resampled to `rate` by `link_resampler`, into `linked`).
+    link_rate: u32,
+    link_resampler: Option<Resampler>,
+    linked: Vec<f32>,
+    /// Sound dropped until this timestamp of the reader (opened again at a
+    /// frame before a seek's target: by the packets' own timestamps).
+    until_ts: Option<i64>,
+    /// A new link's title (an Ogg radio's next song), to be said.
+    link_title: Option<String>,
+    /// Sound came (a file's damage after it ends the track), and the
+    /// errors in a row since.
+    sounded: bool,
+    damaged: u32,
+    /// An Opus track's pre-skip (frames), and whether its decoder is still
+    /// to drop it (libopus' adapter drops it from the first packet it
+    /// decodes, not again after a seek - where the packets' timestamps do
+    /// not count it).
+    preskip: i64,
+    preskip_armed: bool,
+}
+
+/// The pre-skip of an Opus track (its OpusHead), else 0.
+fn opus_preskip(params: &symphonia::core::codecs::audio::AudioCodecParameters) -> i64 {
+    if params.codec != symphonia::core::codecs::audio::well_known::CODEC_ID_OPUS {
+        return 0;
+    }
+    params
+        .extra_data
+        .as_deref()
+        .filter(|d| d.len() >= 12 && d.starts_with(b"OpusHead"))
+        .map(|d| u16::from_le_bytes([d[10], d[11]]) as i64)
+        .unwrap_or(0)
 }
 
 fn hint_for(path: &str, content_type: Option<&str>) -> Hint {
@@ -1452,7 +1494,7 @@ fn open_media(
     seekable: bool,
     path: &str,
     out_rate: u32,
-    _generation: u64,
+    measure: bool,
     loudness: Loudness,
 ) -> Result<(Decoding, TrackInfo), String> {
     let mut format = symphonia::default::get_probe()
@@ -1479,8 +1521,26 @@ fn open_media(
         .and_then(|p| p.audio())
         .ok_or("no audio codec")?
         .clone();
+    // what symphonia cannot tell of the file, read from its framing: the
+    // links of a chained Ogg file, the frames of an MP3 without a Xing
+    // header (its length is only estimated: decoded without gapless
+    // trimming - the estimate cut the sound short)
+    let short = format.format_info().short_name;
+    // (`measure` false: a stream - nothing to read ahead in)
+    let on_disk = (seekable && measure).then(|| crate::fspath::to_path(path));
+    let mp3 = match &on_disk {
+        Some(p) if matches!(short, "mp3" | "mp2" | "mp1") && track.delay.is_none() => {
+            crate::seektable::mp3_frames(p)
+        }
+        _ => None,
+    };
+    let links = match &on_disk {
+        Some(p) if short == "ogg" => crate::seektable::ogg_links(p),
+        _ => None,
+    };
+    let options = AudioDecoderOptions::default().gapless(mp3.is_none());
     let decoder = codecs()
-        .make_audio_decoder(&params, &AudioDecoderOptions::default())
+        .make_audio_decoder(&params, &options)
         .map_err(|e| format!("cannot decode it ({e})"))?;
     let rate = params.sample_rate.unwrap_or(44_100);
     // (a header's rate of 0 or 1 Hz - a broken or hostile file - played
@@ -1508,6 +1568,12 @@ fn open_media(
         && let Ok(ts) = Timestamp::try_from(frames)
     {
         info.duration = tb.calc_time(ts).map(|t| t.as_secs_f64());
+    }
+    if let Some(frames) = &mp3 {
+        info.duration = Some(frames.secs());
+    }
+    if let Some(links) = &links {
+        info.duration = Some(links.iter().map(|l| l.secs).sum());
     }
     // Every revision of the metadata (a file may carry several tags - an ID3v2
     // before an APE, two ID3v2): the newest first, an older one fills in what
@@ -1576,6 +1642,20 @@ fn open_media(
         gain: loudness.factor(&info),
         limiter: crate::limiter::Limiter::new(rate),
         eof: false,
+        file: seekable.then(|| path.to_owned()),
+        links,
+        link: 0,
+        mp3,
+        options,
+        link_rate: rate,
+        link_resampler: None,
+        linked: Vec::new(),
+        until_ts: None,
+        link_title: None,
+        sounded: false,
+        damaged: 0,
+        preskip: opus_preskip(&params),
+        preskip_armed: true,
     };
     Ok((decoding, info))
 }
@@ -1584,7 +1664,7 @@ fn open_media(
 fn open(
     path: &str,
     out_rate: u32,
-    generation: u64,
+    measure: bool,
     loudness: Loudness,
 ) -> Result<(Decoding, TrackInfo), String> {
     let delay = OPEN_DELAY_MS.load(Ordering::Relaxed);
@@ -1592,7 +1672,29 @@ fn open(
         thread::sleep(Duration::from_millis(delay));
     }
     let (mss, hint) = open_file(path)?;
-    open_media(mss, hint, true, path, out_rate, generation, loudness)
+    open_media(mss, hint, true, path, out_rate, measure, loudness).or_else(|why| {
+        // an Ogg file damaged in its middle: symphonia's reader reads to its
+        // end as it opens it, and refused it whole - what comes before the
+        // damage is played (review 14)
+        // (its whole pages: also those after damage in its first page of
+        // sound, where nothing came before it - review 15)
+        let on_disk = crate::fspath::to_path(path);
+        let Some(pages) = crate::seektable::ogg_whole_pages(&on_disk) else {
+            return Err(why);
+        };
+        let pieces = crate::seektable::Pieces::open(&on_disk, pages).map_err(|_| why.clone())?;
+        let mss = MediaSourceStream::new(Box::new(pieces), Default::default());
+        open_media(
+            mss,
+            hint_for(path, None),
+            true,
+            path,
+            out_rate,
+            measure,
+            loudness,
+        )
+        .map_err(|_| why)
+    })
 }
 
 impl Decoding {
@@ -1602,6 +1704,139 @@ impl Decoding {
             return None;
         }
         let secs = secs.max(0.0);
+        if let Some(links) = &self.links {
+            // a chained file: the link holding `secs` opened (the reader
+            // seeks within the link it reads), then the seek in it
+            let i = links.iter().rposition(|l| l.start <= secs).unwrap_or(0);
+            let (offset, start, base) = (links[i].offset, links[i].start, links[i].base);
+            let within = secs - start;
+            if i != self.link {
+                self.reopen(offset).ok()?;
+                self.link = i;
+                if within < 0.001 {
+                    return Some((start * 1000.0).round() as u64);
+                }
+            }
+            // (the link's own time: from where its granules begin - a
+            // recording's are hours in)
+            let landed = self.seek_in(within + base)?;
+            let base_ms = (base * 1000.0).round() as u64;
+            return Some(landed.saturating_sub(base_ms) + (start * 1000.0).round() as u64);
+        }
+        if let Some(mp3) = &self.mp3 {
+            // an MP3 without a Xing header: its own seek is bound by the
+            // estimated length - opened again a few frames before the target
+            // (the bit reservoir), the sound before it dropped
+            let target = (secs * mp3.rate as f64) as u64;
+            let every = crate::seektable::MP3_EVERY;
+            let frame = (target / mp3.per_frame as u64).saturating_sub(4) / every;
+            let frame = frame.min(mp3.offsets.len().saturating_sub(1) as u64);
+            let offset = *mp3.offsets.get(frame as usize)?;
+            let from = frame * every * mp3.per_frame as u64;
+            self.reopen(offset).ok()?;
+            self.until_ts = Some((target - from.min(target)) as i64);
+            return Some((secs * 1000.0).round() as u64);
+        }
+        self.seek_in(secs)
+    }
+
+    /// Open the file again at `offset` (a link's first page, an MP3 frame):
+    /// its reader and decoder anew, from there.
+    fn reopen(&mut self, offset: u64) -> Result<(), String> {
+        let path = self.file.clone().ok_or("not a file")?;
+        let window = crate::seektable::Window::open(&crate::fspath::to_path(&path), offset)
+            .map_err(|e| e.to_string())?;
+        let mss = MediaSourceStream::new(Box::new(window), Default::default());
+        let format = symphonia::default::get_probe()
+            .probe(
+                &hint_for(&path, None),
+                mss,
+                FormatOptions::default(),
+                MetadataOptions::default(),
+            )
+            .map_err(|e| e.to_string())?;
+        let track = format
+            .default_track(TrackType::Audio)
+            .ok_or("no audio track")?
+            .clone();
+        self.format = format;
+        self.use_track(&track)?;
+        self.limiter.reset();
+        self.eof = false;
+        self.skip = 0;
+        self.until_ts = None;
+        self.resampler = Resampler::new(self.rate, self.resampler.to);
+        Ok(())
+    }
+
+    /// Decode `track` from here on: its decoder, its rate (resampled to the
+    /// file's first one when another).
+    fn use_track(&mut self, track: &symphonia::core::formats::Track) -> Result<(), String> {
+        let params = track
+            .codec_params
+            .as_ref()
+            .and_then(|p| p.audio())
+            .ok_or("no audio codec")?
+            .clone();
+        self.decoder = codecs()
+            .make_audio_decoder(&params, &self.options)
+            .map_err(|e| format!("cannot decode it ({e})"))?;
+        self.track_id = track.id;
+        self.time_base = track.time_base;
+        let rate = params.sample_rate.unwrap_or(self.rate);
+        if !(MIN_RATE..=MAX_RATE).contains(&rate) {
+            return Err(format!(
+                "its sample rate, {rate} Hz, is not one that can be played"
+            ));
+        }
+        self.link_rate = rate;
+        self.link_resampler = (rate != self.rate).then(|| Resampler::new(rate, self.rate));
+        self.layout = None;
+        self.preskip = opus_preskip(&params);
+        self.preskip_armed = true;
+        Ok(())
+    }
+
+    /// A packet of another track: the next link of a chained Ogg stream (a
+    /// new physical stream - an Icecast station's next song) when the
+    /// reader's track is now that one; false for a track of another kind
+    /// (a container's second track: passed over).
+    /// (`id` None: the reader said a new stream began - its track is the
+    /// one from here on, whatever its id.)
+    fn next_link(&mut self, id: Option<u32>) -> Result<bool, String> {
+        let Some(track) = self.format.default_track(TrackType::Audio) else {
+            return Ok(false);
+        };
+        if id.is_some_and(|id| track.id != id || track.id == self.track_id) {
+            return Ok(false);
+        }
+        let track = track.clone();
+        self.use_track(&track)?;
+        if self.links.as_ref().is_some_and(|l| self.link + 1 < l.len()) {
+            self.link += 1;
+        }
+        let mut info = TrackInfo::default();
+        let mut metadata = self.format.metadata();
+        while metadata.pop().is_some() {}
+        if let Some(revision) = metadata.current() {
+            tag_text(&revision.media.tags, &mut info);
+            for t in &revision.per_track {
+                tag_text(&t.metadata.tags, &mut info);
+            }
+        }
+        if !info.title.is_empty() {
+            self.link_title = Some(if info.artist.is_empty() {
+                info.title
+            } else {
+                format!("{} - {}", info.artist, info.title)
+            });
+        }
+        Ok(true)
+    }
+
+    /// Seek the reader to `secs` of what it reads (a link's own time in a
+    /// chained file); where it landed (ms).
+    fn seek_in(&mut self, secs: f64) -> Option<u64> {
         // in the media, the sound begins after the edit's delay
         let media = secs + self.delay as f64 / self.rate.max(1) as f64;
         let time = Time::try_from_secs_f64(media)?;
@@ -1619,6 +1854,9 @@ impl Decoding {
         self.limiter.reset();
         self.eof = false;
         self.resampler = Resampler::new(self.rate, self.resampler.to);
+        if self.link_resampler.is_some() {
+            self.link_resampler = Some(Resampler::new(self.link_rate, self.rate));
+        }
         // An accurate seek lands at the start of the packet holding the time
         // asked for: the frames before it are dropped (the sound began about
         // a packet early).
@@ -1627,11 +1865,12 @@ impl Decoding {
                 .and_then(|tb| tb.calc_time(ts))
                 .map(|t| t.as_secs_f64())
         };
-        let (required, actual) = (to_secs(seeked.required_ts), to_secs(seeked.actual_ts));
-        self.skip = match (required, actual) {
-            (Some(r), Some(a)) if r > a => ((r - a) * self.rate as f64).round() as u64,
-            _ => 0,
-        };
+        let required = to_secs(seeked.required_ts);
+        // (by the packets' own timestamps - the decoder's trimming of an
+        // encoder's delay counted: a seek to 0 dropped an MP3's first 331 to
+        // 1204 frames, and played an Opus file's 312 of pre-skip - review 13)
+        self.skip = 0;
+        self.until_ts = Some(seeked.required_ts.get());
         let played = (secs * self.rate as f64) as u64;
         self.left = self.length.map(|l| l.saturating_sub(played));
         let landed = required
@@ -1658,21 +1897,61 @@ impl Decoding {
                 Err(SymError::IoError(e)) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
                     return Ok(false);
                 }
+                // (a chained Ogg stream's next link: its own decoder from here)
+                Err(SymError::ResetRequired) if self.next_link(None)? => continue,
                 Err(SymError::ResetRequired) => return Ok(false),
+                // damage in the middle of a file: read on past it (a few
+                // times), else the track ends there - what came before is
+                // heard (it failed the whole track, and up to 3 s of good
+                // sound were dropped); a stream's error is its own (it is
+                // connected again)
+                Err(e) if self.seekable && self.sounded => {
+                    self.damaged += 1;
+                    if self.damaged > 16 {
+                        eprintln!("axross-amp: {e} - the track ends there");
+                        return Ok(false);
+                    }
+                    continue;
+                }
                 Err(SymError::IoError(e)) => return Err(e.to_string()),
                 Err(e) => return Err(e.to_string()),
             };
-            if packet.track_id != self.track_id {
+            if packet.track_id != self.track_id && !self.next_link(Some(packet.track_id))? {
                 continue;
             }
+            // where the decoder's sound of this packet begins in the reader's
+            // time (its own trimming counted)
+            let begins = packet.pts.get()
+                + if self.options.gapless {
+                    packet.trim_start.get() as i64
+                } else {
+                    0
+                }
+                - if self.preskip_armed { 0 } else { self.preskip };
             match self.decoder.decode(&packet) {
                 Ok(buffer) => {
+                    self.preskip_armed = false;
                     to_stereo(
                         &buffer,
                         (&mut self.layout, &mut self.matrix),
                         &mut self.scratch,
                         &mut self.stereo,
                     );
+                    // (a NaN or an infinity in a file - one is enough - kept
+                    // the equalizer's filters at NaN to the track's end)
+                    for s in &mut self.stereo {
+                        if !s.is_finite() {
+                            *s = 0.0;
+                        }
+                    }
+                    if let Some(until) = self.until_ts {
+                        let frames = (self.stereo.len() / 2) as i64;
+                        let drop = (until - begins).clamp(0, frames) as usize;
+                        self.stereo.drain(..drop * 2);
+                        if begins + frames >= until {
+                            self.until_ts = None;
+                        }
+                    }
                     if self.skip > 0 {
                         let drop = (self.skip as usize * 2).min(self.stereo.len());
                         self.stereo.drain(..drop);
@@ -1685,6 +1964,12 @@ impl Decoding {
                         if *left == 0 && self.stereo.is_empty() {
                             return Ok(false); // the padding after the sound
                         }
+                    }
+                    if let Some(link) = self.link_resampler.as_mut() {
+                        // (a link at another rate: to the file's first one)
+                        self.linked.clear();
+                        link.process(&self.stereo, &mut self.linked);
+                        std::mem::swap(&mut self.stereo, &mut self.linked);
                     }
                     if self.stereo.is_empty() {
                         continue;
@@ -1707,9 +1992,15 @@ impl Decoding {
                     } else {
                         out.extend_from_slice(&self.stereo);
                     }
+                    self.sounded = true;
+                    self.damaged = 0;
                     return Ok(true);
                 }
                 Err(SymError::DecodeError(_)) => continue, // (a damaged packet: the next one)
+                Err(e) if self.seekable && self.sounded => {
+                    eprintln!("axross-amp: {e} - the track ends there");
+                    return Ok(false);
+                }
                 Err(e) => return Err(e.to_string()),
             }
         }
@@ -1755,13 +2046,16 @@ fn to_stereo(
 /// The tags and length of a local file, without playing it (the playlist
 /// learns titles and lengths in the background).
 pub fn probe(path: &str) -> Result<TrackInfo, String> {
-    open(path, 48_000, 0, Loudness::default()).map(|(_, info)| info)
+    // (measured as when it plays: a VBR MP3 without a Xing header said
+    // symphonia's estimate in the playlist, a chained Ogg its first link's
+    // length - review 14; the prober runs on a thread of its own)
+    open(path, 48_000, true, Loudness::default()).map(|(_, info)| info)
 }
 
 /// Decode all of `path` as the player would (stereo at `rate`): the
 /// frames made and the track's info. For tests and measurements.
 pub fn decode_file(path: &str, rate: u32) -> Result<(usize, TrackInfo), String> {
-    let (mut decoding, info) = open(path, rate, 0, Loudness::default())?;
+    let (mut decoding, info) = open(path, rate, true, Loudness::default())?;
     let mut out = Vec::new();
     let mut frames = 0;
     while decoding.step(&mut out)? {
@@ -1783,7 +2077,7 @@ pub fn waveform(
     cancel: &AtomicBool,
     mut progress: impl FnMut(&[[f32; 3]], f32),
 ) -> Result<(), String> {
-    let (mut decoding, info) = open(path, 48_000, 0, Loudness::default())?;
+    let (mut decoding, info) = open(path, 48_000, true, Loudness::default())?;
     let rate = if decoding.resample {
         48_000
     } else {
@@ -1989,7 +2283,7 @@ fn produce(
                     false,
                     &answer.url,
                     out_rate,
-                    generation,
+                    false,
                     Loudness::default(),
                 ) {
                     Err(why) => why,
@@ -2018,6 +2312,9 @@ fn produce(
                             match decoding.step(&mut out) {
                                 Ok(true) => {
                                     played += (out.len() / 2) as f64 / out_rate.max(1) as f64;
+                                    if let Some(title) = decoding.link_title.take() {
+                                        send(Event::StreamTitle { generation, title });
+                                    }
                                     if pcm.send(out).is_err() {
                                         return None;
                                     }
@@ -2146,7 +2443,7 @@ impl FileSource {
         let file = path.clone();
         let spawned = thread::Builder::new()
             .name("amp-read".into())
-            .spawn(move || read_file(file, generation, start_ms, loudness, tx, controls, q, st));
+            .spawn(move || read_file(file, start_ms, loudness, tx, controls, q, st));
         let (failed_tx, failed_rx) = crossbeam_channel::bounded(1);
         let rx = match spawned {
             Ok(_) => rx,
@@ -2205,7 +2502,6 @@ impl FileSource {
 #[allow(clippy::too_many_arguments)]
 fn read_file(
     path: String,
-    generation: u64,
     start_ms: u64,
     loudness: Loudness,
     tx: Sender<Feed>,
@@ -2213,7 +2509,7 @@ fn read_file(
     queued: Arc<AtomicUsize>,
     stop: Arc<AtomicBool>,
 ) {
-    let (mut d, mut info) = match open(&path, 48_000, generation, loudness) {
+    let (mut d, mut info) = match open(&path, 48_000, true, loudness) {
         Ok(opened) => opened,
         Err(why) => {
             let _ = tx.send(Feed::Failed(why));
@@ -2401,14 +2697,18 @@ impl Player {
     /// another rate: resampled anew from there).
     fn reopen(&mut self, device: Option<String>) {
         let playing = self.shared.playing.load(Ordering::Relaxed);
-        self.cancel_advance();
         let at = self.shared.position();
         drop(self.stream.take()); // (the old device lets go first)
         let before = self.out_rate;
         self.connect(device.as_deref());
+        // (at the same rate what is decoded ahead plays on as it is - the
+        // next track behind this one, a crossfade under way: taken back and
+        // decoded again, the next track's start already in the ring was
+        // heard twice - review 13)
         if self.out_rate != before {
             // another rate: the equalizer anew, the sound decoded
             // ahead dropped, the track resampled from where it was
+            self.cancel_advance();
             self.eq = Equalizer::new(self.out_rate);
             self.eq.set_gains(self.gains.0);
             self.eq.enabled = self.gains.1;
@@ -2697,6 +2997,12 @@ impl Player {
                 {
                     let _ = f.ctl.send(Control::Gain(loudness.factor(info)));
                 }
+                // the next track, opened ahead with the gain before: read
+                // again with this one (it kept the old gain - review 13)
+                if let Some((queued, _)) = self.prepared.take() {
+                    self.queued = None;
+                    self.prepare(Some(queued));
+                }
             }
             Command::Crossfade(secs) => self.crossfade = secs.clamp(0.0, 12.0),
             Command::FadeOnSkip(on) => self.fade_on_skip = on,
@@ -2904,7 +3210,7 @@ impl Player {
     /// summed - or the equalizer raising a band), else bit for bit.
     fn limit_output(&mut self, fading: bool) {
         let resampling = self.resampler.from != self.resampler.to;
-        let raised = self.eq.enabled && self.gains.0.iter().any(|g| *g > 0.0);
+        let raised = self.eq.raises();
         if !self.out_limiter.active {
             self.out_limiter =
                 crate::limiter::Limiter::with_ceiling(self.out_rate, crate::limiter::RESAMPLED_DB);
@@ -3196,6 +3502,18 @@ impl Player {
         };
         s.pending_frames -= chunk.len() / 2;
         self.eq.process(&mut chunk);
+        // (a band raised: its peaks held below full scale, as a file's -
+        // the equalizer takes no level off for its boosts)
+        let raised = self.eq.raises();
+        if raised || self.out_limiter.active {
+            if !self.out_limiter.active {
+                self.out_limiter = crate::limiter::Limiter::with_ceiling(
+                    self.out_rate,
+                    crate::limiter::RESAMPLED_DB,
+                );
+            }
+            self.out_limiter.process_holding(&mut chunk, raised);
+        }
         let n = self.shared.push(&chunk);
         self.carry.extend_from_slice(&chunk[n * 2..]);
         true
@@ -3618,7 +3936,8 @@ mod tests {
         let dir = crate::testdir::Scratch::new("wav");
         let path = dir.join("x.wav");
         write_wav(&path, 22_050, 1, 22_050 * 2); // two seconds of mono
-        let (mut d, info) = open(path.to_str().unwrap(), 44_100, 1, Loudness::default()).unwrap();
+        let (mut d, info) =
+            open(path.to_str().unwrap(), 44_100, true, Loudness::default()).unwrap();
         assert!(info.seekable && info.rate == 22_050 && info.channels == 1);
         assert!((info.duration.unwrap() - 2.0).abs() < 0.01);
         let mut out = Vec::new();
@@ -3629,7 +3948,7 @@ mod tests {
         let at = d.seek(1.5).unwrap();
         assert!((at as i64 - 1500).abs() < 50, "{at}");
         assert_eq!(
-            open("/nonexistent.mp3", 44_100, 2, Loudness::default())
+            open("/nonexistent.mp3", 44_100, true, Loudness::default())
                 .err()
                 .as_deref(),
             Some("no such file")
@@ -3638,7 +3957,7 @@ mod tests {
         let empty = path.with_extension("mp3");
         std::fs::write(&empty, b"").unwrap();
         assert_eq!(
-            open(empty.to_str().unwrap(), 44_100, 3, Loudness::default())
+            open(empty.to_str().unwrap(), 44_100, true, Loudness::default())
                 .err()
                 .as_deref(),
             Some("the file is empty")

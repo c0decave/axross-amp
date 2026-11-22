@@ -14,11 +14,12 @@ use std::time::Duration;
 
 /// What is to be written.
 pub enum Job {
-    /// The player's state, and the playlist's version it was taken at.
+    /// The player's state, and its playlist then (by its paths: the window's
+    /// `list_key`).
     State(PlayerState, u64),
     Eq(EqSettings),
     Amp(AmpSettings),
-    /// The output device chosen (`amp_output` in audio.json).
+    /// The output device chosen (`output` in axross-amp.json).
     Output(String),
     /// The cover shown to the desktop (a PNG; None: none) - written where
     /// MPRIS points to it (Linux).
@@ -103,7 +104,7 @@ impl Saver {
                     }
                     if let Some(o) = pending.output {
                         w.fetch_add(1, Ordering::Relaxed);
-                        if let Err(err) = state::write_output(&dir.join(state::AUDIO_FILE), &o) {
+                        if let Err(err) = state::write_output(&dir, &o) {
                             fail("the output", err);
                         }
                     }
@@ -151,7 +152,7 @@ impl Saver {
     }
 
     /// What another program wrote and the merge kept (the keys and their
-    /// values), with the playlist's version the state was taken at.
+    /// values), with the playlist (by its paths) the state was taken with.
     pub fn adopted(&self) -> Vec<(Map<String, Value>, u64)> {
         self.adopted.try_iter().collect()
     }

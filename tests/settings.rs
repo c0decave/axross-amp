@@ -176,3 +176,130 @@ fn another_programs_playlist_is_taken_over_not_undone() {
         .collect();
     assert_eq!(shown, theirs);
 }
+
+/// axross adds a track to the shared playlist while this one plays; here
+/// the next track comes (the list unchanged here): axross's track stays in
+/// the file and the window takes it over (review 13, M6: the file went
+/// back to this program's list at its next save).
+#[test]
+fn a_track_added_by_axross_survives_the_next_track_here() {
+    let dir = folder("adopt-next");
+    let files = tracks(&dir, &["a.wav", "b.wav"], 1.0);
+    let added = tracks(&dir, &["c.wav"], 1.0);
+    let mut h = harness(&dir, files.clone());
+    assert!(until(&mut h, 5.0, |a| a.is_loaded()));
+    let file = dir.join("config/media_player.json");
+    assert!(until(&mut h, 6.0, |_| axross_amp::state::read_state(&file)
+        .tracks
+        .len()
+        == 2));
+    let mut raw: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+    raw["tracks"]
+        .as_array_mut()
+        .unwrap()
+        .push(serde_json::json!({"path": added[0], "title": "", "duration": 1}));
+    std::fs::write(&file, raw.to_string()).unwrap();
+    let mut output = RenderState::default();
+    let end = Instant::now() + Duration::from_secs(8);
+    while Instant::now() < end && h.state().snapshot().current != 1 {
+        listen(&mut h, &mut output, 0.1);
+    }
+    assert_eq!(h.state().snapshot().current, 1, "the next track");
+    // (saved within SAVE_EVERY, then taken over)
+    let end = Instant::now() + Duration::from_secs(8);
+    let want = [files[0].clone(), files[1].clone(), added[0].clone()];
+    while Instant::now() < end {
+        listen(&mut h, &mut output, 0.2);
+        let shown: Vec<String> = h
+            .state()
+            .snapshot()
+            .tracks
+            .iter()
+            .map(|t| t.path.clone())
+            .collect();
+        if shown == want {
+            break;
+        }
+    }
+    let saved = axross_amp::state::read_state(&file);
+    let paths: Vec<String> = saved.tracks.iter().map(|t| t.path.clone()).collect();
+    assert_eq!(paths, want, "axross's track was lost");
+    assert_eq!(saved.current, 1, "the track playing here");
+    let shown: Vec<String> = h
+        .state()
+        .snapshot()
+        .tracks
+        .iter()
+        .map(|t| t.path.clone())
+        .collect();
+    assert_eq!(shown, want, "the window took it over");
+}
+
+/// axross's smoothing (0 - 95 %) and peak fall (5 - 300 %/s) outside the
+/// sliders' ranges here: opening Options leaves them as they are (review
+/// 13, M7: the sliders clamped them as they were drawn, and the file was
+/// rewritten with this program's ranges).
+#[test]
+fn opening_options_leaves_axross_s_values_alone() {
+    let dir = folder("options-kept");
+    std::fs::create_dir_all(dir.join("config")).unwrap();
+    std::fs::write(
+        dir.join("config/media_player.json"),
+        r#"{"version": 1, "visual_options": {"bars": 32, "smoothing": 40, "peak_fall": 250, "fps": 30, "hide_cursor": true}}"#,
+    )
+    .unwrap();
+    let mut h = harness(&dir, Vec::new());
+    settle(&mut h, 3);
+    h.get_by_label("⚙").click();
+    settle(&mut h, 3);
+    let options = h
+        .get_by_role_and_label(egui::accesskit::Role::Button, "Options")
+        .rect();
+    h.hover_at(options.center());
+    settle(&mut h, 3);
+    if h.query_all_by_label_contains("Smoothing").next().is_none() {
+        h.get_by_role_and_label(egui::accesskit::Role::Button, "Options")
+            .click();
+        settle(&mut h, 3);
+    }
+    assert!(
+        h.query_all_by_label_contains("Smoothing").next().is_some(),
+        "the options"
+    );
+    let o = h.state().snapshot().visual_options;
+    assert_eq!((o.smoothing, o.peak_fall), (40, 250));
+}
+
+/// The albums' covers are let go with the albums: after Clear none is kept
+/// (review 15, L4: a cover kept for every album ever shown).
+#[test]
+fn the_albums_covers_go_with_the_albums() {
+    let dir = folder("album-covers");
+    let files = tracks(&dir, &["a1.wav", "a2.wav", "b1.wav", "b2.wav"], 1.0);
+    std::fs::create_dir_all(dir.join("config")).unwrap();
+    let entries: Vec<serde_json::Value> = files
+        .iter()
+        .enumerate()
+        .map(|(k, p)| {
+            serde_json::json!({"path": p, "title": "", "duration": 1,
+                               "album": if k < 2 { "A" } else { "B" }, "artist": "X"})
+        })
+        .collect();
+    std::fs::write(
+        dir.join("config/media_player.json"),
+        serde_json::json!({"version": 1, "tracks": entries, "current": 0}).to_string(),
+    )
+    .unwrap();
+    let mut h = harness(&dir, Vec::new());
+    settle(&mut h, 5);
+    assert!(
+        until(&mut h, 5.0, |a| a.album_covers_kept() == 2),
+        "the two albums' heads: {}",
+        h.state().album_covers_kept()
+    );
+    h.get_by_label("Clear").click();
+    settle(&mut h, 5);
+    assert_eq!(h.state().snapshot().tracks.len(), 0);
+    assert_eq!(h.state().album_covers_kept(), 0, "kept after Clear");
+}

@@ -70,8 +70,13 @@ desktop entry and icon. Requirements and details: [Install](docs/README-extended
 **Updates** (from 0.15.0): *Options › Check for updates…* fetches a newer
 release's file for this program from GitHub and puts it in place - only
 when its `SHA256SUMS` is signed by the release key pinned in the program
-and the file has the signed SHA-256. Off until used; a player before 0.15.0
-is updated by hand once. Details: [Updates](docs/README-extended.md#updates).
+and the file has the signed SHA-256. It looks at the start and once a day
+(not on an offline or metered network) and says when one is out - or, when
+chosen, puts it in place by itself, never restarting the player, its first
+start watched; or not at all. A new installation says when one is out; a
+player updated from 0.15 keeps 0.15's choice (off unless ticked). A player
+before 0.15.0 is updated by hand once. Details:
+[Updates](docs/README-extended.md#updates).
 
 ## Quick start
 

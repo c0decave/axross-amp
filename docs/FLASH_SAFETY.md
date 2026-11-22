@@ -42,7 +42,12 @@ What axross-amp does about it:
   the flow field's lines are a shade under full. Pictures with seconds of
   history (the waterfall, the mel and the fine spectrograms, the piano
   roll) show each band as its slow mean and half its change from it,
-  eased. Between bars and cells (spectrum, mirror, LED, particles, 3D ring,
+  eased. The piano roll's keys and notes lie within a shade of the ground
+  (their luminance at most 0.075 from it; on a light ground, no darker
+  than 0.82), its keyboard drawn as a piano's - seven white keys an
+  octave, a hairline between them - not 61 light keys with dark gaps: a
+  chord in octaves, its keys and notes lit an octave apart, was a grating
+  (an independent review's music: 28 - 87 frames of 300). Between bars and cells (spectrum, mirror, LED, particles, 3D ring,
   chromagram) lies a shade of their colour 0.075 dimmer, not the dark
   ground: no grating. Dense lines that would form one are faint (the
   polygon morph's outer copies, the helix's rungs, synthwave's fan and far
@@ -67,7 +72,11 @@ What axross-amp does about it:
   changes the same way within 100 ms, every change counted, as the strict
   reading does - and either way at once, as the third: half a field of
   large shapes transiting in one frame (a checker in antiphase), whatever
-  their phase. Where a field has changed seven times in a second it lays
+  their phase. A band two cells wide or more is laid on the cells as the
+  large shape it is, however long and slanting (laid as small pieces, wide
+  bands crossing the picture at a new angle every frame were never counted
+  whole: review 16). Where a field has changed seven times in a second it
+  lays
   a veil over the whole face - a slow, blurred average of the picture, 95
   % - staying on while the face goes on near the limit and a second and a
   half after. Seven, not six: the veil's own coming is a change too, and
@@ -101,6 +110,31 @@ What axross-amp does about it:
   drifting checkerboard cover and black-and-white stripes of 6 px are a
   hazard in 120 of 120 frames without it, in 10 and 5 with it (the first
   tenth of a second, before it has seen them move).
+- **The window itself**, not only the faces (review 13). A theme or a
+  design is shown once clicked in its menu, not as the pointer or the
+  keyboard's focus passes over the rows (down and up the twelve themes the
+  whole window had flashed 12 times a second), and the window takes another
+  theme or design at most twice a second however fast they are clicked. A
+  change of cover to or from one with much saturated red comes at most every
+  two seconds and crossfades over one (skipping between a red cover and a dark
+  one gave a saturated red flash a second, the cover card, the Glass haze and
+  the accent together); the haze and the cover's accent are never saturated
+  red. What toggles - F11, D, Escape, Space, M - takes a key's first press,
+  not its repeats, and no repeat of a held Space or Enter reaches a focused
+  widget, in any of the player's windows - the picture's own window and the
+  view on another display too (a switch focused by Tab flipped half the
+  window 31 times a second: reviews 15 and 16). The window's layout - full
+  screen, the large picture, the view on another display, the tabs, the
+  playlist and the equalizer, the large picture's playlist -, the
+  picture's colours (its schemes clicked in turn in its menu flipped its
+  ground at the clicks' pace: review 16), the theme and design and the
+  cover change at most twice a second *together* - one turn for all of
+  them, a change asked within the half second made at its turn (each had a
+  turn of its own, and three in turn changed the window six times a
+  second): F11 held had put the window in and out of full screen 30 times a
+  second (review 14), quick clicks on the switches 7 - 14 (review 15). `tests/window_flash.rs` reads the window by
+  both meters, the keys held too: within six transitions in any second, at
+  most one of saturated red.
 - **Calm by default.** *Intense* (Options) is livelier and only chosen after
   a photosensitivity warning; where the desktop asks for reduced motion
   (GNOME, KDE, GTK's settings, macOS, Windows) it cannot be chosen and the
@@ -123,7 +157,10 @@ What axross-amp does about it:
   second; the faces with history through ten seconds each of steady music;
   the default faces through pop, house and drum and bass (the veil must
   stay off); the feedback face's every look, Intense, white on black and
-  pure red; the moiré at its most (Intense, white on black); every case an
+  pure red, and through a chord gated at 2 to 5 Hz (review 13: 7 by the
+  strict reading, its zoom pulled by the bass at twice the pull it has now
+  and its waves following the bands uneased - now 0 to 5 in every look);
+  the piano roll through chords in octaves (no pattern); the moiré at its most (Intense, white on black); every case an
   earlier sweep found; the Options at their extremes (no smoothing, 128
   bars, peaks falling at 300 % a second); faces moved by the energy after
   25 minutes of play. With `--ignored`, the whole sweep: every face and

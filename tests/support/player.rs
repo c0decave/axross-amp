@@ -117,6 +117,18 @@ pub fn listen(
     let mut buf = vec![0.0f32; 480 * 2];
     let mut heard = Vec::new();
     while std::time::Instant::now() < end {
+        // (by the sound, as a device's buffer would: the next 10 ms taken
+        // once the decoder has them - on a busy machine a decoder not given
+        // its turn ran the output dry, and the test heard less than it
+        // played: a gap, a radio 3 s late - review 13)
+        let shared = &harness.state().engine().shared;
+        let wait = std::time::Instant::now() + std::time::Duration::from_millis(200);
+        while shared.playing.load(std::sync::atomic::Ordering::Relaxed)
+            && !shared.ready(480)
+            && std::time::Instant::now() < wait
+        {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
         harness.state().engine().shared.render(&mut buf, 2, output);
         heard.extend(buf.chunks(2).map(|f| f[0]));
         harness.run_steps(1);

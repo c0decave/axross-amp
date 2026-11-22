@@ -421,6 +421,18 @@ impl Mpris {
     /// is given, the files go to the player holding it ([`Claim::Handed`]);
     /// without it (`--new-instance`) a name of its own is taken.
     pub fn claim(address: Option<String>, hand_over: Option<&[String]>) -> Claim {
+        Mpris::claim_with(address, hand_over, false)
+    }
+
+    /// The name taken when the player holding it lets go (queued for it):
+    /// the program the updater started in place of the one running -
+    /// with a name of its own it was not found by the next start, and a
+    /// file opened from the file manager made a second player (review 13).
+    pub fn claim_after(address: Option<String>) -> Claim {
+        Mpris::claim_with(address, None, true)
+    }
+
+    fn claim_with(address: Option<String>, hand_over: Option<&[String]>, queue: bool) -> Claim {
         let (tx, requests) = crossbeam_channel::unbounded();
         let state = Arc::new(Mutex::new(Snapshot {
             status: "Stopped",
@@ -447,12 +459,20 @@ impl Mpris {
             Ok(c) => c,
             Err(why) => return Claim::NoBus(why),
         };
-        let flags = zbus::fdo::RequestNameFlags::DoNotQueue.into();
+        // (queued: the bus gives it the name when its holder lets go)
+        // (queued: no flag at all - the flags' Default is every flag)
+        let mut flags =
+            zbus::fdo::RequestNameFlags::DoNotQueue | zbus::fdo::RequestNameFlags::AllowReplacement;
+        flags.remove(zbus::fdo::RequestNameFlags::AllowReplacement);
+        if queue {
+            flags.remove(zbus::fdo::RequestNameFlags::DoNotQueue);
+        }
         let own = match conn.request_name_with_flags(NAME, flags) {
             Ok(
                 zbus::fdo::RequestNameReply::PrimaryOwner
                 | zbus::fdo::RequestNameReply::AlreadyOwner,
             ) => true,
+            Ok(zbus::fdo::RequestNameReply::InQueue) if queue => true,
             // (held by another: zbus says NameTaken, the bus Exists)
             Ok(_) | Err(zbus::Error::NameTaken) => false,
             Err(e) => return Claim::NoBus(e.to_string()),

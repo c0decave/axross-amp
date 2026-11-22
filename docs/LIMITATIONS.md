@@ -8,7 +8,9 @@ Back to the [README](../README.md) - everything in detail: the [extended README]
   renamed to `.previous`) and the macOS one (the program inside
   `axross-amp.app`, whose Info.plist keeps naming the old version) are not
   tested on those systems yet. A release before 0.15.0 has no signature
-  and is never offered.
+  and is never offered. An offline or metered network is known only where
+  NetworkManager says so (Linux); elsewhere the daily check goes ahead (one
+  small request; a download only when installing by themselves is chosen).
 - The flash guard costs the CPU about 1.5 - 2 ms a frame, and 5 - 9 ms on the
   particles, the spirograph and the skyline at 4K: **60 frames a second is not
   supported for those faces** on a laptop's CPU (see
@@ -38,6 +40,33 @@ Back to the [README](../README.md) - everything in detail: the [extended README]
   independent review's music and for 6 through fast chirps eight a second
   (review 12, which found it in *Intense* only); the guard's pattern stage
   softens them as they come.
+- The flow field also shows its pattern for 5 - 7 frames through a chord in
+  octaves gated or swelling and through a run of notes (review 14's music),
+  *Intense*, Classic.
+- **Shared state, a face chosen in axross** that is the nearest of axross's
+  faces to the one shown here (the Starfield while axross-amp shows the
+  Galaxy, the Spectrum while it shows Off, the Cover, the Analyzer or the
+  Typography) cannot be told from "unchanged": axross-amp keeps its own.
+- Also as they were: a seek that fails reports the position asked for;
+  `iTunSMPB` (old iTunes' gapless) is not read; a 5.1 downmix is quieter than
+  stereo; the state file is read twice at the start; a progressive JPEG cover
+  of 8192 x 8192 takes about 400 MB while it is decoded; a PLS's titles are
+  not counted; `file://` URLs that are no UTF-8 are skipped; Next at the end
+  of the list wraps where axross's stops.
+- Ordinary UI, by an independent review's clicks at 6.7 a second (review
+  16): the large popups (⚙, the faces' list, More, Sort) opened and shut
+  read 7 transitions a second in Paper (at 5 clicks a second 6), and Next
+  moving the playing row's highlight in a 640 x 480 window 7 by the review's
+  meter, 11 by the project's; the oscilloscope through a DC step at 3.5 Hz
+  under a tone in white on black and the tunnel through a full-scale 4 Hz
+  square in black on white, *Intense*, read 7 - 9 by the project's strict
+  reading only (every other reading at most 3). The albums' covers are not
+  capped while a long list is scrolled (a reply arriving after its album
+  was let go is kept until the list changes).
+- The first start of an update put in place is watched by the program
+  itself: one that crashes before its window is up is replaced by the
+  program before it at the *next* start (the crash is not caught as it
+  happens), and only where the program's folder can be written.
 - The flash guard dims the line face in very fast music more often than
   needed (it over-estimates the moving fill); nothing flashes, the picture is
   just darker at times.
@@ -50,9 +79,11 @@ after the output callback has returned, to hand the samples over - outside this
 player's callback, which itself takes no lock, and out of its hands until cpal
 changes it. HLS radio (`.m3u8` segment lists) is not played. On a software renderer
 the whole window is drawn by the CPU (llvmpipe: 0.06 to 0.25 s of a core a frame,
-more as the window grows): the frame rate is lowered to stay under a core, so a
-large window on a software renderer moves at a few frames a second
-(`tests/real_window.rs` measures it); at rest it costs about nothing. There was no
+0.3 s and more at 2560 x 1440 whatever it shows): the frame rate is lowered to keep
+the window within about a third of a core, down to a frame every three seconds (the
+clock with the pictures off as seldom), so a large window on a software renderer
+moves at a few frames a second or fewer (`tests/real_window.rs` measures it); at
+rest it costs about nothing. There was no
 GPU of its own to measure on here: the GPU's cost of the faces
 (`--ignored` in `tests/faces.rs`) has only been measured on Mesa's lavapipe and
 llvmpipe, by the clock.

@@ -196,9 +196,14 @@ pub struct AmpSettings {
     pub display_restore_profile: Option<(String, String)>,
     /// The window's design (`design::DESIGNS`' key).
     pub design: String,
-    /// Ask GitHub for a newer release at the start (off unless ticked:
-    /// src/update.rs).
-    pub update_check: bool,
+    /// The updates: not looked for, said (a new installation's default; a
+    /// player of 0.15 keeps its choice), or put in place by themselves - at
+    /// the start, then once a day (src/update.rs).
+    pub update_mode: crate::update::UpdateMode,
+    /// The face shown here: one of axross's 18 is the shared file's own,
+    /// another is kept here (the shared file says the nearest of axross's:
+    /// [`crate::viz::axross_face`]). "" when none was kept yet.
+    pub face: String,
 }
 
 /// The loudness targets offered: LUFS and what aims at it.
@@ -234,7 +239,8 @@ impl Default for AmpSettings {
             display_restore_output: None,
             display_restore_profile: None,
             design: "modern".into(),
-            update_check: false,
+            update_mode: crate::update::UpdateMode::Notify,
+            face: String::new(),
         }
     }
 }
@@ -346,8 +352,23 @@ pub fn read_amp(path: &Path) -> AmpSettings {
     {
         settings.design = d;
     }
-    if let Some(on) = map.get("update_check").and_then(Value::as_bool) {
-        settings.update_check = on;
+    // (the mode; a player of 0.15 - "update_check" alone, which it always
+    // wrote - keeps its choice: off, nothing to the network, unless ticked,
+    // then said. Taken for no choice, every 0.15 user was asking GitHub
+    // daily after the update - review 16, M3. A new installation, with
+    // neither, says when one is out.)
+    use crate::update::UpdateMode;
+    if let Some(m) = text(&map, "update_mode").and_then(|m| UpdateMode::from_key(&m)) {
+        settings.update_mode = m;
+    } else if let Some(on) = map.get("update_check").and_then(Value::as_bool) {
+        settings.update_mode = if on {
+            UpdateMode::Notify
+        } else {
+            UpdateMode::Off
+        };
+    }
+    if let Some(f) = text(&map, "face").filter(|k| crate::viz::find(k).is_some()) {
+        settings.face = f;
     }
     settings
 }
@@ -400,7 +421,15 @@ pub fn write_amp(path: &Path, settings: &AmpSettings) -> std::io::Result<()> {
         map.remove("display_restore");
     }
     map.insert("design".into(), json!(settings.design));
-    map.insert("update_check".into(), json!(settings.update_check));
+    map.insert("update_mode".into(), json!(settings.update_mode.key()));
+    // (for a player of 0.15: whether it checks at its start)
+    map.insert(
+        "update_check".into(),
+        json!(settings.update_mode != crate::update::UpdateMode::Off),
+    );
+    if !settings.face.is_empty() {
+        map.insert("face".into(), json!(settings.face));
+    }
     write_object(path, &map)
 }
 
@@ -657,11 +686,9 @@ pub fn read_base(path: &Path) -> Map<String, Value> {
     read_object(path)
 }
 
-/// Keys written together: the playlist and the track in it belong to each
-/// other. (The position follows the playlist's winner, it decides nothing:
-/// a position that moved while playing is no change of the playlist.)
-const GROUPS: [&[&str]; 1] = [&["tracks", "current"]];
-const FOLLOWS_TRACKS: &str = "position_ms";
+/// The playlist, the track in it and its position: merged together, by the
+/// tracks' paths ([`merge_playlist`]).
+const PLAYLIST_KEYS: [&str; 3] = ["tracks", "current", "position_ms"];
 
 /// The lock that keeps two of these programs from reading, merging and
 /// writing the file at once (an advisory lock on a file beside it: flock
@@ -697,42 +724,32 @@ pub fn write_state_merged(
     let mut out = theirs.clone();
     let mut kept = Map::new();
     let mut written: Vec<String> = Vec::new();
-    let mut done: Vec<&str> = vec![FOLLOWS_TRACKS];
+    merge_playlist(
+        &ours,
+        &theirs,
+        base.as_ref(),
+        &mut out,
+        &mut kept,
+        &mut written,
+    );
     for key in ours.keys() {
-        if done.contains(&key.as_str()) {
+        if PLAYLIST_KEYS.contains(&key.as_str()) {
             continue;
         }
-        let group: Vec<&str> = GROUPS
-            .iter()
-            .find(|g| g.contains(&key.as_str()))
-            .map(|g| g.to_vec())
-            .unwrap_or_else(|| vec![key.as_str()]);
-        done.extend(group.iter().copied());
-        let value = |m: &Map<String, Value>| -> Vec<Option<Value>> {
-            group.iter().map(|k| m.get(*k).cloned()).collect()
-        };
-        let mine = value(&ours);
+        let mine = ours.get(key);
         let theirs_changed = base
             .as_ref()
-            .is_some_and(|b| value(b) != value(&theirs) && theirs.contains_key(group[0]));
-        let mine_changed = base.as_ref().is_none_or(|b| value(b) != mine);
-        let mut keys: Vec<&str> = group.clone();
-        if group.contains(&"tracks") {
-            keys.push(FOLLOWS_TRACKS);
-        }
+            .is_some_and(|b| b.get(key) != theirs.get(key) && theirs.contains_key(key.as_str()));
+        let mine_changed = base.as_ref().is_none_or(|b| b.get(key) != mine);
         if theirs_changed && !mine_changed {
-            for k in keys {
-                if let Some(v) = theirs.get(k) {
-                    kept.insert(k.to_owned(), v.clone());
-                }
+            if let Some(v) = theirs.get(key) {
+                kept.insert(key.clone(), v.clone());
             }
             continue;
         }
-        for k in keys {
-            if let Some(v) = ours.get(k) {
-                out.insert(k.to_owned(), v.clone());
-                written.push(k.to_owned());
-            }
+        if let Some(v) = mine {
+            out.insert(key.clone(), v.clone());
+            written.push(key.clone());
         }
     }
     fit(&mut out);
@@ -745,6 +762,280 @@ pub fn write_state_merged(
         }
     }
     Ok(kept)
+}
+
+/// The paths of a `tracks` value, in order (None: there is none).
+fn paths_of(tracks: Option<&Value>) -> Option<Vec<&str>> {
+    tracks.and_then(Value::as_array).map(|list| {
+        list.iter()
+            .map(|t| t.get("path").and_then(Value::as_str).unwrap_or(""))
+            .collect()
+    })
+}
+
+/// The path of the current track of a state (None: no current track).
+fn current_path(m: &Map<String, Value>) -> Option<&str> {
+    let i = usize::try_from(m.get("current")?.as_i64()?).ok()?;
+    paths_of(m.get("tracks"))?.get(i).copied()
+}
+
+/// Three lists of tracks merged by their paths - each copy of a path its
+/// own (the second copy of a track is another entry): what both kept, and
+/// what either added since `base`; what either removed is gone. The order
+/// is the one that changed it: where only the other program reordered the
+/// tracks both have, its order, else ours (review 16, M7: a reorder in one
+/// program was undone by an edit in the other, the order of whoever wrote
+/// last taken); what the other added comes after the track it follows
+/// there (added at its end: after the last of its tracks here).
+/// Also where each of ours and of theirs is in the result (None: gone).
+type Merged = (Vec<Value>, Vec<Option<usize>>, Vec<Option<usize>>);
+
+fn merge_lists(base: &[&str], ours: &[Value], theirs: &[Value]) -> Merged {
+    use std::collections::{HashMap, HashSet};
+    fn keys<'a>(paths: impl Iterator<Item = &'a str>) -> Vec<(&'a str, usize)> {
+        let mut seen: HashMap<&str, usize> = HashMap::new();
+        paths
+            .map(|p| {
+                let n = seen.entry(p).or_insert(0);
+                *n += 1;
+                (p, *n - 1)
+            })
+            .collect()
+    }
+    fn path(t: &Value) -> &str {
+        t.get("path").and_then(Value::as_str).unwrap_or("")
+    }
+    let b = keys(base.iter().copied());
+    let o = keys(ours.iter().map(path));
+    let t = keys(theirs.iter().map(path));
+    let (bs, os, ts): (HashSet<_>, HashSet<_>, HashSet<_>) = (
+        b.iter().copied().collect(),
+        o.iter().copied().collect(),
+        t.iter().copied().collect(),
+    );
+    let kept = |k: &(&str, usize)| {
+        (os.contains(k) && ts.contains(k))
+            || (os.contains(k) && !bs.contains(k))
+            || (ts.contains(k) && !bs.contains(k))
+    };
+    // (an order changed: the tracks it shares with the base in another order)
+    let reordered = |side: &[(&str, usize)], set: &HashSet<(&str, usize)>| {
+        let a: Vec<_> = side.iter().filter(|k| bs.contains(k)).collect();
+        let z: Vec<_> = b.iter().filter(|k| set.contains(k)).collect();
+        a != z
+    };
+    let theirs_first = reordered(&t, &ts) && !reordered(&o, &os);
+    let (first, first_values, second, second_values) = if theirs_first {
+        (&t, theirs, &o, ours)
+    } else {
+        (&o, ours, &t, theirs)
+    };
+    // (each track's entry: ours where we have it - our tags -, else theirs)
+    let ours_at: HashMap<(&str, usize), usize> =
+        o.iter().enumerate().map(|(i, k)| (*k, i)).collect();
+    let value = |k: &(&str, usize), from: &[Value], at: usize| {
+        ours_at
+            .get(k)
+            .map_or_else(|| from[at].clone(), |&i| ours[i].clone())
+    };
+    let mut merged: Vec<((&str, usize), Value)> = first
+        .iter()
+        .enumerate()
+        .filter(|(_, k)| kept(k))
+        .map(|(i, k)| (*k, value(k, first_values, i)))
+        .collect();
+    for (i, k) in second.iter().enumerate() {
+        if !kept(k) || merged.iter().any(|(m, _)| m == k) {
+            continue;
+        }
+        // (after the nearest track before it there that is here; one added
+        // at the end there - nothing kept after it - after the last of
+        // those here: the track before it may have been moved away)
+        let last = !second[i + 1..].iter().any(&kept);
+        let at = if last {
+            merged.iter().rposition(|(m, _)| second.contains(m))
+        } else {
+            second[..i]
+                .iter()
+                .rev()
+                .find_map(|before| merged.iter().position(|(m, _)| m == before))
+        }
+        .map_or(0, |j| j + 1);
+        merged.insert(at, (*k, value(k, second_values, i)));
+    }
+    let at: HashMap<(&str, usize), usize> = merged
+        .iter()
+        .enumerate()
+        .map(|(i, (k, _))| (*k, i))
+        .collect();
+    let ours_to = o.iter().map(|k| at.get(k).copied()).collect();
+    let theirs_to = t.iter().map(|k| at.get(k).copied()).collect();
+    (
+        merged.into_iter().map(|(_, v)| v).collect(),
+        ours_to,
+        theirs_to,
+    )
+}
+
+/// The playlist, its current track and position written without undoing
+/// another program's (review 13: axross's added tracks were lost when only
+/// the track playing here changed, or a track's tags were filled in -
+/// compared by value, any change here won):
+///
+/// * the list is compared by its paths (tags filled in here are no edit of
+///   it); one the other program changed and this one did not is theirs -
+///   with what this program knows of the same tracks added where theirs
+///   lacks it - and the track playing here stays current, found there by
+///   its path; the window takes it all over;
+/// * a list this program changed and the other did not is this program's;
+/// * both changed it: three ways ([`merge_lists`]) - what either removed
+///   taken out, what either added kept, the order of the one that
+///   reordered;
+/// * the same list: the current track (by its path) and its position are
+///   the other's where only it moved them.
+fn merge_playlist(
+    ours: &Map<String, Value>,
+    theirs: &Map<String, Value>,
+    base: Option<&Map<String, Value>>,
+    out: &mut Map<String, Value>,
+    kept: &mut Map<String, Value>,
+    written: &mut Vec<String>,
+) {
+    fn list(m: &Map<String, Value>) -> Option<Vec<&str>> {
+        paths_of(m.get("tracks"))
+    }
+    let mine_list = base.is_none_or(|b| list(b) != list(ours));
+    let theirs_list =
+        base.is_some_and(|b| theirs.contains_key("tracks") && list(b) != list(theirs));
+    let mine_current = base.is_none_or(|b| current_path(b) != current_path(ours));
+    let theirs_current = base
+        .is_some_and(|b| theirs.contains_key("current") && current_path(b) != current_path(theirs));
+    // (`keep`: the other program's, merged - written to the file and given
+    // to the window to take over, but not counted as this program's own:
+    // until the window has it, the next save merges again)
+    let mut write = |out: &mut Map<String, Value>, key: &str, value: Value, keep: bool| {
+        if keep {
+            kept.insert(key.to_owned(), value.clone());
+        } else {
+            written.push(key.to_owned());
+        }
+        out.insert(key.to_owned(), value);
+    };
+    let get = |m: &Map<String, Value>, k: &str| m.get(k).cloned().unwrap_or(Value::Null);
+    if theirs_list && !mine_list {
+        // their list, with our tags for the same tracks
+        let ours_by_path: std::collections::HashMap<&str, &Map<String, Value>> = ours
+            .get("tracks")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|t| Some((t.get("path")?.as_str()?, t.as_object()?)))
+            .collect();
+        let mut tracks = theirs
+            .get("tracks")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        for t in &mut tracks {
+            let Some(entry) = t.as_object_mut() else {
+                continue;
+            };
+            let Some(mine) = entry
+                .get("path")
+                .and_then(Value::as_str)
+                .and_then(|p| ours_by_path.get(p))
+            else {
+                continue;
+            };
+            for (k, v) in mine.iter() {
+                let missing = match entry.get(k) {
+                    None => true,
+                    Some(Value::String(s)) => s.is_empty(),
+                    Some(Value::Number(n)) => n.as_f64() == Some(0.0),
+                    _ => false,
+                };
+                if missing {
+                    entry.insert(k.clone(), v.clone());
+                }
+            }
+        }
+        // the track playing here (when it moved here), where it is in theirs
+        let here = mine_current
+            .then(|| current_path(ours))
+            .flatten()
+            .and_then(|p| {
+                let at = ours.get("current").and_then(Value::as_i64).unwrap_or(0);
+                tracks
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, t)| t.get("path").and_then(Value::as_str) == Some(p))
+                    .min_by_key(|(i, _)| (*i as i64 - at).abs())
+                    .map(|(i, _)| i)
+            });
+        let (current, position) = match here {
+            Some(i) => (json!(i), get(ours, "position_ms")),
+            None => (get(theirs, "current"), get(theirs, "position_ms")),
+        };
+        write(out, "tracks", Value::Array(tracks), true);
+        write(out, "current", current, true);
+        write(out, "position_ms", position, true);
+        return;
+    }
+    if theirs_list && mine_list {
+        // both changed the list: three ways, by the tracks' paths - ours
+        // without what they removed, with what they added after the track
+        // it follows in theirs (review 15: an edit in axross dropped what
+        // was added here, a track added here and removed there came back)
+        let (Some(b), Some(_)) = (base.and_then(list), list(theirs)) else {
+            return;
+        };
+        let ours_tracks = ours
+            .get("tracks")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let theirs_tracks = theirs
+            .get("tracks")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let (merged, ours_to, theirs_to) = merge_lists(&b, &ours_tracks, &theirs_tracks);
+        // (the track playing: ours where it is kept, else theirs - the very
+        // entry, also of a track there twice)
+        let entry = |to: &[Option<usize>], m: &Map<String, Value>| {
+            m.get("current")
+                .and_then(Value::as_i64)
+                .and_then(|i| usize::try_from(i).ok())
+                .and_then(|i| to.get(i).copied().flatten())
+        };
+        let (current, position) = match entry(&ours_to, ours) {
+            Some(i) => (json!(i), get(ours, "position_ms")),
+            None => match entry(&theirs_to, theirs) {
+                Some(i) => (json!(i), get(theirs, "position_ms")),
+                None => (json!(-1), json!(0)),
+            },
+        };
+        // (taken over by the window: until it has, the next save merges the
+        // same way again)
+        let changed = merged != ours_tracks;
+        write(out, "tracks", Value::Array(merged), changed);
+        write(out, "current", current, changed);
+        write(out, "position_ms", position, changed);
+        return;
+    }
+    if mine_list || !theirs_current || mine_current {
+        for k in PLAYLIST_KEYS {
+            if let Some(v) = ours.get(k) {
+                write(out, k, v.clone(), false);
+            }
+        }
+        return;
+    }
+    // the same list; only the other program moved to another track (the
+    // list as known here: the same tracks, with their tags)
+    write(out, "tracks", get(ours, "tracks"), true);
+    write(out, "current", get(theirs, "current"), true);
+    write(out, "position_ms", get(theirs, "position_ms"), true);
 }
 
 /// The tracks of a `tracks` value of the file (as [`read_state`] reads them).
@@ -850,7 +1141,12 @@ fn state_object(state: &PlayerState, file: &Map<String, Value>) -> Map<String, V
         ("tracks", Value::Array(tracks)),
         ("current", json!(state.current)),
         ("position_ms", json!(state.position_ms)),
-        ("visualizer", json!(state.visualizer)),
+        // (the nearest of axross's own faces: the one here is kept in
+        // this program's file)
+        (
+            "visualizer",
+            json!(crate::viz::axross_face(&state.visualizer)),
+        ),
         ("visual_scheme", json!(state.visual_scheme)),
         ("visual_custom", json!(state.visual_custom)),
         ("visual_options", Value::Object(options)),
@@ -895,17 +1191,23 @@ pub fn write_eq(path: &Path, eq: &EqSettings) -> std::io::Result<()> {
     write_object(path, &map)
 }
 
-/// The output device axross-amp plays on (`amp_output` in audio.json: a
-/// device id of cpal; "" is the system's default). axross's own
+/// The output device axross-amp plays on (a device id of cpal; "" is the
+/// system's default), in this program's own file in `dir` (`output`) - it
+/// was `amp_output` in axross's audio.json, read from there while this
+/// program's file has none: axross rewrote that file with its own keys
+/// only, and the device chosen here was lost (review 13). axross's own
 /// `media_output` holds a Qt device id - another thing - and is left alone.
-pub fn read_output(path: &Path) -> String {
-    text(&read_object(path), "amp_output").unwrap_or_default()
+pub fn read_output(dir: &Path) -> String {
+    text(&read_object(&dir.join(AMP_FILE)), "output")
+        .or_else(|| text(&read_object(&dir.join(AUDIO_FILE)), "amp_output"))
+        .unwrap_or_default()
 }
 
-pub fn write_output(path: &Path, id: &str) -> std::io::Result<()> {
-    let mut map = read_object(path);
-    map.insert("amp_output".into(), json!(id));
-    write_object(path, &map)
+pub fn write_output(dir: &Path, id: &str) -> std::io::Result<()> {
+    let path = dir.join(AMP_FILE);
+    let mut map = read_object(&path);
+    map.insert("output".into(), json!(id));
+    write_object(&path, &map)
 }
 
 #[cfg(test)]
@@ -1064,7 +1366,8 @@ mod tests {
                 "output:analog-stereo+input:analog-stereo".into(),
             )),
             design: "cassette".into(),
-            update_check: true,
+            update_mode: crate::update::UpdateMode::Install,
+            face: "galaxy".into(),
         };
         write_amp(&path, &settings).unwrap();
         let back = read_amp(&path);
@@ -1098,6 +1401,7 @@ mod tests {
         );
         assert!(!fresh.display_open && !fresh.display_sound);
         assert_eq!(back.design, "cassette");
+        assert_eq!(back.face, "galaxy");
         assert_eq!(fresh.design, "modern", "the default design");
         assert_eq!(fresh.theme, "midnight", "the dark theme by default");
         assert!(fresh.cover_accent && !fresh.follow_system);
@@ -1142,7 +1446,8 @@ mod tests {
         write_state_merged(&path, &state, &mut base).unwrap();
         assert_eq!(read_state(&path).tracks.len(), 2, "lost at the second save");
         assert_eq!(read_state(&path).tracks[0].path, "/m/theirs.flac");
-        // a change of ours to the playlist wins over theirs
+        // a change of ours to the playlist too: both kept, three ways (what
+        // they removed - ours - gone, what they added and we added there)
         state.tracks.push(Track {
             path: "/m/new.mp3".into(),
             title: String::new(),
@@ -1150,8 +1455,10 @@ mod tests {
             ..Default::default()
         });
         write_state_merged(&path, &state, &mut base).unwrap();
-        assert_eq!(read_state(&path).tracks.len(), 2);
-        assert_eq!(read_state(&path).tracks[1].path, "/m/new.mp3");
+        assert_eq!(
+            paths(&path),
+            ["/m/theirs.flac", "/m/second.flac", "/m/new.mp3"]
+        );
         let raw: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(raw["python_only"], json!(true));
     }
@@ -1286,5 +1593,304 @@ mod tests {
         assert_eq!(back["output"], json!("speakers"));
         assert_eq!(back["eq_preset"], json!("Rock"));
         assert!(!read_eq(&path).enabled);
+    }
+
+    fn track(path: &str) -> Track {
+        Track {
+            path: path.into(),
+            ..Default::default()
+        }
+    }
+
+    fn paths(path: &Path) -> Vec<String> {
+        read_state(path)
+            .tracks
+            .into_iter()
+            .map(|t| t.path)
+            .collect()
+    }
+
+    /// axross adds a track; here only the track playing changes (the next
+    /// one), and a track's tags are filled in: axross's track stays, the
+    /// track playing here stays current in its list (review 13, M6: the
+    /// file went back to this program's list).
+    #[test]
+    fn a_track_added_by_axross_survives_the_next_track_here() {
+        let (_dir, path) = temp("added");
+        let mut state = PlayerState {
+            tracks: vec![track("/m/1.mp3"), track("/m/2.mp3")],
+            current: 0,
+            ..Default::default()
+        };
+        let mut base = None;
+        write_state_merged(&path, &state, &mut base).unwrap();
+        let mut raw: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        raw["tracks"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"path": "/m/new.mp3", "title": "", "duration": 0}));
+        fs::write(&path, raw.to_string()).unwrap();
+        // here: the next track, and the tags of the first read
+        state.current = 1;
+        state.position_ms = 1500;
+        state.tracks[0].artist = "Artist".into();
+        state.tracks[0].duration_ms = 61_000;
+        let kept = write_state_merged(&path, &state, &mut base).unwrap();
+        assert_eq!(paths(&path), ["/m/1.mp3", "/m/2.mp3", "/m/new.mp3"]);
+        let file = read_state(&path);
+        assert_eq!(file.current, 1, "the track playing here");
+        assert_eq!(file.position_ms, 1500);
+        assert_eq!(file.tracks[0].artist, "Artist", "our tags in their list");
+        assert_eq!(file.tracks[0].duration_ms, 61_000);
+        assert!(kept.contains_key("tracks"), "the window takes it over");
+        assert_eq!(tracks_of(&kept["tracks"]).len(), 3);
+        // the window took it over: its next save keeps it
+        state.tracks = file.tracks.clone();
+        state.position_ms = 4000;
+        write_state_merged(&path, &state, &mut base).unwrap();
+        assert_eq!(paths(&path).len(), 3);
+        assert_eq!(read_state(&path).position_ms, 4000);
+    }
+
+    /// The track playing here, removed in axross: theirs current then.
+    #[test]
+    fn a_track_removed_by_axross_takes_its_place_with_it() {
+        let (_dir, path) = temp("removed");
+        let mut state = PlayerState {
+            tracks: vec![track("/m/1.mp3"), track("/m/2.mp3"), track("/m/3.mp3")],
+            current: 0,
+            ..Default::default()
+        };
+        let mut base = None;
+        write_state_merged(&path, &state, &mut base).unwrap();
+        let mut raw: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        raw["tracks"] = json!([{"path": "/m/1.mp3"}, {"path": "/m/3.mp3"}]);
+        raw["current"] = json!(0);
+        fs::write(&path, raw.to_string()).unwrap();
+        state.current = 1; // (here: on to 2.mp3, which axross removed)
+        write_state_merged(&path, &state, &mut base).unwrap();
+        assert_eq!(paths(&path), ["/m/1.mp3", "/m/3.mp3"]);
+        assert_eq!(read_state(&path).current, 0);
+    }
+
+    /// The same list; axross moved to another track while this program did
+    /// not: axross's current track and position, this program's tags.
+    #[test]
+    fn a_track_chosen_in_axross_is_taken_over() {
+        let (_dir, path) = temp("moved");
+        let mut state = PlayerState {
+            tracks: vec![track("/m/1.mp3"), track("/m/2.mp3")],
+            current: 0,
+            ..Default::default()
+        };
+        state.tracks[1].album = "Album".into();
+        let mut base = None;
+        write_state_merged(&path, &state, &mut base).unwrap();
+        let mut raw: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        raw["current"] = json!(1);
+        raw["position_ms"] = json!(9000);
+        raw["tracks"] = json!([{"path": "/m/1.mp3"}, {"path": "/m/2.mp3"}]);
+        fs::write(&path, raw.to_string()).unwrap();
+        state.volume = 20;
+        let kept = write_state_merged(&path, &state, &mut base).unwrap();
+        let file = read_state(&path);
+        assert_eq!((file.current, file.position_ms, file.volume), (1, 9000, 20));
+        assert_eq!(file.tracks[1].album, "Album");
+        assert_eq!(kept["current"], json!(1));
+    }
+
+    /// The output device is kept in this program's file, not in axross's
+    /// audio.json - axross rewrote that with its own keys and the device was
+    /// lost (review 13, M7); the old place is read while the new one has
+    /// none.
+    #[test]
+    fn the_output_device_is_kept_in_this_programs_file() {
+        let dir = crate::testdir::Scratch::new("output-kept");
+        fs::write(dir.join(AUDIO_FILE), r#"{"amp_output": "old-device"}"#).unwrap();
+        assert_eq!(read_output(&dir), "old-device", "the old place");
+        write_output(&dir, "headphones").unwrap();
+        // axross saves its audio settings with its own keys only
+        fs::write(
+            dir.join(AUDIO_FILE),
+            r#"{"version": 1, "eq_enabled": true}"#,
+        )
+        .unwrap();
+        assert_eq!(read_output(&dir), "headphones");
+        // and this program's other settings leave it be
+        write_amp(&dir.join(AMP_FILE), &AmpSettings::default()).unwrap();
+        assert_eq!(read_output(&dir), "headphones");
+        let audio: Value =
+            serde_json::from_str(&fs::read_to_string(dir.join(AUDIO_FILE)).unwrap()).unwrap();
+        assert_eq!(audio, json!({"version": 1, "eq_enabled": true}));
+    }
+
+    /// A face axross does not have: the shared file says the nearest of
+    /// axross's (axross set any other back to the spectrum, the face lost
+    /// each time it ran - review 13, M7), this program's file the face.
+    #[test]
+    fn a_face_axross_does_not_have_is_kept_here() {
+        let (_dir, path) = temp("face");
+        let mut state = PlayerState {
+            visualizer: "galaxy".into(),
+            ..Default::default()
+        };
+        write_state(&path, &state).unwrap();
+        assert_eq!(read_state(&path).visualizer, "starfield");
+        assert_eq!(crate::viz::face_to_show("starfield", "galaxy"), "galaxy");
+        // chosen in axross since: axross's
+        assert_eq!(crate::viz::face_to_show("vu", "galaxy"), "vu");
+        // axross's own faces as they are; none kept yet
+        state.visualizer = "ring".into();
+        write_state(&path, &state).unwrap();
+        assert_eq!(read_state(&path).visualizer, "ring");
+        assert_eq!(crate::viz::face_to_show("ring", ""), "ring");
+        assert_eq!(crate::viz::face_to_show("galaxy", ""), "galaxy");
+        // every face has one of axross's
+        for f in crate::viz::FACES {
+            let near = crate::viz::axross_face(f.key);
+            let i = crate::viz::FACES
+                .iter()
+                .position(|g| g.key == near)
+                .unwrap();
+            assert!(i < crate::viz::AXROSS_FACES, "{} -> {near}", f.key);
+        }
+    }
+
+    fn file_tracks(path: &Path, tracks: Value) {
+        let mut raw: Value = serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap();
+        raw["tracks"] = tracks;
+        fs::write(path, raw.to_string()).unwrap();
+    }
+
+    /// Both programs change the list: three ways, by the tracks' paths -
+    /// a track added here survives a track removed there, a track removed
+    /// there stays removed, both additions are kept (review 15, M3).
+    #[test]
+    fn both_programs_changing_the_list_merge_three_ways() {
+        let (_dir, path) = temp("three-ways");
+        let mut state = PlayerState {
+            tracks: vec![track("/m/1.mp3"), track("/m/2.mp3"), track("/m/3.mp3")],
+            current: 0,
+            ..Default::default()
+        };
+        let mut base = None;
+        write_state_merged(&path, &state, &mut base).unwrap();
+        // here: X added (written); there: 2 removed and Y added after 3,
+        // from the list it had ([1, 2, 3], merged with ours: [1, 3, X, Y]
+        // as axross writes it now) - here the window has not taken that yet
+        state.tracks.push(track("/m/X.mp3"));
+        write_state_merged(&path, &state, &mut base).unwrap();
+        state.tracks.push(track("/m/Z.mp3")); // (and Z added here meanwhile)
+        file_tracks(
+            &path,
+            json!([{"path": "/m/1.mp3"}, {"path": "/m/3.mp3"}, {"path": "/m/Y.mp3"}, {"path": "/m/X.mp3"}]),
+        );
+        let kept = write_state_merged(&path, &state, &mut base).unwrap();
+        assert_eq!(
+            paths(&path),
+            ["/m/1.mp3", "/m/3.mp3", "/m/Y.mp3", "/m/X.mp3", "/m/Z.mp3"]
+        );
+        assert!(kept.contains_key("tracks"), "the window takes it over");
+        // a second save before the window has it: the same
+        write_state_merged(&path, &state, &mut base).unwrap();
+        assert_eq!(paths(&path).len(), 5);
+        // the window took it over: its next save is it
+        state.tracks = read_state(&path).tracks;
+        write_state_merged(&path, &state, &mut base).unwrap();
+        assert_eq!(paths(&path).len(), 5);
+    }
+
+    /// A reorder in one program and an edit in the other: both kept - the
+    /// order of the one that reordered, the track the other added after the
+    /// one it follows there (review 16, M7: the order of whoever wrote last
+    /// was taken, and the reorder undone); a track there twice, each copy an
+    /// entry of its own.
+    #[test]
+    fn a_reorder_and_an_edit_in_the_other_program_are_both_kept() {
+        let base = ["/m/1", "/m/2", "/m/3"];
+        let list = |p: &[&str]| p.iter().map(|p| json!({ "path": p })).collect::<Vec<_>>();
+        let merged = |b: &[&str], o: &[&str], t: &[&str]| {
+            let (m, _, _) = merge_lists(b, &list(o), &list(t));
+            m.iter()
+                .map(|v| v["path"].as_str().unwrap().to_owned())
+                .collect::<Vec<_>>()
+        };
+        // 3 moved to the top there, X added here
+        assert_eq!(
+            merged(
+                &base,
+                &["/m/1", "/m/2", "/m/3", "/m/X"],
+                &["/m/3", "/m/1", "/m/2"]
+            ),
+            ["/m/3", "/m/1", "/m/2", "/m/X"]
+        );
+        // 3 moved to the top here, Y added there
+        assert_eq!(
+            merged(
+                &base,
+                &["/m/3", "/m/1", "/m/2"],
+                &["/m/1", "/m/2", "/m/3", "/m/Y"]
+            ),
+            ["/m/3", "/m/1", "/m/2", "/m/Y"]
+        );
+        // a second 1 added here, Y there (both at the end: theirs first)
+        assert_eq!(
+            merged(
+                &["/m/1", "/m/2"],
+                &["/m/1", "/m/2", "/m/1"],
+                &["/m/1", "/m/2", "/m/Y"]
+            ),
+            ["/m/1", "/m/2", "/m/Y", "/m/1"]
+        );
+        // the second of two 1s removed here, Y added there
+        assert_eq!(
+            merged(
+                &["/m/1", "/m/2", "/m/1"],
+                &["/m/1", "/m/2"],
+                &["/m/1", "/m/2", "/m/1", "/m/Y"]
+            ),
+            ["/m/1", "/m/2", "/m/Y"]
+        );
+        // and through the file: the reorder there survives a track added here
+        let (_dir, path) = temp("reorder-there");
+        let mut state = PlayerState {
+            tracks: vec![track("/m/1.mp3"), track("/m/2.mp3"), track("/m/3.mp3")],
+            current: 1,
+            ..Default::default()
+        };
+        let mut base = None;
+        write_state_merged(&path, &state, &mut base).unwrap();
+        file_tracks(
+            &path,
+            json!([{"path": "/m/3.mp3"}, {"path": "/m/1.mp3"}, {"path": "/m/2.mp3"}]),
+        );
+        state.tracks.push(track("/m/X.mp3"));
+        write_state_merged(&path, &state, &mut base).unwrap();
+        assert_eq!(
+            paths(&path),
+            ["/m/3.mp3", "/m/1.mp3", "/m/2.mp3", "/m/X.mp3"]
+        );
+        // (the track playing here, 2, where it is now)
+        assert_eq!(read_state(&path).current, 2);
+    }
+
+    /// A track added here, then removed in axross: removed (review 15, M3:
+    /// the guard against an older list put it back for good).
+    #[test]
+    fn a_track_added_here_and_removed_there_stays_removed() {
+        let (_dir, path) = temp("removed-there");
+        let mut state = PlayerState {
+            tracks: vec![track("/m/1.mp3"), track("/m/2.mp3")],
+            current: 0,
+            ..Default::default()
+        };
+        let mut base = None;
+        write_state_merged(&path, &state, &mut base).unwrap();
+        state.tracks.push(track("/m/X.mp3"));
+        write_state_merged(&path, &state, &mut base).unwrap();
+        file_tracks(&path, json!([{"path": "/m/1.mp3"}, {"path": "/m/2.mp3"}]));
+        let kept = write_state_merged(&path, &state, &mut base).unwrap();
+        assert_eq!(paths(&path), ["/m/1.mp3", "/m/2.mp3"]);
+        assert_eq!(tracks_of(&kept["tracks"]).len(), 2);
     }
 }

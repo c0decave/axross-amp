@@ -581,6 +581,8 @@ impl FlashGuard {
         }
         let f = self.fields.len();
         if old_cols == 0 || old_centres.is_empty() {
+            self.pattern = Pattern::default();
+            self.pattern_strength = 0.0;
             self.raw = vec![[0.0; 3]; n];
             self.shown = vec![[0.0; 3]; n];
             self.raw_big = vec![[0.0; 3]; n];
@@ -639,6 +641,25 @@ impl FlashGuard {
         self.raw_watch.remap(&map);
         self.shown_watch.remap(&map);
         self.feedback.clear();
+        // (the pattern stage's cells too: kept at the old grid's size, the
+        // next frame drawn while time stood still - paused, then F11 or a
+        // resize - read past their end and the player aborted: review 15)
+        let old = old_cols * old_rows;
+        let p = &mut self.pattern;
+        if p.soft.len() == old && p.mean.len() == old && p.marked.len() == old {
+            p.soft = map.cells(&p.soft);
+            p.mean = map.cells(&p.mean);
+            p.marked = map.cells(&p.marked);
+            for frame in p.past.iter_mut() {
+                if frame.len() == old {
+                    *frame = map.cells(frame);
+                }
+            }
+            p.past.retain(|f| f.len() == n);
+        } else {
+            *p = Pattern::default();
+            self.pattern_strength = 0.0;
+        }
     }
 
     /// After the faces have drawn into `rect` (their shapes from
@@ -946,6 +967,7 @@ impl FlashGuard {
             // strictly, ordinary music stays there, and was veiled)
             let fast = self.raw_watch.fast(k, now)
                 || (!self.shown_is_raw && self.shown_watch.fast(k, now));
+
             // (red: 0.99 - the picture the veil holds may be red itself, a
             // red that came before the veil; 0.05 of a red swing over it was
             // still a red transition)
@@ -1208,7 +1230,11 @@ impl FlashGuard {
     /// corner, coloured as the cells around it, so that it shades smoothly
     /// (no blocks, no edges).
     fn draw(&self, painter: &egui::Painter) {
-        if self.pattern_strength >= 0.01 {
+        let n = self.cols * self.rows;
+        if self.pattern_strength >= 0.01
+            && self.pattern.soft.len() == n
+            && self.pattern.mean.len() == n
+        {
             // (its edge feathered over three cells each way: softened cell
             // by cell, its edges were dark steps over the picture)
             let alpha: Vec<[f32; 3]> = self.pattern.soft.iter().map(|v| [*v; 3]).collect();
@@ -1222,7 +1248,7 @@ impl FlashGuard {
                 self.cells_mesh(&alpha, &self.pattern.mean),
             ));
         }
-        if self.strength < 0.01 {
+        if self.strength < 0.01 || self.veil.len() != n || self.slow.len() != n {
             return;
         }
         painter.add(egui::Shape::mesh(self.veil_mesh()));
@@ -1689,7 +1715,18 @@ fn lay_pieces(
         // (thin - a line's long piece: its area along its length, a cell
         // at a time, not every cell of its box sampled)
         let bbox = (max.x - min.x).max(1e-3) * (max.y - min.y).max(1e-3);
-        if thumb.is_none() && area.abs() < bbox * 0.25 {
+        // (thin for the cells: a band two cells wide and more, a long
+        // slanting quad's half filling little of its box, is laid as the
+        // large shape it is - laid as small pieces, its cells were never
+        // counted whole, and bands crossing the picture every frame were
+        // seen as a line moving: review 16, H1)
+        let longest = (p1 - p0)
+            .length()
+            .max((p2 - p1).length())
+            .max((p0 - p2).length())
+            .max(1e-3);
+        let across = 2.0 * area.abs() / longest;
+        if thumb.is_none() && area.abs() < bbox * 0.25 && across < 2.0 * cw.max(ch) {
             if sampled {
                 continue;
             }

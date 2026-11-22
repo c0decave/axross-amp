@@ -370,3 +370,54 @@ fn the_largest_seeks_go_to_the_next_track_or_the_start() {
     assert!(at < 1.0, "Seek(i64::MIN) came to {at:.1}");
     assert!(h.state().playing());
 }
+
+/// The program the updater starts (Restart now) waits for the player's
+/// name and takes it when the one it replaces ends - so the next file
+/// opened from the file manager goes to it, not to a second player
+/// (review 13, M5: it took a name of its own for good).
+#[test]
+fn the_updated_program_takes_the_name_when_the_old_one_ends() {
+    use axross_amp::mpris::{Claim, Mpris};
+    let dir = folder("mpris-after-update");
+    let Some(bus) = daemon(&dir) else {
+        eprintln!("no dbus-daemon: skipped");
+        return;
+    };
+    let name = "org.mpris.MediaPlayer2.axross_amp";
+    let client = zbus::blocking::connection::Builder::address(bus.1.as_str())
+        .unwrap()
+        .build()
+        .unwrap();
+    let dbus = zbus::blocking::fdo::DBusProxy::new(&client).unwrap();
+    let owner = || {
+        dbus.get_name_owner(name.try_into().unwrap())
+            .ok()
+            .map(|o| o.to_string())
+    };
+    let Claim::Mine(old) = Mpris::claim(Some(bus.1.clone()), None) else {
+        panic!("the first player has no name");
+    };
+    let before = owner().expect("the old player holds the name");
+    let Claim::Mine(new) = Mpris::claim_after(Some(bus.1.clone())) else {
+        panic!("the new program did not wait for the name");
+    };
+    assert_eq!(
+        owner().as_deref(),
+        Some(before.as_str()),
+        "taken from the old one"
+    );
+    drop(old);
+    let end = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while owner().as_deref() == Some(before.as_str()) && std::time::Instant::now() < end {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let after = owner();
+    assert!(
+        after.is_some() && after.as_deref() != Some(before.as_str()),
+        "the name is not the new program's: {after:?}"
+    );
+    // a second start now hands its files to it
+    let handed = Mpris::claim(Some(bus.1.clone()), Some(&["/m/x.wav".to_owned()]));
+    assert!(matches!(handed, Claim::Handed));
+    drop(new);
+}

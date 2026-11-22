@@ -1864,10 +1864,26 @@ pub fn choose(render_state: &egui_wgpu::RenderState) -> Choice {
     // (its threads share the work, and its time: the time a pixel)
     let cpu = started.elapsed().as_secs_f32() * 1000.0 / (w * h) as f32;
     let gpu = (gpu_ms as f32 / (320.0 * 180.0)).max(0.0);
-    Choice {
-        gpu: gpu.is_finite() && gpu <= cpu,
-        gpu_ms_per_pixel: gpu,
-        cpu_ms_per_pixel: cpu,
+    Choice::of(gpu, cpu)
+}
+
+impl Choice {
+    /// The cheaper way by what a pixel costs each (ms).
+    pub fn of(gpu: f32, cpu: f32) -> Choice {
+        let choice = Choice {
+            gpu: gpu.is_finite() && gpu <= cpu,
+            gpu_ms_per_pixel: gpu,
+            cpu_ms_per_pixel: cpu,
+        };
+        // (a "GPU" too slow for a face of the usual size is a software
+        // rasterizer - the CPU's work either way: there the CPU's thread draws,
+        // its picture shown scaled up; the GPU's way cost twice the frame in a
+        // large window - 2560 x 1440 on lavapipe: a frame every two seconds at
+        // half a core, the CPU's way a frame a second at 0.4: review 14)
+        Choice {
+            gpu: choice.gpu && !choice.slow_for(true),
+            ..choice
+        }
     }
 }
 
@@ -2062,5 +2078,20 @@ mod tests {
         for k in 0..20 {
             assert!(lum(magma((k + 1) as f32 / 20.0)) > lum(magma(k as f32 / 20.0)));
         }
+    }
+
+    /// A software rasterizer's "GPU" (too slow for a face of the usual
+    /// size) leaves the shader faces to the CPU's thread, even where a
+    /// pixel measured cheaper on it (review 14: plasma at 2560 x 1440 on
+    /// lavapipe took half a core at a frame every two seconds that way).
+    #[test]
+    fn a_software_gpu_leaves_the_shader_faces_to_the_cpu() {
+        // lavapipe's, as measured here
+        let soft = Choice::of(3.76e-4, 8.04e-4);
+        assert!(!soft.gpu);
+        assert!(soft.slow());
+        // a real GPU: its way
+        let real = Choice::of(2e-6, 8e-4);
+        assert!(real.gpu && !real.slow());
     }
 }

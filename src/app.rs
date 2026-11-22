@@ -31,9 +31,13 @@ const STATUS_FOR: Duration = Duration::from_secs(8);
 const SLOW_FPS: f32 = 12.0;
 /// On a slow renderer, the share of a core the window may take while it
 /// plays: the frame rate is lowered (to MIN_SLOW_FPS) to keep within it
-/// (0.6 left the spectrum at 55 % of a core on lavapipe: review 11).
+/// (0.6 left the spectrum at 55 % of a core on lavapipe: review 11). A
+/// frame of a 2560 x 1440 window costs a software renderer 0.3 s and more
+/// whatever it shows: at 3 frames a second at least it took 1.1 to 1.6
+/// cores (review 13) - down to a frame every three seconds now, the clock
+/// with the pictures off as seldom.
 const SLOW_BUDGET_CORES: f64 = 0.35;
-const MIN_SLOW_FPS: f32 = 3.0;
+const MIN_SLOW_FPS: f32 = 1.0 / 3.0;
 /// A calm face (the cover) needs few frames: its glow moves slowly.
 const CALM_FPS: f32 = 8.0;
 /// A new track's cover is shown at most this often (seconds), the last one
@@ -42,12 +46,102 @@ const CALM_FPS: f32 = 8.0;
 const ART_EVERY: f64 = 0.5;
 /// The cover, the Glass backdrop made of it, crossfade over this long.
 const ART_FADE: f64 = 0.3;
+/// A change of cover to or from one of much saturated red: at most this
+/// often (s), faded over this long - one red transition in any second, no
+/// red flash however the tracks are skipped (review 13: red and dark covers
+/// skipped gave one saturated red flash a second, outside the flash guard).
+const RED_ART_EVERY: f64 = 2.0;
+const RED_ART_FADE: f64 = 1.0;
+/// The share of a cover's pixels in saturated red that makes its change a
+/// red one.
+const RED_ART_SHARE: f32 = 0.08;
+/// The window's theme and design change at most this often (s): a click
+/// on one after another in the pickers, the desktop's light and dark
+/// following - the whole window in other colours at most twice a second
+/// (review 13: shown on the pointer's way down the picker, 12 transitions
+/// a second over the whole window).
+const THEME_EVERY: f64 = 0.5;
 /// The least height the playlist keeps under the picture (three rows and
 /// its filter), whatever the window.
 const LEAST_LIST: f32 = 170.0;
 const POSITION_EVERY: Duration = Duration::from_secs(30);
 /// The equalizer is written this long after its last change (axross's 250 ms).
 const EQ_SETTLE: Duration = Duration::from_millis(250);
+
+/// A held Space's or Enter's repeats taken out of a window's input before
+/// any widget sees them: egui clicks a focused widget at each, and a switch
+/// focused by Tab flipped half the window 31 times a second (review 15).
+/// Every window calls it on its own input - the picture's own window and
+/// the view on another display have theirs (review 16, M2).
+pub fn drop_held_repeats(ctx: &egui::Context) {
+    ctx.input_mut(|i| {
+        i.events.retain(|e| {
+            !matches!(
+                e,
+                egui::Event::Key {
+                    key: Key::Space | Key::Enter,
+                    repeat: true,
+                    ..
+                }
+            )
+        })
+    });
+}
+
+/// `list` without the entries at `at` (indices, ascending or not).
+fn drop_at<T>(list: &mut Vec<T>, at: &[usize]) {
+    let mut i = 0;
+    list.retain(|_| {
+        i += 1;
+        !at.contains(&(i - 1))
+    });
+}
+
+/// A change of the window's layout (taken in turn: [`App::layout`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Change {
+    /// Full screen on or off (None: the other way).
+    Fullscreen(Option<bool>),
+    /// The large picture the other way (full screen: out of it).
+    BigVisual,
+    /// Out of full screen, else out of the large picture.
+    Leave,
+    /// The pictures on another display, or back.
+    Display,
+    CloseDisplay,
+    /// The picture in a window of its own, or back.
+    Detached(bool),
+    /// Its window's full screen the other way; out of it, else back.
+    DetachedFull,
+    LeaveDetached,
+    Playlist(bool),
+    /// The playlist's page (the equalizer's away), or the equalizer's the
+    /// other way.
+    ListPage,
+    EqPage,
+    /// The large picture's playlist the other way.
+    BigList,
+    Tab(Tab),
+}
+
+impl Change {
+    /// The other way each time (twice waiting: none).
+    fn toggles(&self) -> bool {
+        matches!(
+            self,
+            Change::Fullscreen(None)
+                | Change::BigVisual
+                | Change::Display
+                | Change::DetachedFull
+                | Change::EqPage
+                | Change::BigList
+        )
+    }
+
+    fn same_kind(&self, other: &Change) -> bool {
+        std::mem::discriminant(self) == std::mem::discriminant(other)
+    }
+}
 
 #[derive(PartialEq)]
 enum Picking {
@@ -86,10 +180,11 @@ pub struct App {
     /// A new track's cover (None: it has none) waiting for its turn (see
     /// [`ART_EVERY`]).
     art_pending: Option<Option<Arc<crate::engine::Art>>>,
-    /// When the cover changed last (egui's clock), and how far its
-    /// crossfade is (0 - 1).
+    /// When the cover changed last (egui's clock), how far its crossfade is
+    /// (0 - 1) and how long it takes.
     art_at: f64,
     art_fade: f32,
+    art_fade_secs: f64,
     /// What showed before it, faded out over [`ART_FADE`]: the cover (None:
     /// the ♫ placeholder) and the Glass backdrop.
     cover_before: Option<Option<TextureHandle>>,
@@ -107,11 +202,23 @@ pub struct App {
     /// changes: no cost a frame), and the one shown while the pointer is on
     /// it in the picker.
     theme_shown: (&'static str, Color32, &'static str),
-    /// The design shown (and the chosen one, whose type and room the
-    /// window keeps while another is shown in the picker), and the one the
-    /// pointer is on there.
+    /// The design shown (and the chosen one: they differ only while a
+    /// change waits for its turn).
     design_shown: (&'static str, &'static str),
-    design_preview: Option<&'static str>,
+    /// When the whole window last changed (egui's clock): its theme or
+    /// design, its layout (full screen, the large picture, the view on
+    /// another display, the detached window's full screen, a tab, the
+    /// playlist or the equalizer shown), the picture's colours, the cover -
+    /// at most one of them every [`THEME_EVERY`]. (Each had a turn of its
+    /// own, twice a second: three of them in turn changed the window six
+    /// times a second - review 16, L12.) The layout's changes waiting their
+    /// turn follow.
+    turn_at: f64,
+    /// The top bar's height the frame before (a change: the frame done
+    /// again - else the panel clipped to its old height left a band of
+    /// nothing, black, for a frame: review 15, M1).
+    top_height: f32,
+    pending_layout: Vec<Change>,
     /// Where each design panel lay last frame (the card, the playlist):
     /// painted there under what lies on it; and the reels' turn.
     panel_rects: [egui::Rect; 2],
@@ -122,7 +229,6 @@ pub struct App {
     /// while the pointer is elsewhere).
     controls_rect: egui::Rect,
     reels_turn: f32,
-    theme_preview: Option<&'static str>,
     /// "Show on display": the monitors connected (asked on a thread every
     /// two seconds where the window belongs to a desktop; set by tests),
     /// the view open on one, and whether to open it again (where it was
@@ -152,6 +258,11 @@ pub struct App {
     tap: Vec<f32>,
     mode: &'static str,
     scheme_key: String,
+    /// The scheme the picture is drawn in, and whether the cover's colours
+    /// are (the chosen ones, at their turn: the picture's menu stays open,
+    /// and its schemes clicked in turn flipped the picture's ground at the
+    /// clicks' pace - review 16, M1).
+    scheme_shown: (String, bool),
     custom_colours: std::collections::BTreeMap<String, String>,
     options: VisualOptions,
     volume: u32,
@@ -275,6 +386,7 @@ pub struct App {
     scanner: Scanner,
     /// Albums' covers: asked for (none yet, or none at all), and the reader.
     album_covers: std::collections::HashMap<String, Option<TextureHandle>>,
+    album_covers_for: u64,
     album_loader: AlbumCovers,
     /// The playlist's filter, and the rows it lets through (for its
     /// words and the playlist's version).
@@ -585,7 +697,7 @@ impl App {
         engine.send(Command::Crossfade(amp.crossfade));
         engine.send(Command::FadeOnSkip(amp.fade_on_skip));
         engine.shared.set_volume(volume_curve(saved.volume));
-        let output = state::read_output(&audio_path);
+        let output = state::read_output(&setup.config_dir);
         if !output.is_empty() {
             engine.send(Command::Output(Some(output.clone())));
         }
@@ -649,19 +761,21 @@ impl App {
             cover_hue: None,
             theme_shown: ("", Color32::TRANSPARENT, ""),
             design_shown: ("", ""),
-            design_preview: None,
             cover_art: None,
             haze: None,
             art_pending: None,
             art_at: f64::NEG_INFINITY,
             art_fade: 1.0,
+            art_fade_secs: ART_FADE,
+            turn_at: f64::NEG_INFINITY,
+            top_height: 0.0,
+            pending_layout: Vec::new(),
             cover_before: None,
             haze_before: None,
             panel_rects: [egui::Rect::NOTHING; 2],
             pane_rect: egui::Rect::NOTHING,
             controls_rect: egui::Rect::NOTHING,
             reels_turn: 0.0,
-            theme_preview: None,
             monitors: if setup.desktop {
                 let ctx = cc.egui_ctx.clone();
                 crate::display::watch(displays_wanted.clone(), move || ctx.request_repaint())
@@ -681,8 +795,9 @@ impl App {
             meters,
             viz_state,
             tap: Vec::new(),
-            mode: viz::known(&saved.visualizer),
+            mode: viz::face_to_show(&saved.visualizer, &amp.face),
             scheme_key: saved.visual_scheme.clone(),
+            scheme_shown: (saved.visual_scheme.clone(), amp.cover_colours),
             custom_colours: saved.visual_custom.clone(),
             options: saved.visual_options.clone(),
             volume: saved.volume,
@@ -767,6 +882,7 @@ impl App {
                 Scanner::start(move || ctx.request_repaint())
             },
             album_covers: std::collections::HashMap::new(),
+            album_covers_for: u64::MAX,
             album_loader: {
                 let ctx = cc.egui_ctx.clone();
                 AlbumCovers::start(move || ctx.request_repaint())
@@ -805,8 +921,6 @@ impl App {
             });
         }
         app.scanner.scan(&app.playlist.tracks);
-        // (only when ticked: off by default, nothing goes to the network)
-        app.updater.start(&cc.egui_ctx, app.amp.update_check);
         // (the display view open when it ended: opened there again once
         // the monitors are known)
         app.reopen_display = app.amp.display_open;
@@ -836,7 +950,12 @@ impl App {
         let busy = self.playing() || self.sleep.is_some() || !self.adding.is_empty() || self.dirty;
         busy.then(|| {
             if self.mode == "off" && self.playing() {
-                Duration::from_secs(1)
+                self.clock_every()
+            } else if self.slow {
+                // (no more often than the frame rate the budget allows: the
+                // heartbeat drew the whole window twice a second whatever
+                // the governor said - review 13)
+                Duration::from_secs_f32((1.0 / self.budget_fps.max(MIN_SLOW_FPS)).max(0.5))
             } else {
                 Duration::from_millis(500)
             }
@@ -988,8 +1107,19 @@ impl App {
     }
 
     /// Check for updates at start ticked (tests).
-    pub fn settings_update_check(&self) -> bool {
-        self.amp.update_check
+    /// The pictures' colours from the cover (the setting).
+    pub fn settings_cover_colours(&self) -> bool {
+        self.amp.cover_colours
+    }
+
+    /// The albums' covers kept (tests).
+    #[doc(hidden)]
+    pub fn album_covers_kept(&self) -> usize {
+        self.album_covers.len()
+    }
+
+    pub fn settings_update_mode(&self) -> crate::update::UpdateMode {
+        self.amp.update_mode
     }
 
     pub fn big_visual(&self) -> bool {
@@ -1314,7 +1444,7 @@ impl App {
     /// The cover waiting, when its turn has come; the crossfade's progress.
     fn show_art(&mut self, ctx: &egui::Context) {
         let now = ctx.input(|i| i.time);
-        self.art_fade = ((now - self.art_at) / ART_FADE).clamp(0.0, 1.0) as f32;
+        self.art_fade = ((now - self.art_at) / self.art_fade_secs).clamp(0.0, 1.0) as f32;
         if self.art_fade < 1.0 {
             ctx.request_repaint();
         } else {
@@ -1324,7 +1454,22 @@ impl App {
         if self.art_pending.is_none() {
             return;
         }
-        let wait = ART_EVERY - (now - self.art_at);
+        // (to or from a cover of much saturated red: rarer and slower)
+        let red = |art: &Option<Arc<crate::engine::Art>>| {
+            art.as_deref().is_some_and(|a| red_area(a) >= RED_ART_SHARE)
+        };
+        let red_change = red(&self.cover_art) || self.art_pending.as_ref().is_some_and(red);
+        let every = if red_change { RED_ART_EVERY } else { ART_EVERY };
+        // (and the window's turn: a cover is a change of it as a whole - no
+        // cover after none is none)
+        let seen =
+            self.cover_art.is_some() || self.art_pending.as_ref().is_some_and(|a| a.is_some());
+        let turn = if seen {
+            THEME_EVERY - (now - self.turn_at)
+        } else {
+            0.0
+        };
+        let wait = (every - (now - self.art_at)).max(turn);
         if wait > 0.0 {
             ctx.request_repaint_after(std::time::Duration::from_secs_f64(wait));
             return;
@@ -1332,10 +1477,14 @@ impl App {
         let Some(art) = self.art_pending.take() else {
             return;
         };
+        self.art_fade_secs = if red_change { RED_ART_FADE } else { ART_FADE };
         // (what shows now fades out under it)
         self.cover_before = Some(self.cover.clone());
         self.haze_before = self.haze.take().map(|(_, _, texture)| texture);
         self.art_at = now;
+        if seen {
+            self.turn_at = now;
+        }
         self.art_fade = 0.0;
         ctx.request_repaint();
         self.cover = art.as_deref().map(|art| cover_texture(ctx, art));
@@ -1585,7 +1734,7 @@ impl App {
             ui.close();
         }
         if ui.button("Audio mixer…").clicked() {
-            self.tab = Tab::Mixer;
+            self.layout(ui.ctx(), Change::Tab(Tab::Mixer));
             ui.close();
         }
     }
@@ -1942,9 +2091,15 @@ impl App {
             self.dirty = true;
         }
         if force || (self.dirty && due) {
+            // (the face kept here too: the shared file says the nearest of
+            // axross's)
+            if self.amp.face != self.mode {
+                self.amp.face = self.mode.to_owned();
+                self.amp_dirty = true;
+            }
             self.saver.save(crate::saver::Job::State(
                 self.snapshot(),
-                self.playlist.version,
+                list_key(&self.playlist.tracks),
             ));
             self.dirty = false;
             self.last_save = Instant::now();
@@ -1972,7 +2127,7 @@ impl App {
     fn adopt(&mut self, kept: &serde_json::Map<String, serde_json::Value>, version: u64) {
         use serde_json::Value;
         if let Some(tracks) = kept.get("tracks")
-            && version == self.playlist.version
+            && version == list_key(&self.playlist.tracks)
         {
             let tracks = state::tracks_of(tracks);
             let playing = self
@@ -2008,7 +2163,9 @@ impl App {
         if let Some(r) = kept.get("repeat").and_then(Value::as_str) {
             self.playlist.repeat = Repeat::from_key(r);
         }
-        if let Some(v) = kept.get("visualizer").and_then(Value::as_str) {
+        if let Some(v) = kept.get("visualizer").and_then(Value::as_str)
+            && viz::axross_face(self.mode) != v
+        {
             self.mode = viz::known(v);
         }
         if let Some(v) = kept.get("visual_scheme").and_then(Value::as_str) {
@@ -2103,9 +2260,12 @@ impl App {
             return;
         }
         let pressed = |k: Key| ui.input(|i| i.key_pressed(k));
+        // (what toggles - play, mute, full screen, the display - takes the
+        // key's first press only, not its repeats)
+        let once = |k: Key| ui.input(|i| first_press(i, k));
         let modifiers = ui.input(|i| i.modifiers);
         let pos = self.engine.shared.position();
-        if pressed(Key::Space) && self.gate.activation {
+        if once(Key::Space) && self.gate.activation {
             self.toggle_play();
         }
         // (the arrows alone belong to a focused widget - a slider, the
@@ -2130,40 +2290,8 @@ impl App {
         }
         // D: the pictures on the display last chosen (or the first other
         // than the window's), or back
-        if pressed(Key::D) && !modifiers.any() {
-            if self.external.is_some() {
-                self.close_display(None);
-            } else {
-                self.refresh_monitors();
-                let monitors = self.monitors();
-                let (connector, name) = (&self.amp.display_connector, &self.amp.display_name);
-                // (two of the one remembered's name, its connector gone:
-                // no guess - asked to choose)
-                let chosen = if crate::display::ambiguous(&monitors, connector, name) {
-                    None
-                } else {
-                    crate::display::find(&monitors, connector, name)
-                        .or_else(|| monitors.iter().find(|m| !m.primary))
-                        .map(|m| m.connector.clone())
-                };
-                match chosen {
-                    Some(c) => {
-                        let sound = self.amp.display_sound;
-                        if let Err(why) = self.show_on(&c, sound) {
-                            self.notice = why;
-                        }
-                    }
-                    None if crate::display::ambiguous(
-                        &monitors,
-                        &self.amp.display_connector,
-                        &self.amp.display_name,
-                    ) =>
-                    {
-                        self.notice = two_named(&self.amp.display_name);
-                    }
-                    None => self.notice = "No other display is connected".into(),
-                }
-            }
+        if once(Key::D) && !modifiers.any() {
+            self.layout(ui.ctx(), Change::Display);
         }
         // (15 s back and on: J and L, as video players have them - the
         // arrows already seek 5 s, 30 s with Shift)
@@ -2185,17 +2313,19 @@ impl App {
                 self.volume_step(up);
             }
         }
-        if pressed(Key::Plus) || pressed(Key::Equals) {
+        // (Ctrl + / Ctrl - zoom the window: not the volume too)
+        if (pressed(Key::Plus) || pressed(Key::Equals)) && !modifiers.command {
             self.volume_step(true);
         }
-        if pressed(Key::Minus) {
+        if pressed(Key::Minus) && !modifiers.command {
             self.volume_step(false);
         }
         if pressed(Key::Home) {
             self.seek(0.0);
         }
-        if pressed(Key::F11) {
-            self.set_fullscreen(ui.ctx(), !self.fullscreen);
+        // (the picture in a window of its own: F11 is that window's)
+        if once(Key::F11) && !self.detached {
+            self.layout(ui.ctx(), Change::Fullscreen(None));
         }
         // (Escape closes the innermost thing only: a dialog open or a field
         // being typed in takes it, not the large picture behind them)
@@ -2204,14 +2334,14 @@ impl App {
             || self.intense_asked
             || self.updater.open
             || ui.ctx().memory(|m| m.focused().is_some());
-        if pressed(Key::Escape) && !inner {
-            if self.fullscreen {
-                self.set_fullscreen(ui.ctx(), false);
-            } else if self.big_visual {
-                self.big_visual = false;
-            }
+        let entering = self
+            .pending_layout
+            .iter()
+            .any(|c| matches!(c, Change::Fullscreen(None) | Change::BigVisual));
+        if once(Key::Escape) && !inner && (self.fullscreen || self.big_visual || entering) {
+            self.layout(ui.ctx(), Change::Leave);
         }
-        if pressed(Key::M) {
+        if once(Key::M) {
             self.set_muted(!self.muted);
         }
         if pressed(Key::N) {
@@ -2704,8 +2834,12 @@ impl App {
             egui::ViewportId::from_hash_of("amp-display"),
             builder,
             |ctx, _class| {
-                if ctx.input(|i| i.viewport().close_requested() || i.key_pressed(Key::Escape)) {
+                // (its own window, its own keys: review 16, M2)
+                drop_held_repeats(ctx);
+                if ctx.input(|i| i.viewport().close_requested()) {
                     close = true;
+                } else if ctx.input(|i| first_press(i, Key::Escape)) {
+                    self.layout(ctx, Change::CloseDisplay);
                 }
                 if ctx.input(|i| i.key_pressed(Key::V)) {
                     let back = ctx.input(|i| i.modifiers.shift);
@@ -2716,7 +2850,7 @@ impl App {
                     };
                     self.dirty = true;
                 }
-                if ctx.input(|i| i.key_pressed(Key::Space)) {
+                if ctx.input(|i| first_press(i, Key::Space)) {
                     self.toggle_play();
                 }
                 egui::CentralPanel::default()
@@ -2761,24 +2895,19 @@ impl App {
             egui::ViewportId::from_hash_of("amp-detached"),
             builder,
             |ctx, _class| {
+                // (its own window, its own keys: review 16, M2)
+                drop_held_repeats(ctx);
                 // (Escape closes an open menu first, then full screen, then
                 // the window)
-                let escape = ctx.input(|i| i.key_pressed(Key::Escape))
+                let escape = ctx.input(|i| first_press(i, Key::Escape))
                     && !egui::Popup::is_any_open(ctx);
-                let full = |ctx: &egui::Context, on: bool| {
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(on));
-                };
                 if ctx.input(|i| i.viewport().close_requested()) {
                     close = true;
-                } else if escape && self.detached_full {
-                    self.detached_full = false;
-                    full(ctx, false);
                 } else if escape {
-                    close = true;
+                    self.layout(ctx, Change::LeaveDetached);
                 }
-                if ctx.input(|i| i.key_pressed(Key::F11)) {
-                    self.detached_full = !self.detached_full;
-                    full(ctx, self.detached_full);
+                if ctx.input(|i| first_press(i, Key::F11)) {
+                    self.layout(ctx, Change::DetachedFull);
                 }
                 if ctx.input(|i| i.key_pressed(Key::V)) {
                     let back = ctx.input(|i| i.modifiers.shift);
@@ -2789,7 +2918,7 @@ impl App {
                     };
                     self.dirty = true;
                 }
-                if ctx.input(|i| i.key_pressed(Key::Space)) {
+                if ctx.input(|i| first_press(i, Key::Space)) {
                     self.toggle_play();
                 }
                 egui::CentralPanel::default()
@@ -2814,8 +2943,7 @@ impl App {
                         let wait = ui.ctx().options(|o| o.input_options.max_double_click_delay);
                         if response.double_clicked() {
                             self.detached_click = None;
-                            self.detached_full = !self.detached_full;
-                            full(ui.ctx(), self.detached_full);
+                            self.layout(ui.ctx(), Change::DetachedFull);
                         } else if response.clicked() {
                             self.detached_click = Some(now);
                         }
@@ -2831,7 +2959,7 @@ impl App {
                         let response = response.on_hover_text(format!(
                             "{name} - click: next face, double-click (or F11): full screen, right click: faces and options"
                         ));
-                        response.context_menu(|ui| self.visual_menu(ui));
+                        self.picture_menu(&response);
                     });
             },
         );
@@ -2892,9 +3020,12 @@ impl App {
 
     /// Chooses the window's design (as the picker does; tests, the
     /// gallery).
+    /// (shown at the next frame: the gallery and the tests set one after
+    /// another - the picker's clicks wait their turn, THEME_EVERY)
     pub fn set_design(&mut self, key: &str) {
         self.amp.design = crate::design::find(key).key.to_owned();
         self.amp_dirty = true;
+        self.turn_at = f64::NEG_INFINITY;
     }
 
     /// The design the window shows.
@@ -2907,6 +3038,12 @@ impl App {
         self.amp.theme = crate::theme::find(key).key.to_owned();
         self.amp.follow_system = false;
         self.amp_dirty = true;
+        self.turn_at = f64::NEG_INFINITY;
+    }
+
+    /// The theme chosen (tests: the one shown once its turn has come).
+    pub fn theme_chosen(&self) -> &str {
+        &self.amp.theme
     }
 
     /// Follows the desktop's light or dark (as the picker's box does).
@@ -2920,9 +3057,9 @@ impl App {
         self.theme_shown.0
     }
 
-    /// The theme to show: the one the pointer is on in the picker, else
-    /// the chosen one (or, following the desktop, its light or dark one),
-    /// with the cover's accent made to read in it; set on the window only
+    /// The theme to show: the chosen one (or, following the desktop, its
+    /// light or dark one) - at most every [`THEME_EVERY`] another -, with
+    /// the cover's accent made to read in it; set on the window only
     /// when it changes.
     fn update_theme(&mut self, ctx: &egui::Context) {
         // the desktop watched while followed, else let go (its thread ends)
@@ -2959,40 +3096,43 @@ impl App {
         } else {
             &self.amp.theme
         };
-        // (the picker says it again each frame the pointer stays on it)
+        // (a theme or design is shown once chosen - a click -, not while
+        // the pointer passes over it in the picker: shown at the pointer's
+        // pace the whole window flashed 12 times a second - review 13)
         let kept = crate::theme::find(chosen);
-        let t = self
-            .theme_preview
-            .take()
-            .map(crate::theme::find)
-            .unwrap_or(kept);
-        crate::theme::set(t.key);
+        let t = kept;
         let accent = match self.cover_hue {
             // (in high contrast always its own yellow: a cover's colour
-            // there is one more thing to tell apart)
-            Some(c) if self.amp.cover_accent && !t.high_contrast => accent_for(c, t),
+            // there is one more thing to tell apart; never saturated red -
+            // it comes and goes with the covers)
+            Some(c) if self.amp.cover_accent && !t.high_contrast => {
+                viz::unred_level(accent_for(c, t))
+            }
             _ => t.accent,
         };
-        // the design: as the theme, the one the pointer is on in the
-        // picker shown at once - its panels, corners and strokes; its type
-        // and room only once chosen (the picker's rows stay under the
-        // pointer)
         let kept_design = crate::design::find(&self.amp.design);
-        // (every text monospace in a design that writes so: the fonts
-        // swapped once, when the chosen design asks it)
-        if self.fonts_mono != Some(kept_design.mono) {
-            self.fonts_mono = Some(kept_design.mono);
-            fonts(ctx, kept_design.mono);
-        }
-        let d = self
-            .design_preview
-            .take()
-            .map(crate::design::find)
-            .unwrap_or(kept_design);
-        crate::design::set(d.key);
+        let d = kept_design;
         if self.theme_shown != (t.key, accent, kept.key)
             || self.design_shown != (d.key, kept_design.key)
         {
+            // (at most every THEME_EVERY: the one shown stays until then -
+            // the last one chosen comes at its turn)
+            let now = ctx.input(|i| i.time);
+            let wait = THEME_EVERY - (now - self.turn_at);
+            if wait > 0.0 && !self.theme_shown.0.is_empty() {
+                ctx.request_repaint_after(std::time::Duration::from_secs_f64(wait));
+                return;
+            }
+            self.turn_at = now;
+            crate::theme::set(t.key);
+            crate::design::set(d.key);
+            // (every text monospace in a design that writes so: the fonts
+            // swapped with the design, at its turn - swapped at the click
+            // they changed the window a second time: review 14)
+            if self.fonts_mono != Some(kept_design.mono) {
+                self.fonts_mono = Some(kept_design.mono);
+                fonts(ctx, kept_design.mono);
+            }
             self.theme_shown = (t.key, accent, kept.key);
             self.design_shown = (d.key, kept_design.key);
             self.accent = accent;
@@ -3018,7 +3158,7 @@ impl App {
                 (Tab::Bluetooth, "Bluetooth"),
             ] {
                 if ui.selectable_label(self.tab == tab, label).clicked() {
-                    self.tab = tab;
+                    self.layout(ui.ctx(), Change::Tab(tab));
                 }
             }
         });
@@ -3078,6 +3218,16 @@ impl App {
         });
     }
 
+    /// The picture's menu at a right click: open while its playlist box is
+    /// ticked (each click then one change of the layout, in its turn - not
+    /// the menu shut and opened again as well; review 15, M1); its other
+    /// entries shut it as they did.
+    fn picture_menu(&mut self, response: &egui::Response) {
+        egui::Popup::context_menu(response)
+            .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+            .show(|ui| self.visual_menu(ui));
+    }
+
     /// The visualization's menu (⚙, and a right click on the picture):
     /// the face, the colours (the custom ones edited here), the options,
     /// full screen, the playlist shown or not - axross's context menu.
@@ -3128,16 +3278,16 @@ impl App {
             .checkbox(&mut detached, "The picture in a window of its own")
             .changed()
         {
-            self.detached = detached;
+            self.layout(ui.ctx(), Change::Detached(detached));
             ui.close();
         }
         if ui.checkbox(&mut full, "Full screen (F11)").changed() {
-            self.set_fullscreen(ui.ctx(), full);
+            self.layout(ui.ctx(), Change::Fullscreen(Some(full)));
             ui.close();
         }
         let mut list = self.playlist_open;
         if ui.checkbox(&mut list, "Show the playlist").changed() {
-            self.show_playlist(ui.ctx(), list);
+            self.layout(ui.ctx(), Change::Playlist(list));
         }
         // (last: their menus open over nothing of this one but themselves)
         ui.separator();
@@ -3150,19 +3300,13 @@ impl App {
         });
     }
 
-    /// The window's theme: each with its colours at a glance; the pointer
-    /// on one shows it at once, a click keeps it. Following the desktop's
-    /// light and dark: a click sets the light or the dark one.
-    /// The window's design: the pointer on one shows it at once (its
-    /// panels, corners, strokes; its type once chosen), a click keeps it.
+    /// The window's design: a click shows and keeps it (shown as the
+    /// pointer passed over it, the window changed at the pointer's pace).
     fn design_menu(&mut self, ui: &mut Ui) {
         ui.set_min_width(300.0);
         for d in &crate::design::DESIGNS {
             let chosen = self.amp.design == d.key;
             let r = ui.radio(chosen, d.name).on_hover_text(d.character);
-            if r.hovered() || r.has_focus() {
-                self.design_preview = Some(d.key);
-            }
             if r.clicked() {
                 self.amp.design = d.key.into();
                 self.amp_dirty = true;
@@ -3184,6 +3328,10 @@ impl App {
         }
     }
 
+    /// The window's theme: each with its colours at a glance (its swatch:
+    /// the window does not change on the pointer's way), a click shows and
+    /// keeps it. Following the desktop's light and dark: a click sets the
+    /// light or the dark one.
     fn theme_menu(&mut self, ui: &mut Ui) {
         ui.set_min_width(300.0);
         let follow = self.amp.follow_system;
@@ -3214,9 +3362,6 @@ impl App {
                         .on_hover_text(format!("{} ({shade})", t.character))
                 })
                 .inner;
-            if r.hovered() {
-                self.theme_preview = Some(t.key);
-            }
             if r.clicked() {
                 if follow {
                     if t.dark {
@@ -3296,6 +3441,12 @@ impl App {
             if ui.radio(self.scheme_key == key, name).clicked() {
                 self.scheme_key = key.to_owned();
                 self.dirty = true;
+                // (a scheme chosen is shown: the cover's colours, on by
+                // default, hid every one but Custom - review 13)
+                if self.amp.cover_colours {
+                    self.amp.cover_colours = false;
+                    self.amp_dirty = true;
+                }
             }
         }
         if self.scheme_key == "custom" {
@@ -3390,29 +3541,271 @@ impl App {
             self.amp_dirty = true;
         }
         ui.separator();
-        if self.updater.menu(ui, &mut self.amp.update_check) {
+        if self.updater.menu(ui, &mut self.amp.update_mode) {
             self.amp_dirty = true;
         }
         ui.separator();
         let mut o = self.options.clone();
-        ui.add(egui::Slider::new(&mut o.bars, 8..=128).text("Bars"));
+        // (a value outside a slider's range - axross's, written there: its
+        // smoothing goes down to 0 %, its fall up to 300 %/s - stays as it
+        // is until the slider is moved: drawn, the slider clamped it, and
+        // opening Options rewrote axross's settings - review 13; the pictures
+        // take no less smoothing and no faster a fall than the ranges here
+        // whatever the file says: at their extremes the faces flashed)
+        let edits = egui::SliderClamping::Edits;
+        ui.add(
+            egui::Slider::new(&mut o.bars, 8..=128)
+                .clamping(edits)
+                .text("Bars"),
+        );
         ui.add(
             egui::Slider::new(&mut o.smoothing, crate::analyzer::SAFE_SMOOTHING..=95)
+                .clamping(edits)
                 .text("Smoothing %"),
         )
         .on_hover_text("At least 75 %: less smoothing flashes (photosensitivity)");
-        // (the pictures take no less smoothing and no faster a fall than
-        // these: at their extremes the faces flashed)
         ui.add(
             egui::Slider::new(&mut o.peak_fall, 5..=crate::analyzer::SAFE_PEAK_FALL)
+                .clamping(edits)
                 .text("Peak fall %/s"),
         )
         .on_hover_text("At most 100 %/s: faster falls flash (photosensitivity)");
-        ui.add(egui::Slider::new(&mut o.fps, 10..=60).text("Frame rate cap"));
+        ui.add(
+            egui::Slider::new(&mut o.fps, 10..=60)
+                .clamping(edits)
+                .text("Frame rate cap"),
+        );
         ui.checkbox(&mut o.hide_cursor, "Hide the pointer in full screen");
         if o != self.options {
             self.options = o.clamped();
             self.dirty = true;
+        }
+    }
+
+    /// D: the pictures on the display last chosen (or the first other than
+    /// the window's), or back.
+    fn toggle_display(&mut self) {
+        if self.external.is_some() {
+            self.close_display(None);
+        } else {
+            self.refresh_monitors();
+            let monitors = self.monitors();
+            let (connector, name) = (&self.amp.display_connector, &self.amp.display_name);
+            // (two of the one remembered's name, its connector gone:
+            // no guess - asked to choose)
+            let chosen = if crate::display::ambiguous(&monitors, connector, name) {
+                None
+            } else {
+                crate::display::find(&monitors, connector, name)
+                    .or_else(|| monitors.iter().find(|m| !m.primary))
+                    .map(|m| m.connector.clone())
+            };
+            match chosen {
+                Some(c) => {
+                    let sound = self.amp.display_sound;
+                    if let Err(why) = self.show_on(&c, sound) {
+                        self.notice = why;
+                    }
+                }
+                None if crate::display::ambiguous(
+                    &monitors,
+                    &self.amp.display_connector,
+                    &self.amp.display_name,
+                ) =>
+                {
+                    self.notice = two_named(&self.amp.display_name);
+                }
+                None => self.notice = "No other display is connected".into(),
+            }
+        }
+    }
+
+    /// A change of the window's layout: made now when its turn has come,
+    /// else at its turn (at most one every THEME_EVERY - a key pressed
+    /// again and again, a switch clicked quickly, changed large parts of
+    /// the window at their pace: reviews 14 and 15). Not dropped: a key
+    /// pressed within the half second takes effect at its turn; two of the
+    /// same toggle waiting are none, a setting waiting is replaced by the
+    /// newer one.
+    fn layout(&mut self, ctx: &egui::Context, change: Change) {
+        // (Escape, *Normal size*: each one step out - two pressed, two steps)
+        let steps = matches!(change, Change::Leave | Change::LeaveDetached);
+        if let Some(i) = self
+            .pending_layout
+            .iter()
+            .position(|c| !steps && c.same_kind(&change))
+        {
+            let before = self.pending_layout.remove(i);
+            if before == change && change.toggles() {
+                return; // (twice: as it was)
+            }
+            if !change.toggles() {
+                self.pending_layout.insert(i, change);
+                return;
+            }
+        }
+        if change == Change::Leave {
+            // (Escape after a key that would enter: neither. Whether a
+            // toggle waiting enters or leaves is the state it would find
+            // at its turn: F11 again to leave, then Escape, both cancelled,
+            // left full screen on - review 16, L8; a toggle that would
+            // leave gives way to the Escape)
+            let (mut full, mut big) = (self.fullscreen, self.big_visual);
+            let mut enters = Vec::new();
+            let mut leaves = Vec::new();
+            for (i, c) in self.pending_layout.iter().enumerate() {
+                match *c {
+                    Change::Fullscreen(None) => {
+                        if full { &mut leaves } else { &mut enters }.push(i);
+                        full = !full;
+                    }
+                    Change::Fullscreen(Some(on)) => full = on,
+                    Change::BigVisual => {
+                        if big { &mut leaves } else { &mut enters }.push(i);
+                        big = !big;
+                    }
+                    Change::Leave if full => full = false,
+                    Change::Leave => big = false,
+                    _ => {}
+                }
+            }
+            if !enters.is_empty() {
+                drop_at(&mut self.pending_layout, &enters);
+                return;
+            }
+            if !leaves.is_empty() {
+                drop_at(&mut self.pending_layout, &leaves);
+            } else if !full && !big {
+                // (nothing left to leave at its turn: Escapes pressed on
+                // queued as steps out of nothing, and an F11 after them
+                // waited five seconds - review 16)
+                return;
+            }
+        }
+        if change == Change::LeaveDetached {
+            let (mut on, mut full) = (self.detached, self.detached_full);
+            for c in &self.pending_layout {
+                match *c {
+                    Change::Detached(d) => {
+                        on = d;
+                        full &= d;
+                    }
+                    Change::DetachedFull if on => full = !full,
+                    Change::LeaveDetached if full => full = false,
+                    Change::LeaveDetached => on = false,
+                    _ => {}
+                }
+            }
+            if !on {
+                return;
+            }
+        }
+        self.pending_layout.push(change);
+        self.pump_layout(ctx);
+    }
+
+    /// The picture's scheme chosen, shown at its turn (the last one chosen).
+    fn pump_scheme(&mut self, ctx: &egui::Context) {
+        let chosen = (self.scheme_key.as_str(), self.amp.cover_colours);
+        if (self.scheme_shown.0.as_str(), self.scheme_shown.1) == chosen {
+            return;
+        }
+        let now = ctx.input(|i| i.time);
+        let wait = THEME_EVERY - (now - self.turn_at);
+        if wait > 0.0 {
+            ctx.request_repaint_after(Duration::from_secs_f64(wait));
+            return;
+        }
+        self.turn_at = now;
+        self.scheme_shown = (chosen.0.to_owned(), chosen.1);
+        ctx.request_repaint();
+    }
+
+    /// The scheme the picture is drawn in now (tests: the chosen one once
+    /// its turn has come).
+    pub fn scheme_shown(&self) -> &str {
+        &self.scheme_shown.0
+    }
+
+    /// The layout change waiting, when its turn has come.
+    fn pump_layout(&mut self, ctx: &egui::Context) {
+        if self.pending_layout.is_empty() {
+            return;
+        }
+        let now = ctx.input(|i| i.time);
+        let wait = THEME_EVERY - (now - self.turn_at);
+        if wait > 0.0 {
+            ctx.request_repaint_after(Duration::from_secs_f64(wait));
+            return;
+        }
+        let change = self.pending_layout.remove(0);
+        self.turn_at = now;
+        self.apply_layout(ctx, change);
+        if !self.pending_layout.is_empty() {
+            ctx.request_repaint_after(Duration::from_secs_f64(THEME_EVERY));
+        }
+    }
+
+    fn apply_layout(&mut self, ctx: &egui::Context, change: Change) {
+        match change {
+            Change::Fullscreen(on) => {
+                let on = on.unwrap_or(!self.fullscreen);
+                self.set_fullscreen(ctx, on);
+            }
+            Change::BigVisual => {
+                if self.fullscreen {
+                    self.set_fullscreen(ctx, false);
+                } else {
+                    self.big_visual = !self.big_visual;
+                }
+            }
+            Change::Leave => {
+                if self.fullscreen {
+                    self.set_fullscreen(ctx, false);
+                } else {
+                    self.big_visual = false;
+                }
+            }
+            Change::Display => self.toggle_display(),
+            Change::CloseDisplay => self.close_display(None),
+            Change::Detached(on) => {
+                self.detached = on;
+                if !on {
+                    self.detached_full = false;
+                    self.detached_click = None;
+                }
+            }
+            Change::DetachedFull => {
+                if self.detached {
+                    self.detached_full = !self.detached_full;
+                    ctx.send_viewport_cmd_to(
+                        egui::ViewportId::from_hash_of("amp-detached"),
+                        egui::ViewportCommand::Fullscreen(self.detached_full),
+                    );
+                }
+            }
+            Change::LeaveDetached => {
+                if self.detached_full {
+                    self.detached_full = false;
+                    ctx.send_viewport_cmd_to(
+                        egui::ViewportId::from_hash_of("amp-detached"),
+                        egui::ViewportCommand::Fullscreen(false),
+                    );
+                } else {
+                    self.detached = false;
+                    self.detached_click = None;
+                }
+            }
+            Change::Playlist(open) => self.show_playlist(ctx, open),
+            Change::ListPage => {
+                self.eq_page = false;
+                if !self.playlist_open {
+                    self.show_playlist(ctx, true);
+                }
+            }
+            Change::EqPage => self.eq_page = !self.eq_page,
+            Change::BigList => self.big_list = !self.big_list,
+            Change::Tab(tab) => self.tab = tab,
         }
     }
 
@@ -3999,8 +4392,9 @@ impl App {
     /// Frames a second at most: the option, lowered on a slow renderer.
     /// The pictures' colours: the cover's when wanted and it has some.
     fn scheme(&self) -> viz::Scheme {
+        let (key, cover) = (&self.scheme_shown.0, self.scheme_shown.1);
         match &self.cover_scheme {
-            Some(s) if self.amp.cover_colours && self.scheme_key != "custom" => {
+            Some(s) if cover && key != "custom" => {
                 // (the generative faces each a neighbour of the cover's hues)
                 if viz::find(self.mode).is_some_and(|f| f.group == viz::Group::Generative) {
                     viz::turned(s, viz::face_turn(self.mode))
@@ -4008,7 +4402,7 @@ impl App {
                     *s
                 }
             }
-            _ => viz::scheme(&self.scheme_key, &self.custom_colours),
+            _ => viz::scheme(key, &self.custom_colours),
         }
     }
 
@@ -4039,18 +4433,27 @@ impl App {
         };
         match self.cost_from {
             None => self.cost_from = Some((Instant::now(), cpu, self.frames_drawn)),
-            Some((when, before, frames)) if when.elapsed() > Duration::from_secs(2) => {
+            // (over 2 s and 3 frames at least: at a frame a second or less
+            // the frames were too few in 2 s, and the rate never came down)
+            Some((when, before, frames))
+                if when.elapsed() > Duration::from_secs(2) && self.frames_drawn - frames >= 3 =>
+            {
                 let drawn = self.frames_drawn - frames;
-                if drawn > 4 {
-                    let per_frame = (cpu - before) / drawn as f64;
-                    let fits = (SLOW_BUDGET_CORES / per_frame.max(1e-4)) as f32;
-                    // (towards it, not at once: a busy moment is no trend)
-                    let target = fits.clamp(MIN_SLOW_FPS, SLOW_FPS);
-                    self.budget_fps += (target - self.budget_fps) * 0.6;
-                }
+                let per_frame = (cpu - before) / drawn as f64;
+                self.budget_fps = governed_fps(self.budget_fps, per_frame);
                 self.cost_from = Some((Instant::now(), cpu, self.frames_drawn));
             }
             Some(_) => {}
+        }
+    }
+
+    /// The pictures-off clock's pace: once a second, less often on a slow
+    /// renderer where a frame costs more than the budget gives it.
+    fn clock_every(&self) -> Duration {
+        if self.slow {
+            Duration::from_secs_f32((1.0 / self.budget_fps.max(MIN_SLOW_FPS)).max(1.0))
+        } else {
+            Duration::from_secs(1)
         }
     }
 
@@ -4137,11 +4540,15 @@ impl App {
         // slow frames counted as seconds on the screen, and the faces and
         // the flash guard moved more in a frame than a screen shows)
         let (now, stable) = ui.input(|i| (i.time, i.stable_dt));
-        let dt = match self.last_frame {
+        let since = match self.last_frame {
             Some(last) => (now - last) as f32,
             None => stable,
-        }
-        .clamp(0.0, 0.2);
+        };
+        let dt = since.clamp(0.0, 0.2);
+        // (the music stopped: the picture falls to rest in the clock's
+        // seconds also at a frame every second or two - a slow renderer
+        // held to its budget - not a fifth of a second a frame)
+        let fall_dt = since.clamp(0.0, 2.0);
         self.last_frame = Some(now);
         let written = self.engine.shared.tap_into(&mut self.tap);
         let rate = self
@@ -4169,7 +4576,7 @@ impl App {
                 written,
                 rate,
                 &self.options,
-                dt,
+                if self.playing() { dt } else { fall_dt },
                 self.playing(),
                 viz::needs_now(self.mode, &self.viz_state),
             );
@@ -4299,11 +4706,7 @@ impl App {
         let wait = ui.ctx().options(|o| o.input_options.max_double_click_delay);
         if response.double_clicked() {
             self.pending_click = None;
-            if self.fullscreen {
-                self.set_fullscreen(ui.ctx(), false);
-            } else {
-                self.big_visual = !self.big_visual;
-            }
+            self.layout(ui.ctx(), Change::BigVisual);
         } else if response.clicked()
             && self.mode == "overview"
             && let Some(share) = response
@@ -4338,7 +4741,7 @@ impl App {
                 viz::name(self.mode)
             )
         });
-        response.context_menu(|ui| self.visual_menu(ui));
+        self.picture_menu(&response);
     }
 
     fn position(&mut self, ui: &mut Ui) {
@@ -4467,17 +4870,14 @@ impl App {
                 .on_hover_text("The playlist")
                 .clicked()
             {
-                self.eq_page = false;
-                if !self.playlist_open {
-                    self.show_playlist(ui.ctx(), true);
-                }
+                self.layout(ui.ctx(), Change::ListPage);
             }
             if ui
                 .selectable_label(self.eq_page, eq)
                 .on_hover_text("The ten-band equalizer")
                 .clicked()
             {
-                self.eq_page = !self.eq_page;
+                self.layout(ui.ctx(), Change::EqPage);
             }
             if actions && one_row {
                 layouts::right_aligned(ui, egui::Id::unique("playlist-actions"), |ui| {
@@ -4727,6 +5127,19 @@ impl App {
             } else {
                 with_albums(&self.playlist.tracks, &rows)
             };
+            // (the covers of the albums no longer in the list let go: kept
+            // for every album ever shown, also after Clear - review 15)
+            if !filtered && self.album_covers_for != self.playlist.version {
+                self.album_covers_for = self.playlist.version;
+                let heads: std::collections::HashSet<&str> = entries
+                    .iter()
+                    .filter_map(|e| match e {
+                        Entry::Album(head) => Some(head.key.as_str()),
+                        Entry::Track(_) => None,
+                    })
+                    .collect();
+                self.album_covers.retain(|k, _| heads.contains(k.as_str()));
+            }
             for (key, picture) in self.album_loader.rx.try_iter() {
                 let texture = picture.map(|p| {
                     ui.ctx()
@@ -5035,11 +5448,7 @@ impl App {
                         .on_hover_text("Esc, or a double-click on the picture")
                         .clicked()
                     {
-                        if self.fullscreen {
-                            self.set_fullscreen(ui.ctx(), false);
-                        } else {
-                            self.big_visual = false;
-                        }
+                        self.layout(ui.ctx(), Change::Leave);
                     }
                     let list = if self.big_list {
                         "Hide the playlist"
@@ -5047,7 +5456,7 @@ impl App {
                         "Show the playlist"
                     };
                     if ui.button(list).clicked() {
-                        self.big_list = !self.big_list;
+                        self.layout(ui.ctx(), Change::BigList);
                     }
                     ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
                         self.title_line(ui)
@@ -5385,6 +5794,12 @@ impl eframe::App for App {
     /// saved. eframe calls this also while the window is minimised or
     /// covered (and `ui` is not called at all).
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        drop_held_repeats(ctx);
+        // (a change of the layout waiting its turn; the picture's colours)
+        self.pump_layout(ctx);
+        self.pump_scheme(ctx);
+        // (the updates, also while the window is minimised)
+        self.updater.background(ctx, self.amp.update_mode);
         self.handle_events(ctx);
         self.show_art(ctx);
         self.poll_adding();
@@ -5456,9 +5871,18 @@ impl eframe::App for App {
                 inner(ui);
             }
         };
-        egui::Panel::top("top")
+        let top = egui::Panel::top("top")
             .frame(egui::Frame::new().fill(th().ground).inner_margin(8.0))
-            .show(ui, |ui| column(ui, &mut |ui| self.top_bar(ui)));
+            .show(ui, |ui| column(ui, &mut |ui| self.top_bar(ui)))
+            .response
+            .rect
+            .height();
+        if (top - self.top_height).abs() > 0.5 {
+            if self.top_height > 0.0 {
+                ui.ctx().request_discard("the top bar's height changed");
+            }
+            self.top_height = top;
+        }
         egui::Panel::bottom("status")
             .frame(
                 egui::Frame::new()
@@ -5552,7 +5976,7 @@ impl eframe::App for App {
             });
         self.url_window(&ctx);
         self.intense_window(&ctx);
-        if self.updater.window(&ctx, &mut self.amp.update_check) {
+        if self.updater.window(&ctx, &mut self.amp.update_mode) {
             self.amp_dirty = true;
         }
         if let Some(said) = self.updater.take_notice() {
@@ -5583,9 +6007,14 @@ impl eframe::App for App {
             // second; else the clock once a second)
             let x = crate::design::current().extras;
             if self.playing() && (x.reels || x.needles) {
-                ctx.request_repaint_after(Duration::from_secs_f32(1.0 / 15.0));
+                let fps = if self.slow {
+                    self.budget_fps.min(15.0)
+                } else {
+                    15.0
+                };
+                ctx.request_repaint_after(Duration::from_secs_f32(1.0 / fps));
             } else if self.playing() {
-                ctx.request_repaint_after(Duration::from_secs(1));
+                ctx.request_repaint_after(self.clock_every());
             }
         } else if self.playing()
             || (!self.frozen() && self.analyzer.bars.iter().any(|b| *b > 0.001))
@@ -6139,7 +6568,8 @@ fn slow_note(slow: bool) -> String {
     if slow {
         format!(
             "; a slow renderer: at most {SLOW_FPS:.0} frames a second, fewer (down to \
-             {MIN_SLOW_FPS:.0}) as a frame costs more"
+             one every {:.0} s) as a frame costs more",
+            1.0 / MIN_SLOW_FPS
         )
     } else {
         String::new()
@@ -6234,6 +6664,63 @@ fn setting(text: &str, key: &str) -> Option<String> {
 /// 4.5:1); none for a grey cover.
 pub fn accent_of(art: &crate::engine::Art) -> Option<Color32> {
     cover_hue(art).map(|c| accent_for(c, th()))
+}
+
+/// The share of a cover's pixels in saturated red (by either encoding),
+/// read on at most about 4096 of them.
+pub fn red_area(art: &crate::engine::Art) -> f32 {
+    let pixels = art.rgba.len() / 4;
+    if pixels == 0 {
+        return 0.0;
+    }
+    let step = (pixels / 4096).max(1);
+    let (mut red, mut n) = (0usize, 0usize);
+    for p in art.rgba.as_chunks::<4>().0.iter().step_by(step) {
+        let c = Color32::from_rgb(p[0], p[1], p[2]);
+        // (a red too dark to see is no flash of red)
+        if viz::red_share(c) >= 0.75 && p[0] >= 24 {
+            red += 1;
+        }
+        n += 1;
+    }
+    red as f32 / n as f32
+}
+
+/// `key` pressed this frame - its first press, not the key's repeat: a
+/// key held toggles nothing at the repeat's pace (review 14: F11 held put
+/// the whole window in and out of full screen 30 times a second).
+fn first_press(i: &egui::InputState, key: Key) -> bool {
+    i.events.iter().any(
+        |e| matches!(e, egui::Event::Key { key: k, pressed: true, repeat: false, .. } if *k == key),
+    )
+}
+
+/// The frame rate a slow renderer is held to, from the one it has and what
+/// a frame has cost lately (CPU seconds): towards what keeps the window
+/// within SLOW_BUDGET_CORES (not at once: a busy moment is no trend), from
+/// MIN_SLOW_FPS to SLOW_FPS.
+pub fn governed_fps(now: f32, per_frame: f64) -> f32 {
+    let fits = (SLOW_BUDGET_CORES / per_frame.max(1e-4)) as f32;
+    let target = fits.clamp(MIN_SLOW_FPS, SLOW_FPS);
+    let next = now + (target - now) * 0.6;
+    // (a frame dearer than the budget: down at once to what fits)
+    if target < now {
+        next.min(target * 1.25).max(MIN_SLOW_FPS)
+    } else {
+        next
+    }
+}
+
+/// What a playlist is, by its tracks' paths in order: a list another
+/// program changed is taken over only while this one is still as it was
+/// when saved (tags filled in since are no change of it).
+fn list_key(tracks: &[Track]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    for t in tracks {
+        t.path.hash(&mut h);
+    }
+    h.finish()
 }
 
 /// The cover's strongest colourful hue, as it is (none for a grey cover).
@@ -6389,7 +6876,32 @@ mod tests {
             "{note}"
         );
         assert!(!note.contains("20 frames"));
+        assert!(note.contains("one every 3 s"), "{note}");
         assert!(slow_note(false).is_empty());
+    }
+
+    /// On a software renderer a frame of a large window costs 0.3 to 0.8 s
+    /// of a core whatever it shows: the frame rate comes down until the
+    /// window keeps within its budget - at 3 frames a second at least, a
+    /// 2560 x 1440 window took 1.1 to 1.6 cores (review 13, M12).
+    #[test]
+    fn a_dear_frame_lowers_the_rate_until_the_window_keeps_its_budget() {
+        for per_frame in [0.02, 0.1, 0.32, 0.5, 0.7, 0.85, 1.0] {
+            let mut fps = SLOW_FPS;
+            for _ in 0..12 {
+                fps = governed_fps(fps, per_frame);
+            }
+            let cores = fps as f64 * per_frame;
+            assert!(
+                cores <= SLOW_BUDGET_CORES * 1.05,
+                "{per_frame} s a frame: {fps:.2} frames a second, {cores:.2} cores"
+            );
+        }
+        // dearer still: one frame every 3 s, no fewer
+        assert_eq!(governed_fps(MIN_SLOW_FPS, 3.0), MIN_SLOW_FPS);
+        // cheap frames: up to the cap again, step by step
+        let up = governed_fps(1.0, 0.001);
+        assert!(up > 1.0 && up <= SLOW_FPS);
     }
 
     #[test]

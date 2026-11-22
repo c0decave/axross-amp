@@ -60,9 +60,13 @@ fn a_right_click_on_the_picture_offers_its_options() {
             .click();
         settle(&mut h, 3);
     }
+    assert!(h.state().settings_cover_colours(), "on by default");
     h.get_by_label("Follow the theme").click();
     settle(&mut h, 2);
     assert_eq!(h.state().snapshot().visual_scheme, "theme");
+    // (the scheme chosen is shown: the cover's colours no longer hide it -
+    // review 13, L20)
+    assert!(!h.state().settings_cover_colours());
     // the playlist folded away from the menu (above the colours' menu:
     // not under it)
     if h.query_by_label("Show the playlist").is_none() {
@@ -70,17 +74,16 @@ fn a_right_click_on_the_picture_offers_its_options() {
         settle(&mut h, 2);
     }
     h.get_by_label("Show the playlist").click();
-    settle(&mut h, 2);
-    assert!(!h.state().snapshot().playlist_open);
+    assert!(in_turn(&mut h, |a| !a.snapshot().playlist_open));
     h.key_press(Key::Escape);
     settle(&mut h, 2);
     // F11: the picture alone; Escape back
     h.key_press(Key::F11);
-    settle(&mut h, 2);
-    assert!(h.state().big_visual());
+    assert!(in_turn(&mut h, |a| a.big_visual()), "F11: not large");
+    // (Escape at once after F11: taken at its turn - the layout changes at
+    // most twice a second; review 15: it was dropped)
     h.key_press(Key::Escape);
-    settle(&mut h, 2);
-    assert!(!h.state().big_visual());
+    assert!(in_turn(&mut h, |a| !a.big_visual()), "Escape: still large");
 }
 
 #[test]
@@ -205,9 +208,14 @@ fn escape_closes_only_the_innermost_thing() {
     assert!(until(&mut h, 5.0, |a| a.is_loaded()));
     settle(&mut h, 2);
     h.key_press(Key::F11);
-    settle(&mut h, 2);
-    assert!(h.state().big_visual());
+    assert!(in_turn(&mut h, |a| a.big_visual()));
     h.get_by_label("Show the playlist").click();
+    for _ in 0..16 {
+        if h.query_by_label("Hide the playlist").is_some() {
+            break;
+        }
+        settle(&mut h, 1);
+    }
     settle(&mut h, 2);
     let row = h
         .query_all_by_label("a")
@@ -238,6 +246,55 @@ fn escape_closes_only_the_innermost_thing() {
         "one Escape left the large picture too"
     );
     h.key_press(Key::Escape);
-    settle(&mut h, 2);
-    assert!(!h.state().big_visual());
+    assert!(in_turn(&mut h, |a| !a.big_visual()), "Escape: still large");
+}
+
+/// Frames until `done` holds, for as long as a change of the layout may
+/// wait its turn (half a second, and a little): whether it did.
+fn in_turn(
+    h: &mut egui_kittest::Harness<'static, axross_amp::app::App>,
+    done: impl Fn(&axross_amp::app::App) -> bool,
+) -> bool {
+    for _ in 0..16 {
+        if done(h.state()) {
+            return true;
+        }
+        settle(h, 1);
+    }
+    done(h.state())
+}
+
+/// F11 into full screen, F11 again at once to leave it (waiting its turn),
+/// then Escape: full screen is left - the Escape took the waiting F11 for
+/// one that would enter and both were cancelled (review 16, L8). And
+/// Escape pressed on and on while nothing is left to leave queues nothing:
+/// an F11 after them is taken at its turn, not seconds later.
+#[test]
+fn f11_again_then_escape_leaves_full_screen() {
+    let dir = folder("visual-f11-twice");
+    let files = tracks(&dir, &["a.wav"], 3.0);
+    let mut h = harness(&dir, files);
+    assert!(until(&mut h, 5.0, |a| a.is_loaded()));
+    settle(&mut h, 12);
+    h.key_press(Key::F11);
+    settle(&mut h, 1);
+    assert!(h.state().big_visual(), "F11: not full screen");
+    h.key_press(Key::F11);
+    settle(&mut h, 1);
+    h.key_press(Key::Escape);
+    assert!(
+        in_turn(&mut h, |a| !a.big_visual()),
+        "F11 again then Escape: still full screen"
+    );
+    // ten Escapes with nothing to leave, then F11: at its turn
+    settle(&mut h, 12);
+    for _ in 0..10 {
+        h.key_press(Key::Escape);
+        settle(&mut h, 1);
+    }
+    h.key_press(Key::F11);
+    assert!(
+        in_turn(&mut h, |a| a.big_visual()),
+        "F11 after the Escapes: not taken in turn"
+    );
 }

@@ -105,7 +105,7 @@ fn play(h: &mut Harness<'static, App>, out: &mut RenderState, secs: f32) {
 }
 
 #[test]
-fn the_picker_shows_a_design_at_once_and_keeps_the_one_chosen() {
+fn the_picker_shows_a_design_once_clicked_and_keeps_it() {
     let home = Scratch::new("design-picker");
     let mut h = window(&home, vec![], egui::vec2(620.0, 860.0));
     settle(&mut h, 3);
@@ -125,17 +125,18 @@ fn the_picker_shows_a_design_at_once_and_keeps_the_one_chosen() {
     let radio = |h: &Harness<'static, App>, name: &str| {
         h.get_by_role_and_label(Role::RadioButton, name).rect()
     };
-    // the pointer on the rack: shown at once; off it: back
+    // the pointer on the rack or the terminal: nothing changes (shown on
+    // the pointer's way, the whole window flashed - review 13)
     let rack = radio(&h, "Hi-fi rack");
     hover(&mut h, rack.center());
-    assert_eq!(h.state().design_shown(), "rack", "no preview");
-    hover(&mut h, design.center());
-    assert_eq!(h.state().design_shown(), "modern", "the preview stayed");
-    // (the rows stay under the pointer while it previews: a design's
-    // own type only once chosen)
+    assert_eq!(
+        h.state().design_shown(),
+        "modern",
+        "shown on the pointer's way"
+    );
     let terminal = radio(&h, "Terminal");
     hover(&mut h, terminal.center());
-    assert_eq!(h.state().design_shown(), "terminal");
+    assert_eq!(h.state().design_shown(), "modern");
     assert_eq!(radio(&h, "Terminal"), terminal, "the rows moved");
     // a click keeps one
     let cassette = radio(&h, "Cassette deck").center();

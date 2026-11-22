@@ -4,6 +4,234 @@ axross-amp is axross's Media Player as a program of its own, in Rust. The
 versions before 0.14.0 were not published; they are listed so the history
 reads whole.
 
+## 0.16.0 - 2026-11-20
+
+What independent reviews 13 (7.5 of 10), 14 (8.0), 15 (7.5) and 16 (7.5)
+asked for, and updates by themselves. The equalizer sounds as axross's now, a
+theme or design is shown once clicked, the shared files keep what the
+other program wrote, and the player looks for updates by itself: behaviour
+changes, hence 0.16.
+
+### Added
+- **Updates by themselves**: at the start and then once a day, on a thread
+  of its own and never on an offline or metered network (NetworkManager),
+  the player looks for a newer release. A setting (Options): *Off*, *Say
+  when one is out* (the default) or *Download and install by themselves* -
+  every check of the update by hand holds (https to GitHub only, the
+  signature, the checksum, the size, no older version, the self-test before
+  it is put in place, the old program kept); the player is never restarted
+  and what plays goes on: the new version runs from the next start or by
+  *Restart now*. 0.15's *Check for updates at start* gives way to it: a
+  player of 0.15 keeps its choice - off unless it was ticked (review 16: it
+  was taken for no choice, and every 0.15 user asked GitHub daily); a new
+  installation says when one is out. Review 16 besides: the first start
+  of a program put in place is watched wherever it comes (one that never
+  draws its window is replaced by the old program at the next start); a
+  release that failed its self-test or was put back is never put in place
+  by itself again; where the program's folder cannot be written it is not
+  fetched at every start - said, and a file fetched by hand is kept in the
+  cache; two players never both put a program in place (the second kept
+  the new one as `.previous`); *Off* chosen while a check runs stops it; a
+  `.previous` that is a link is replaced, not followed; the self-test keeps
+  its 20 s with a child holding its output; the checks run while the window
+  is minimised, the day counted by the wall clock.
+
+### Fixed
+- **The stereo scope** (one of axross's faces, review 16) under a chord
+  panned hard left and right two or three times a second, in the default
+  scheme and motion: 9 - 20 transitions a second by the review's meter. A
+  figure of one channel alone goes to and fro along its diagonal, and egui
+  joins a line turning right back by its normals' mean - nothing but
+  rounding, made a unit: a wide band crossed the whole picture at a new
+  angle almost every frame. Every face's lines are cut where they turn
+  back. The flash guard now catches such bands too - a band two cells wide
+  is laid on its cells as the large shape it is (laid as small pieces, it
+  was never counted whole): wide bands at random every frame read 21 - 29
+  without the guard, 1 - 5 with it.
+- **The picture's colours in turn** (review 16): its schemes clicked in
+  turn in its menu (it stays open) flipped its ground at the clicks' pace,
+  7 - 10 transitions a second in Paper; a scheme, and the cover's colours'
+  box, are shown at the window's turn. The layout, the theme and design,
+  the picture's colours and the cover share one turn - each had its own,
+  and three in turn could change the window six times a second. Held Space
+  or Enter clicks nothing in the picture's own window and the view on
+  another display either (they have their own keys). F11 again to leave
+  full screen, then Escape at once, left it on (both cancelled).
+- **Recordings of Ogg stations joined a few seconds into a song**
+  (review 16): taken for files of their own since review 15's fix (a page's
+  capacity - 30 s of Opus, 6 s of Vorbis - was the bound): no length, no
+  seek, or a length too long and every seek early. Where a link's time
+  begins is now its first page's granule less that page's own samples,
+  counted packet by packet - quiet starts and recordings alike, exact to
+  the sample. An Ogg file without its end (a download cut short) has a
+  length and is sought.
+- **The shared playlist, a reorder** (review 16): a reorder in one program
+  was undone by an edit in the other (the order of whoever wrote last).
+  The order is part of the merge: the one that reordered is kept, what the
+  other added put by its neighbours; each copy of a track is an entry of
+  its own. axross keeps a track that is not there at its start (a drive
+  not mounted) - greyed, said, played once it is back - where it took it
+  for its own removal and the shared list lost it for good.
+- A playlist saved through the user's own link: a link leading nowhere (a
+  NAS not mounted) or round in a loop is kept and the save refused (it was
+  replaced by a plain file); chains of up to 40 links are followed, each
+  folder on the way the user's or written by its owner only.
+- **A crash** (review 15): the picture resized while paused (F11, the
+  window, the playlist, the picture in its own window) after the flash
+  guard's pattern stage had softened it - the stage's cells kept the old
+  grid's size and the player aborted (spectrum, mirror, waterfall). They
+  are laid on the new grid with the others; every face is resized again and
+  again, paused and playing, in the tests.
+- **Space or Enter held on a focused switch** (review 15): egui clicked it
+  at each key repeat - the playlist and the equalizer, the large picture's
+  playlist flipped 31 times a second. A held key's repeats reach no widget.
+- **The window's layout changes in turn** (review 15): the tabs, the
+  playlist and equalizer switch, the playlist's box and the large
+  picture's playlist went through no turn (7 - 14 transitions a second at
+  quick clicks, in Paper); every change of the layout - also full screen
+  from the menu and *Normal size* - comes at most twice a second, and a
+  change asked within the half second is made at its turn, not dropped
+  (Escape then D, F11 then Escape); two of the same toggle waiting are none.
+  The Player tab's first frame drew a black band where its toolbar comes
+  (the top bar's panel kept its old height for a frame: the frame is done
+  again), and the picture's menu stays open as its playlist box is ticked
+  (it closed and was opened again at each click).
+- **Vorbis beginning quietly** (review 15): libogg packs a quiet start into
+  one page of seconds, and such a file was taken for a station's recording
+  (6.24 s said for 8, every seek 1.76 s late). A recording is a first page
+  whose granule is beyond what any page of the codec can hold.
+- **The shared playlist, both programs editing it** (review 15): merged
+  three ways by the tracks' paths on both sides - a track added here and
+  removed in axross stays removed, an edit in axross keeps a track added
+  here, both additions are kept (axross 2ee53ef0); tested with axross's
+  own code.
+- The oscilloscope through a square wave gated at 3 Hz (3 pattern frames:
+  a low tone's first frame showed two and a half periods); an Ogg file
+  damaged in its first page of sound plays its whole pages after it; a
+  playlist saved through links follows them one at a time, each and the
+  file at the end the user's own; the albums' covers are let go with the
+  albums (kept for every album ever shown).
+- **F11, D held** (review 14): a held key toggled full screen, or the view
+  on another display, at its repeat - 30 transitions a second over the
+  whole window by both meters. What toggles (F11, D, Escape, Space, M)
+  takes a key's first press only, and the window's layout (full screen,
+  the large picture, the display view, the detached window's full screen,
+  a double click on the picture) changes at most twice a second. Designs
+  clicked quickly read 7 - 8 by the strict reading: a design's fonts are
+  swapped at its turn with it, not at the click.
+- **The oscilloscope** (one of axross's faces) through a two-note melody
+  in the default scheme and motion showed a pattern (8 - 14 frames): a
+  steady tone is shown as two of its periods, the time base following its
+  pitch (a mix and noise as before).
+- **A recording of an Ogg station** (its granule positions hours in, where
+  it joined) said it lasted hours, and a seek ended it or missed its later
+  songs: each link is timed from where its own granules begin.
+- **Shared state** (review 14): axross's every save wrote the list it had
+  loaded, dropping a track added in axross-amp, and axross-amp then took
+  that list over. axross merges its list three ways now (axross); and
+  axross-amp keeps a track it has just added when the other program saves
+  an older list without it.
+- An Ogg file damaged in its middle (a page failing its checksum) was
+  refused at its opening: what comes before the damage plays. An equalizer
+  of cuts alone can raise a frequency by its fit's ripple: the output's
+  limiter holds it then (a master at full scale was clipped). A playlist
+  saved through the user's own link updates the list it names (the link was
+  replaced). The playlist's lengths before a track plays are measured as
+  when it plays (a VBR MP3 without a Xing header said symphonia's estimate).
+- **Chained Ogg** (Vorbis, Opus, FLAC - a new link at each song, as an
+  Icecast station sends it): playback stopped after the first link, and an
+  Ogg radio went silent after its first song. Each link plays with its own
+  decoder (another rate resampled), a radio says each song's title, a
+  chained file's length is that of all its links and a seek goes into the
+  link it falls in.
+- **A VBR MP3 without a Xing header** was cut at symphonia's estimated
+  length (half of a 6 s file lost), or said to be ten times as long: its
+  frames are counted, it plays whole, its length is theirs and a seek goes
+  to its frame.
+- **A NaN or an infinite sample** in a file kept the equalizer at NaN to
+  the end of the track (and through gapless joins): it is silence now, and
+  the output takes no NaN.
+- **A new output while the next track was queued** (a device chosen, lost
+  and found again) played 96 ms of the next track twice; at the same rate
+  nothing decoded ahead is taken back now (a crossfade under way neither).
+- **The Theme and Design pickers** showed each theme or design the pointer
+  (or the keyboard's focus) passed over, at once - down and up the list the
+  whole window flashed 12 times a second. A click shows and keeps one, and
+  the window takes another at most twice a second however fast they are
+  clicked.
+- **Covers in saturated red**: skipping between a red cover and a dark one
+  gave a saturated red flash a second (the cover card, the Glass haze, the
+  accent), outside the flash guard. A change of cover to or from one with
+  much saturated red comes at most every two seconds, faded over one, and
+  the haze and the cover's accent are never saturated red.
+- **The equalizer sounds as axross's**: axross's curve (the gains
+  interpolated between the bands, flat beyond them), by shelves and peaks
+  fitted to it - within half a decibel for every preset, where Bass boost
+  lowered everything above 1 kHz by 8 dB (the fixed headroom), Treble boost
+  gave -7.4 dB at 20 kHz and all bands at +6 dB rippled 1.5 dB. No level is
+  taken off for a boost: the output's limiter holds its peaks (on a radio
+  too). The filters are the same at every setting: a band turned on or off
+  no longer moves the others' state (a click).
+- **Shared state with axross**:
+  - a track axross added was lost when only the track playing here changed,
+    or a track's tags were read: the playlist is merged by its paths, the
+    track playing here kept current in axross's list;
+  - axross-amp's output device is kept in its own file (axross rewrote
+    audio.json with its own keys and the device was lost - read from the old
+    place while the new one has none);
+  - a face axross does not have was set back to the spectrum each time
+    axross ran: axross-amp keeps its face in its own file, the shared file
+    says the nearest of axross's 18;
+  - opening Options rewrote axross's Smoothing and Peak fall (its ranges are
+    wider): a value outside a slider's range stays until the slider is moved.
+  axross's own side keeps axross-amp's keys and values too (axross
+  `core/audio_settings.py`, `media_player.py`).
+- **The updater** runs the new release once (`--self-test`) before it is put
+  in place - one that cannot start on this system never replaces the
+  player; keeps the old one (`.previous`) until the new one has run a minute
+  (not only drawn a frame); *Restart now* watches the new one's start and
+  puts the old one back should it end before its window is up; and the
+  program it starts waits for the player's name on the session bus and
+  takes it when the old one ends (it took a name of its own, and the next
+  file opened from the file manager started a second player). What a cut
+  off download left beside the program is removed at the next start.
+- **Saving a playlist** followed a link planted at its predictable
+  temporary name (overwriting another file and making it mode 0666): the
+  temporary file is made anew (O_EXCL) under a random name, its mode set on
+  the open file, and a link at the playlist's own name is replaced, never
+  written through.
+- **On a software renderer** a 2560 x 1440 window took 1.1 to 1.6 cores (a
+  frame costs 0.3 s and more whatever it shows, and the frame rate went no
+  lower than 3): it goes down to a frame every three seconds now, the clock
+  with the pictures off and the heartbeat as seldom, and there the shader
+  faces are drawn by the CPU's thread (a software rasterizer's "GPU" cost
+  twice the frame) - 0.33 to 0.40 of a core at 2560 x 1440 on lavapipe now
+  for the spectrum, the particles, the liquid and Off. The picture falls to
+  rest at the clock's pace however few the frames.
+- **The piano roll** was a pattern hazard by the project's own detector
+  (a chord in octaves: 28 to 133 frames of stripes): its keys and notes lie
+  within a shade of the ground, its keyboard drawn as a piano's (seven white
+  keys an octave). **The feedback face** read 7 by the strict reading
+  through a chord gated at 2 to 5 Hz: the bass pulls its zoom half as hard,
+  the beat turns it half as much and its waves follow the bands eased over
+  0.3 s - 0 to 5 now, in every look.
+- A seek to the start landed 331 to 1204 frames late in an MP3 (its encoder
+  delay dropped twice) and played an Opus file's pre-skip; damage in the
+  middle of a file failed the whole track (up to 3 s of good sound dropped)
+  where it ends the track now; a new ReplayGain did not reach the next track
+  already opened; a build in a cargo target folder not named `target` was
+  offered an update; Ctrl + / Ctrl - changed the volume as they zoomed; with
+  the cover's colours on, a colour scheme chosen did nothing (choosing one
+  now unticks them); a name could not hold U+10FE00 - U+10FE7F as itself (they
+  stood for ASCII bytes: "../"); a hostile MP4 atom size overflowed.
+
+### Changed
+- Tests: `previous_on_a_radio_goes_to_the_track_before` and the album test
+  wait by the sound, not the clock (they failed on a busy machine); the
+  window's flashes (`tests/window_flash.rs`), chained Ogg, VBR MP3s without a
+  Xing header, NaN, a new output during a gapless join, the equalizer's curve
+  against axross's, the shared files both ways (Rust and axross's pytest).
+
 ## 0.15.1 - 2026-11-20
 
 0.15.0 was tagged but not released (its Linux tests failed in CI: no

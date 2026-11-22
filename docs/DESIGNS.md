@@ -38,10 +38,11 @@ switches and the volume; then the playlist's card); *Collage* (a turned photo of
 cover, the title cut letter by letter from other pages in mixed type, a
 sticker, the picture on a torn sheet, the keys on paper scraps along a
 strip of tape, the playlist on a ruled page - turned shapes anti-aliased,
-never over a control). The pointer on one in the menu shows its panels and
-colours at once (its type and room once chosen, so the menu's rows stay
-under the pointer); a click keeps it, in axross-amp's own file; the menu
-works by the keys alone. A test (`tests/designs.rs`) checks every design
+never over a control). A click on one in the menu shows and keeps it, in
+axross-amp's own file (the window does not change as the pointer or the
+keyboard's focus passes over the menu's rows: shown at their pace, the whole
+window flashed - review 13; and it changes at most twice a second however
+fast one design is clicked after another); the menu works by the keys alone. A test (`tests/designs.rs`) checks every design
 at 420 x 420, 800 x 600 and 1920 x 1080: each control of the window -
 files, folder, URL, ⚙, the position, previous, 15 s back and on, play,
 stop, next, shuffle, repeat, volume, mute, ⋯, the equalizer, save, clear,

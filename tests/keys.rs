@@ -134,6 +134,12 @@ fn axross_keys_seek_skip_and_set_the_volume() {
     h.key_press(Key::Plus);
     settle(&mut h, 1);
     assert_eq!(h.state().snapshot().volume, volume);
+    // Ctrl + / Ctrl − zoom the window: the volume stays (review 13, L16)
+    for key in [Key::Plus, Key::Equals, Key::Minus] {
+        key_with(&mut h, key, egui::Modifiers::COMMAND);
+        settle(&mut h, 1);
+        assert_eq!(h.state().snapshot().volume, volume, "{key:?}");
+    }
     // Ctrl+→ the next track, Ctrl+← the one before
     key_with(&mut h, Key::ArrowRight, egui::Modifiers::COMMAND);
     assert!(until(&mut h, 2.0, |a| a.snapshot().current == 1));
@@ -277,6 +283,61 @@ fn after_a_click_the_arrows_are_the_players() {
         assert!(
             h.state_mut().shown_position() > p + 2.0,
             "{design}: → after a click did not seek"
+        );
+    }
+}
+
+/// A held Space's repeats reach no widget in any window: the filter takes
+/// them out of the input it is given (a focused box is ticked once), and
+/// every window of the player gives it its own input - the picture's own
+/// window and the view on another display are windows of their own, with
+/// their own keys (review 16, M2: only the main one did). The test harness
+/// draws those windows inside the main one, on its input, so their part is
+/// read from the source: each of them calls the filter first.
+#[test]
+fn a_held_keys_repeats_reach_no_widget_in_any_window() {
+    let ctx = egui::Context::default();
+    let mut on = false;
+    let mut id = None;
+    let frame = |events: Vec<egui::Event>, on: &mut bool, id: &mut Option<egui::Id>| {
+        let input = egui::RawInput {
+            events,
+            ..Default::default()
+        };
+        let mut out = ctx.run_ui(input, |ui| {
+            axross_amp::app::drop_held_repeats(ui.ctx());
+            let r = ui.checkbox(on, "a box");
+            if id.is_none() {
+                r.request_focus();
+            }
+            *id = Some(r.id);
+        });
+        out.textures_delta.clear();
+    };
+    let space = |repeat: bool| egui::Event::Key {
+        key: Key::Space,
+        physical_key: None,
+        pressed: true,
+        repeat,
+        modifiers: Default::default(),
+    };
+    frame(Vec::new(), &mut on, &mut id);
+    frame(Vec::new(), &mut on, &mut id);
+    frame(vec![space(false)], &mut on, &mut id);
+    assert!(on, "the first press ticks the focused box");
+    for _ in 0..10 {
+        frame(vec![space(true)], &mut on, &mut id);
+    }
+    assert!(on, "a repeat ticked it again");
+    // every other window: the filter first, on its own input
+    let source = include_str!("../src/app.rs");
+    let windows: Vec<&str> = source.split("show_viewport_immediate(").skip(1).collect();
+    assert!(windows.len() >= 2, "the windows of their own moved");
+    for (k, w) in windows.iter().enumerate() {
+        let start: String = w.lines().take(8).collect::<Vec<_>>().join("\n");
+        assert!(
+            start.contains("drop_held_repeats(ctx)"),
+            "window {k} takes a held key's repeats:\n{start}"
         );
     }
 }

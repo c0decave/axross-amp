@@ -59,7 +59,10 @@ screen's values (a custom scheme's red, the colours some faces mix from the
 scheme as they draw and the shader faces' cells toward a warm white); an independent review
 had counted red transitions in Classic and Fire, now none), with its options (bars,
 smoothing - no less than 75 % -, peak fall - no faster than 100 % a second: at
-their extremes the faces flashed -, frame rate). A click shows the next face (Shift+V the one
+their extremes the faces flashed -, frame rate; a smoothing or fall axross wrote
+outside these ranges stays in the shared file as it is until the slider is moved).
+The colours come from the cover while *From the cover* is ticked (the default);
+choosing a scheme unticks it, so the scheme chosen is shown. A click shows the next face (Shift+V the one
 before), a double-click makes it large (its title kept above it, with "Show the
 playlist" - the list under the picture - and "Normal size"; Escape too), F11 full
 screen, a

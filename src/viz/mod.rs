@@ -140,6 +140,44 @@ pub const FACES: &[Face] = &[
 /// The faces of axross's player (its keys, its order).
 pub const AXROSS_FACES: usize = 18;
 
+/// The face of axross's player nearest to `key` - what the shared state
+/// file says (axross's player knows its 18 only: another one it set back
+/// to the spectrum, the face chosen here lost each time axross ran -
+/// review 13); this program keeps its own in its own file.
+pub fn axross_face(key: &str) -> &'static str {
+    if let Some(i) = FACES.iter().position(|f| f.key == key)
+        && i < AXROSS_FACES
+    {
+        return FACES[i].key;
+    }
+    match key {
+        "loudness" => "vu",
+        "phase" | "goniometer" => "lissajous",
+        "overview" => "scope",
+        "chroma" | "pianoroll" | "mel" => "waterfall",
+        "fire" | "flowfield" => "particles",
+        "metaballs" => "bells",
+        "aurora" | "helix" | "smoke" => "ribbon",
+        "synthwave" | "flyover" => "terrain",
+        "tunnel" | "moire" | "beatrings" => "radial",
+        "galaxy" => "starfield",
+        "plasma" | "julia" | "reaction" | "milkdrop" | "crystals" => "kaleidoscope",
+        "isometric" => "ring",
+        "spirograph" | "morph" => "polar",
+        _ => "spectrum",
+    }
+}
+
+/// The face to show at the start: this program's own (`own`, from its
+/// file) while the shared file still says its nearest of axross's faces,
+/// else what the shared file says (chosen in axross meanwhile).
+pub fn face_to_show(shared: &str, own: &str) -> &'static str {
+    match find(own) {
+        Some(f) if axross_face(f.key) == shared => f.key,
+        _ => known(shared),
+    }
+}
+
 pub fn find(key: &str) -> Option<&'static Face> {
     FACES.iter().find(|f| f.key == key)
 }
@@ -838,6 +876,8 @@ pub struct Canvas {
     used: usize,
     pub path: Path,
     pub points: Vec<Pos2>,
+    /// A line's pieces between its turns back (see [`Pen::line`]).
+    run: Vec<Pos2>,
     /// A pixel in points (the antialiasing's feather).
     pub feather: f32,
 }
@@ -880,18 +920,21 @@ impl Canvas {
         // (the path and the points live beside the meshes)
         let mut path = std::mem::take(&mut self.path);
         let mut points = std::mem::take(&mut self.points);
+        let mut run = std::mem::take(&mut self.run);
         {
             let mesh = self.mesh();
             let mut pen = Pen {
                 mesh,
                 path: &mut path,
                 points: &mut points,
+                run: &mut run,
                 feather,
             };
             f(&mut pen);
         }
         self.path = path;
         self.points = points;
+        self.run = run;
         self.put(painter);
     }
 }
@@ -901,6 +944,7 @@ pub struct Pen<'a> {
     pub mesh: &'a mut Mesh,
     pub path: &'a mut Path,
     pub points: &'a mut Vec<Pos2>,
+    run: &'a mut Vec<Pos2>,
     pub feather: f32,
 }
 
@@ -973,14 +1017,48 @@ impl Pen<'_> {
     }
 
     /// The points in `self.points` as a line (antialiased).
+    ///
+    /// (Cut where it turns back on itself, its points repeated passed
+    /// over: egui joins two pieces of a line at a corner by their normals'
+    /// mean, and where the line turns right back that mean is nothing but
+    /// rounding - made a unit and divided by its own length, a direction
+    /// anywhere and a length past the window's. The stereo scope's figure
+    /// of one channel alone goes to and fro along its diagonal: a wide
+    /// band crossed the picture at a new angle almost every frame, up to
+    /// 14 transitions a second - review 16, H1.)
     pub fn line(&mut self, width: f32, colour: Color32) {
         if self.points.len() < 2 {
             return;
         }
-        self.path.clear();
-        self.path.add_open_points(self.points);
-        self.path
-            .stroke_open(self.feather, &PathStroke::new(width, colour), self.mesh);
+        let stroke = PathStroke::new(width, colour);
+        let (path, mesh, feather) = (&mut *self.path, &mut *self.mesh, self.feather);
+        let mut put = |run: &[Pos2]| {
+            if run.len() >= 2 {
+                path.clear();
+                path.add_open_points(run);
+                path.stroke_open(feather, &stroke, mesh);
+            }
+        };
+        self.run.clear();
+        let mut way = egui::Vec2::ZERO;
+        for &p in self.points.iter() {
+            if let Some(&last) = self.run.last() {
+                let d = p - last;
+                // (a hundredth of a point: the same point)
+                if d.length_sq() < 1e-4 {
+                    continue;
+                }
+                let d = d.normalized();
+                if way.dot(d) < -0.9 {
+                    put(self.run);
+                    self.run.clear();
+                    self.run.push(last);
+                }
+                way = d;
+            }
+            self.run.push(p);
+        }
+        put(self.run);
     }
 
     /// The points in `self.points` as a closed line.
