@@ -4,6 +4,17 @@ axross-amp is axross's Media Player as a program of its own, in Rust. The
 versions before 0.14.0 were not published; they are listed so the history
 reads whole.
 
+## 0.16.3 - 2026-11-22
+
+- The frame-cost test measures by the machine it runs on - median CPU
+  time, calibrated, one retry; 0.16.2's release did not build on GitHub's
+  slower runner (particles at 1920 x 1080 18.7 ms of 16, the spirograph
+  12.0 - 12.3 of 12; here, in 0.16.0 and 0.16.2 alike, 13 - 13.6 and 8.1
+  - 8.7). No change to the player itself.
+- 0.16.3 carries everything of 0.16.1 (the Hi-fi rack's display, what
+  plays in every design, the cassette) and of 0.16.2 (url 2.5.9,
+  RUSTSEC-2026-0592), whose releases were not published.
+
 ## 0.16.2 - 2026-11-22
 
 - security: url 2.5.9, RUSTSEC-2026-0592 (a stack overflow in
