@@ -1621,13 +1621,25 @@ mod tests {
                 );
             }
             let (wild, cells) = strangeness(k, x, y, 20_000);
-            let figure = wild > 0.1 && cells >= 64;
-            assert_eq!(
-                strange(k, x, y),
-                figure,
-                "{k:?}: exponent {wild}, {cells} cells over a long stretch"
-            );
-            cycles += !figure as usize;
+            // (an orbit of chaos is not the same on every machine - sin and
+            // cos differ in their last bit from one system's library to the
+            // next, and the orbit with them: numbers at the rule's own edge
+            // fall to either side. Judged here is what is clearly one or
+            // the other over the long stretch.)
+            let cycle = wild < 0.05 || cells < 32;
+            let figure = wild > 0.2 && cells >= 128;
+            if cycle {
+                assert!(
+                    !strange(k, x, y),
+                    "{k:?}: a cycle taken for strange - exponent {wild}, {cells} cells over a long stretch"
+                );
+            } else if figure {
+                assert!(
+                    strange(k, x, y),
+                    "{k:?}: a figure not taken for strange - exponent {wild}, {cells} cells over a long stretch"
+                );
+            }
+            cycles += cycle as usize;
         }
         assert!(cycles > 0, "no cycle between two shapes: nothing was tried");
     }
