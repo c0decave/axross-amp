@@ -204,6 +204,9 @@ pub struct AmpSettings {
     /// another is kept here (the shared file says the nearest of axross's:
     /// [`crate::viz::axross_face`]). "" when none was kept yet.
     pub face: String,
+    /// Which graphics adapter draws the window (`graphics::Preference`'s
+    /// key: "auto", "low", "high"); taken at the start.
+    pub graphics: String,
 }
 
 /// The loudness targets offered: LUFS and what aims at it.
@@ -241,6 +244,7 @@ impl Default for AmpSettings {
             design: "modern".into(),
             update_mode: crate::update::UpdateMode::Notify,
             face: String::new(),
+            graphics: "auto".into(),
         }
     }
 }
@@ -352,6 +356,9 @@ pub fn read_amp(path: &Path) -> AmpSettings {
     {
         settings.design = d;
     }
+    if let Some(g) = text(&map, "graphics") {
+        settings.graphics = crate::graphics::Preference::from_key(&g).key().into();
+    }
     // (the mode; a player of 0.15 - "update_check" alone, which it always
     // wrote - keeps its choice: off, nothing to the network, unless ticked,
     // then said. Taken for no choice, every 0.15 user was asking GitHub
@@ -421,6 +428,7 @@ pub fn write_amp(path: &Path, settings: &AmpSettings) -> std::io::Result<()> {
         map.remove("display_restore");
     }
     map.insert("design".into(), json!(settings.design));
+    map.insert("graphics".into(), json!(settings.graphics));
     map.insert("update_mode".into(), json!(settings.update_mode.key()));
     // (for a player of 0.15: whether it checks at its start)
     map.insert(
@@ -1368,6 +1376,7 @@ mod tests {
             design: "cassette".into(),
             update_mode: crate::update::UpdateMode::Install,
             face: "galaxy".into(),
+            graphics: "high".into(),
         };
         write_amp(&path, &settings).unwrap();
         let back = read_amp(&path);
@@ -1379,6 +1388,10 @@ mod tests {
         assert!(back.fade_on_skip && back.classic_plus);
         let fresh = AmpSettings::default();
         assert!(fresh.waterfall_hd && !fresh.classic_plus && !fresh.fade_on_skip);
+        assert_eq!(
+            (back.graphics.as_str(), fresh.graphics.as_str()),
+            ("high", "auto")
+        );
         assert_eq!(back.motion, "intense");
         assert_eq!(
             (

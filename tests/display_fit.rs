@@ -88,7 +88,9 @@ fn painted(h: &Harness<'static, App>) -> Vec<Painted> {
 /// The 1 of 1, the 2 of 2 ... the 999 of 999.
 const TRACKS: [usize; 5] = [1, 2, 10, 100, 999];
 const LENGTHS: [f64; 3] = [59.0, 3599.0, 36000.0];
-const SIZES: [(f32, f32); 8] = [
+const SIZES: [(f32, f32); 9] = [
+    // (the window's default size: review 17, M4)
+    (620.0, 860.0),
     (420.0, 420.0),
     (600.0, 420.0),
     (420.0, 800.0),
@@ -129,8 +131,37 @@ fn names() -> Vec<(String, String)> {
 #[test]
 fn what_plays_fits_its_box_in_every_design_and_size() {
     let mut failures = Vec::new();
+    fit_at(&SIZES, true, &mut failures);
+    assert!(
+        failures.is_empty(),
+        "{} texts cut or run together:\n{}",
+        failures.len(),
+        failures.join("\n")
+    );
+}
+
+/// Every width from 400 to 900, 10 apart, at the default window's height:
+/// the widest cases (review 17, M4: Brutalist at 600 - 630 points cut the
+/// length, a width no size tried came near).
+#[test]
+fn what_plays_fits_its_box_at_every_width() {
+    let sizes: Vec<(f32, f32)> = (400..=900).step_by(10).map(|w| (w as f32, 860.0)).collect();
+    let mut failures = Vec::new();
+    fit_at(&sizes, false, &mut failures);
+    assert!(
+        failures.is_empty(),
+        "{} texts cut or run together:\n{}",
+        failures.len(),
+        failures.join("\n")
+    );
+}
+
+/// The cases at `sizes`: `full`, every name through every number and
+/// length; else the short name, the long one and the word of 300 letters,
+/// at the widest (the 999th of 999, 10:00:00) and with one up next.
+fn fit_at(sizes: &[(f32, f32)], full: bool, failures: &mut Vec<String>) {
     let only = std::env::var("FIT_ONLY").ok();
-    for (w, hgt) in SIZES {
+    for &(w, hgt) in sizes {
         let size = egui::vec2(w, hgt);
         let home = Scratch::new("display-fit");
         let mut h = window(home.path(), size);
@@ -147,7 +178,12 @@ fn what_plays_fits_its_box_in_every_design_and_size() {
                 // (the first two names through every number and length;
                 // the others at the widest: the 999th, 10:00:00)
                 // (the n-th of n - and the first of a list, with one up next)
-                let combos: Vec<(usize, usize, f64)> = if k < 2 {
+                if !full && ![0, 1, 5].contains(&k) {
+                    continue;
+                }
+                let combos: Vec<(usize, usize, f64)> = if !full {
+                    vec![(999, 999, 36000.0), (1, 2, 59.0)]
+                } else if k < 2 {
                     TRACKS
                         .iter()
                         .flat_map(|&n| LENGTHS.iter().map(move |&l| (n, n, l)))
@@ -215,19 +251,13 @@ fn what_plays_fits_its_box_in_every_design_and_size() {
                         at,
                         secs,
                         !tooltip_checked,
-                        &mut failures,
+                        failures,
                     );
                     tooltip_checked = true;
                 }
             }
         }
     }
-    assert!(
-        failures.is_empty(),
-        "{} texts cut or run together:\n{}",
-        failures.len(),
-        failures.join("\n")
-    );
 }
 
 #[allow(clippy::too_many_arguments)]

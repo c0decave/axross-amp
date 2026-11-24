@@ -7,7 +7,7 @@ Back to the [README](../README.md) - everything in detail: the [extended README]
 
 ## The faces
 
-The visualizations, 49 of them in three groups:
+The visualizations, 69 of them in four groups:
 
 - *Classic* - all eighteen of axross's, drawn as axross draws them (its geometry,
   colours and constants; [side by side](axross-and-amp.png)): spectrum,
@@ -36,7 +36,26 @@ The visualizations, 49 of them in three groups:
   a new one each phrase of 16 beats; it reads no MilkDrop presets), a flyover of a raymarched night landscape the bass lifts, crystals
   (Voronoi cells), a skyline (searchlights, traffic, roofs lit by their bands),
   isometric bars, DNA helix, spirograph, polygon morph, moiré (antialiased), beat
-  rings, smoke and the title's words on the beat.
+  rings, smoke and the title's words on the beat; and planets on their orbits
+  (each a band, the sun the bass), a plasma globe (as many filaments as it is
+  loud, each a band), a fractal tree swaying with the bass (its blossoms the
+  spectrum, petals falling on the beat), a water surface (drops on the beat where
+  the music is loudest, a fine rain with the treble; lit by a shader), a
+  constellation (stars joined the stronger the louder their bands), a strange
+  attractor (a Clifford attractor's density the bass, middle and treble bend; a
+  new shape each phrase), bokeh (hexagonal lights out of focus, each a band),
+  cymatics (sand on a Chladni plate, the figure chosen by the sound's centre of
+  weight), a contour map of land the bands raise, a torus knot (a new winding
+  each phrase, its tube the bass) and a sunflower (seeds the golden angle apart,
+  the bass inside, a ripple out on the beat).
+- *Spectral* - the waveform round a circle (left outside, right inside, the band
+  between them as wide as the stereo is), balls on pads, each kicked as high as
+  its band is loud and falling back under gravity, the spectrum's last two seconds on a turning
+  globe, a honeycomb equalizer (the bass in the middle, a ripple out on the beat),
+  a spiral of pitch (the 88 keys an octave a turn, each pitch class on its ray,
+  the key in the middle), a record whose grooves are the spectrum's history, a
+  radar sweeping the spectrum, a pendulum wave whose swings are the bands and a
+  rain of glyphs falling as fast as their band is loud.
 
 The loudness, the true peak, the beat and the notes are measured on a thread of
 their own from every sample played - minimised, on another tab or with the picture
@@ -79,5 +98,8 @@ or full screen.
 
 ![The generative faces](faces-generative.png)
 
-<sub>From the demo track, played in real time by `cargo test --test ui -- --ignored`
-(as the [window's picture](README-extended.md)); the sheets are made by [`faces_sheet.py`](faces_sheet.py).</sub>
+![The spectral faces](faces-spectral.png)
+
+<sub>From the tests' own signal, as `cargo test --test faces` keeps each face's
+picture in `target/screenshots/faces/`; the sheets are made of them by
+[`faces_sheet.py`](faces_sheet.py).</sub>

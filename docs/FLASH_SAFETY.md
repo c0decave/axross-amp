@@ -81,8 +81,15 @@ What axross-amp does about it:
   % - staying on while the face goes on near the limit and a second and a
   half after. Seven, not six: the veil's own coming is a change too, and
   at six it would make the seventh. So the guard does not by itself hold a
-  face to six; it caps what the faces do not foresee. On ordinary music - pop,
-  house, drum and bass - it does not come (a test). It costs the CPU
+  face to six; it caps what the faces do not foresee. On ordinary music it
+  is meant not to come, and where it does that is a fault to be fixed: tested
+  for four classic faces in Classic through pop, house and drum and bass -
+  with one known exception there, the line's fill in drum and bass, veiled
+  about a third of the time - and for every face on a light ground (Paper,
+  black on white, Sakura, a cream scheme of the user's) in a small picture
+  through two songs, drum and bass and speech (`tests/veil_light.rs`; the
+  line in black on white through drum and bass is the exception there
+  too). It costs the CPU
   about 1.5 - 2 ms a frame on most faces at 1920 x 1080 (`--release`, an
   independent review's bench, the face with and without it: the spectrum
   1.7, the plasma 1.5, the cover 2.0), and more on the faces of thousands of
@@ -132,7 +139,16 @@ What axross-amp does about it:
   them, a change asked within the half second made at its turn (each had a
   turn of its own, and three in turn changed the window six times a
   second): F11 held had put the window in and out of full screen 30 times a
-  second (review 14), quick clicks on the switches 7 - 14 (review 15). `tests/window_flash.rs` reads the window by
+  second (review 14), quick clicks on the switches 7 - 14 (review 15). The
+  face (V, Shift+V, a click on the picture) and the Cover face's layout
+  change at that turn too, a held V's repeats ignored (held, it stepped the
+  face 15 times a second and the picture flashed 8 - 13 times); N and P
+  held skip twice a second at most; typing in the playlist's filter leaves
+  the picture's size as it is (review 17). A popup shut - a menu, a list's
+  choices - leaves what it showed a quarter second where it was, then
+  fades out over another: opened and shut 5 times a second they read 10
+  transitions a second in Paper, now 0 - 1 (reviews 16 and 17).
+  `tests/window_flash.rs` and `tests/held_keys_flash.rs` read the window by
   both meters, the keys held too: within six transitions in any second, at
   most one of saturated red.
 - **Calm by default.** *Intense* (Options) is livelier and only chosen after

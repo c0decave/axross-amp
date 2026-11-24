@@ -1269,12 +1269,21 @@ impl FlashGuard {
         let (cols, rows, rect) = (self.cols, self.rows, self.rect);
         let cw = rect.width() / cols as f32;
         let ch = rect.height() / rows as f32;
-        let cell = |cx: usize, cy: usize| {
-            let i = cy * cols + cx;
-            let a = alpha[i];
-            let s = colour[i];
-            [to_srgb(s[0]) * a, to_srgb(s[1]) * a, to_srgb(s[2]) * a, a]
-        };
+        // (each cell's colour once - not again for each of its four
+        // corners: four times the sRGB curves, 3 - 4 ms of a 1080p frame
+        // unoptimised, review 17, L5)
+        let cells: Vec<[f32; 4]> = alpha
+            .iter()
+            .zip(colour)
+            .map(|(&a, s)| {
+                if a <= 0.0 {
+                    [0.0; 4]
+                } else {
+                    [to_srgb(s[0]) * a, to_srgb(s[1]) * a, to_srgb(s[2]) * a, a]
+                }
+            })
+            .collect();
+        let cell = |cx: usize, cy: usize| cells[cy * cols + cx];
         let mut mesh = Mesh::default();
         mesh.vertices.reserve((cols + 1) * (rows + 1));
         for vy in 0..=rows {
@@ -1499,6 +1508,185 @@ fn within(a: Pos2, b: Pos2, r: Rect) -> Option<(f32, f32)> {
     (t0 < t1).then_some((t0, t1))
 }
 
+/// The grid a mesh is laid on: the picture's rect, its cells, the clip.
+#[derive(Clone, Copy)]
+struct Grid {
+    rect: Rect,
+    cols: usize,
+    rows: usize,
+    cw: f32,
+    ch: f32,
+    clip: Rect,
+    /// The clip takes in the whole picture: no cell need be asked.
+    clip_all: bool,
+}
+
+/// A piece of colour `mean` (sRGB, premultiplied, its alpha last) laid on
+/// cell (`cx`, `cy`), covering `k` of it: all of it laid over the cell
+/// (what is pending under it first), part of it pending with the other
+/// parts laid side by side.
+fn blend(acc: &mut Onto<'_>, g: &Grid, cx: i64, cy: i64, k: f32, mean: [f32; 4]) {
+    if cx < 0 || cy < 0 || cx >= g.cols as i64 || cy >= g.rows as i64 {
+        return;
+    }
+    if !g.clip_all {
+        let centre = Pos2::new(
+            g.rect.left() + (cx as f32 + 0.5) * g.cw,
+            g.rect.top() + (cy as f32 + 0.5) * g.ch,
+        );
+        if !g.clip.contains(centre) {
+            return;
+        }
+    }
+    let at = cy as usize * g.cols + cx as usize;
+    let a = (mean[3] * k).min(1.0);
+    let lay = |cell: &mut [f32; 3]| {
+        for i in 0..3 {
+            cell[i] = mean[i] * k + cell[i] * (1.0 - a);
+        }
+    };
+    // (how much it covers: without the half again - an additive
+    // glow too, which has no alpha)
+    if k >= 0.99 {
+        // (what is pending under it first)
+        lay_parts(acc, at);
+        lay(&mut acc.all[at]);
+        lay(&mut acc.big[at]);
+    } else {
+        let part = &mut acc.parts[at];
+        if !part.open {
+            *part = Part {
+                open: true,
+                ..Part::default()
+            };
+            acc.touched.push(at as u32);
+        }
+        for i in 0..3 {
+            part.sum[i] += mean[i] * k;
+        }
+        part.cover += a;
+        if a > 0.004 || mean[0] + mean[1] + mean[2] > 0.004 {
+            acc.small[at] += k / SPREAD;
+        }
+    }
+}
+
+/// Two triangles (a, b, c) and (a, c, d) of a mesh that make a rectangle
+/// on the axes, of solid colour (egui's coloured rectangle, a pen's
+/// gradient).
+struct RectPair {
+    rect: Rect,
+    /// Its diagonal, a to c, and which side of it the first triangle lies
+    /// (+1 or -1, by the cross product).
+    from: Pos2,
+    to: Pos2,
+    side: f32,
+    /// Each triangle's mean colour (sRGB, premultiplied, alpha last) - as
+    /// a triangle alone is laid.
+    first: [f32; 4],
+    second: [f32; 4],
+}
+
+fn rect_of(mesh: &Mesh, t: &[u32; 3], n: &[u32; 3]) -> Option<RectPair> {
+    if n[0] != t[0] || n[1] != t[2] {
+        return None;
+    }
+    let v = |i: u32| mesh.vertices.get(i as usize);
+    let (a, b, c, d) = (v(t[0])?, v(t[1])?, v(t[2])?, v(n[2])?);
+    if [a, b, c, d].iter().any(|v| v.uv != egui::epaint::WHITE_UV) {
+        return None;
+    }
+    let (p, q) = (a.pos, c.pos);
+    if p.x == q.x || p.y == q.y {
+        return None;
+    }
+    let others = [Pos2::new(p.x, q.y), Pos2::new(q.x, p.y)];
+    if !((b.pos == others[0] && d.pos == others[1]) || (b.pos == others[1] && d.pos == others[0])) {
+        return None;
+    }
+    let f = |c: Color32| {
+        [
+            c.r() as f32 / 255.0,
+            c.g() as f32 / 255.0,
+            c.b() as f32 / 255.0,
+            c.a() as f32 / 255.0,
+        ]
+    };
+    let mean = |x: Color32, y: Color32, z: Color32| {
+        let (x, y, z) = (f(x), f(y), f(z));
+        std::array::from_fn(|i| (x[i] + y[i] + z[i]) / 3.0)
+    };
+    let e = q - p;
+    let cross = e.x * (b.pos.y - p.y) - e.y * (b.pos.x - p.x);
+    Some(RectPair {
+        rect: Rect::from_two_pos(p, q),
+        from: p,
+        to: q,
+        side: cross.signum(),
+        first: mean(a.color, b.color, c.color),
+        second: mean(a.color, c.color, d.color),
+    })
+}
+
+/// A rectangle on the axes laid onto the cells it covers, each by how much
+/// of it it covers, in its triangles' colours as they share the cell - as
+/// its two triangles would be laid, without sampling each cell row's edges
+/// (a spectrum's 128 tall bars cost 2 - 3 ms a frame so: review 17, L5).
+fn lay_rect(acc: &mut Onto<'_>, g: &Grid, pair: &RectPair) {
+    let r = pair.rect;
+    let e = pair.to - pair.from;
+    let length = e.length().max(1e-6);
+    // (the cell's half extent across the diagonal)
+    let half = ((e.y.abs() * g.cw + e.x.abs() * g.ch) / length / 2.0).max(1e-6);
+    let cell_x = |x: f32| ((x - g.rect.left()) / g.cw).floor() as i64;
+    let cell_y = |y: f32| ((y - g.rect.top()) / g.ch).floor() as i64;
+    let (x0, x1) = (
+        cell_x(r.min.x).max(0),
+        cell_x(r.max.x).min(g.cols as i64 - 1),
+    );
+    let (y0, y1) = (
+        cell_y(r.min.y).max(0),
+        cell_y(r.max.y).min(g.rows as i64 - 1),
+    );
+    for cy in y0..=y1 {
+        let top = g.rect.top() + cy as f32 * g.ch;
+        let y_lo = r.min.y.max(top);
+        let y_hi = r.max.y.min(top + g.ch);
+        let oy = (y_hi - y_lo).max(0.0);
+        if oy <= 0.0 {
+            continue;
+        }
+        for cx in x0..=x1 {
+            let left = g.rect.left() + cx as f32 * g.cw;
+            let x_lo = r.min.x.max(left);
+            let x_hi = r.max.x.min(left + g.cw);
+            let ox = (x_hi - x_lo).max(0.0);
+            let share = ox * oy / (g.cw * g.ch);
+            if share <= 0.03 {
+                continue;
+            }
+            // (the part of the cell on the first triangle's side: a cell the
+            // diagonal crosses takes two pieces, side by side, as the
+            // triangles laid alone gave it - laid whole, its moving fill
+            // counted as a large shape's, and the line's fill through drum
+            // and bass was veiled 75 % of the time, not 48)
+            let centre = Pos2::new((x_lo + x_hi) / 2.0, (y_lo + y_hi) / 2.0);
+            let d = (e.x * (centre.y - pair.from.y) - e.y * (centre.x - pair.from.x)) / length
+                * pair.side;
+            let w = (0.5 + d / (2.0 * half)).clamp(0.0, 1.0);
+            let k = (share * SPREAD).min(1.0);
+            if w >= 1.0 {
+                blend(acc, g, cx, cy, k, pair.first);
+            } else if w <= 0.0 {
+                blend(acc, g, cx, cy, k, pair.second);
+            } else {
+                blend(acc, g, cx, cy, (k * w).min(0.98), pair.first);
+                blend(acc, g, cx, cy, (k * (1.0 - w)).min(0.98), pair.second);
+            }
+        }
+    }
+}
+
 /// A tessellated mesh laid onto the cells (sRGB values, premultiplied).
 #[allow(clippy::too_many_arguments)]
 fn lay_mesh(
@@ -1541,19 +1729,79 @@ fn lay_pieces(
     }
     // (the clip takes in the whole picture: no cell need be asked)
     let clip_all = clip.contains_rect(rect);
+    let grid = Grid {
+        rect,
+        cols,
+        rows,
+        cw,
+        ch,
+        clip,
+        clip_all,
+    };
     // (a mesh of tens of thousands of small pieces - the spirograph's
     // thousands of segments - laid one piece in so many, each counted so
     // many times: dense lines are evenly covered either way, and the frame
     // costs what one of 20,000 pieces does; pieces over two cells are
     // each laid over their box, as they lie)
     let stride = (mesh.indices.len() / 3 / 20_000).max(1);
-    for (index, tri) in mesh.indices.as_chunks::<3>().0.iter().enumerate() {
+    let tris = mesh.indices.as_chunks::<3>().0;
+    let mut pair_laid = false;
+    for (index, tri) in tris.iter().enumerate() {
+        // (the second triangle of a rectangle laid whole)
+        if std::mem::take(&mut pair_laid) {
+            continue;
+        }
         let sampled = stride > 1 && index % stride != 0;
         let v = [
             &mesh.vertices[tri[0] as usize],
             &mesh.vertices[tri[1] as usize],
             &mesh.vertices[tri[2] as usize],
         ];
+        let (p0, p1, p2) = (v[0].pos, v[1].pos, v[2].pos);
+        let area = ((p1.x - p0.x) * (p2.y - p0.y) - (p2.x - p0.x) * (p1.y - p0.y)) / 2.0;
+        if area.abs() < 1e-6 {
+            continue;
+        }
+        let min = Pos2::new(p0.x.min(p1.x).min(p2.x), p0.y.min(p1.y).min(p2.y));
+        let max = Pos2::new(p0.x.max(p1.x).max(p2.x), p0.y.max(p1.y).max(p2.y));
+        let cell_of = |p: Pos2| {
+            (
+                ((p.x - rect.left()) / cw).floor() as i64,
+                ((p.y - rect.top()) / ch).floor() as i64,
+            )
+        };
+        let (x0, y0) = cell_of(min);
+        let (x1, y1) = cell_of(max);
+        let (bw, bh) = ((max.x - min.x).max(1e-3), (max.y - min.y).max(1e-3));
+        let small = x1 - x0 <= 3 && y1 - y0 <= 3;
+        // (in a mesh of very many, one in so many: those left out cost
+        // no more than this - the particles' 90,000 pieces at 1920 x 1080)
+        if sampled && thumb.is_none() {
+            if small {
+                if !((x1 - x0 >= 2 || y1 - y0 >= 2) && area.abs() >= bw * bh * 0.3) {
+                    continue;
+                }
+            } else {
+                let longest = (p1 - p0)
+                    .length()
+                    .max((p2 - p1).length())
+                    .max((p0 - p2).length())
+                    .max(1e-3);
+                if area.abs() < bw * bh * 0.25 && 2.0 * area.abs() / longest < 2.0 * cw.max(ch) {
+                    continue;
+                }
+            }
+        }
+        // (a large rectangle: laid whole, with its second triangle)
+        if font
+            && thumb.is_none()
+            && !small
+            && let Some(pair) = tris.get(index + 1).and_then(|n| rect_of(mesh, tri, n))
+        {
+            lay_rect(acc, &grid, &pair);
+            pair_laid = true;
+            continue;
+        }
         // how much of the triangle is ink: all of it on the white texel;
         // a glyph's box about a third; another texture (a cover) a grey
         let solid = v.iter().all(|v| v.uv == egui::epaint::WHITE_UV);
@@ -1571,13 +1819,6 @@ fn lay_pieces(
                 c.a() as f32 / 255.0 * ink,
             ]
         };
-        let (p0, p1, p2) = (v[0].pos, v[1].pos, v[2].pos);
-        let area = ((p1.x - p0.x) * (p2.y - p0.y) - (p2.x - p0.x) * (p1.y - p0.y)) / 2.0;
-        if area.abs() < 1e-6 {
-            continue;
-        }
-        let min = Pos2::new(p0.x.min(p1.x).min(p2.x), p0.y.min(p1.y).min(p2.y));
-        let max = Pos2::new(p0.x.max(p1.x).max(p2.x), p0.y.max(p1.y).max(p2.y));
         let c = [colour(v[0]), colour(v[1]), colour(v[2])];
         let mean = [
             (c[0][0] + c[1][0] + c[2][0]) / 3.0,
@@ -1585,59 +1826,8 @@ fn lay_pieces(
             (c[0][2] + c[1][2] + c[2][2]) / 3.0,
             (c[0][3] + c[1][3] + c[2][3]) / 3.0,
         ];
-        let cell_of = |p: Pos2| {
-            (
-                ((p.x - rect.left()) / cw).floor() as i64,
-                ((p.y - rect.top()) / ch).floor() as i64,
-            )
-        };
-        let (x0, y0) = cell_of(min);
-        let (x1, y1) = cell_of(max);
-        let blend = |acc: &mut Onto<'_>, cx: i64, cy: i64, k: f32| {
-            if cx < 0 || cy < 0 || cx >= cols as i64 || cy >= rows as i64 {
-                return;
-            }
-            if !clip_all {
-                let centre = Pos2::new(
-                    rect.left() + (cx as f32 + 0.5) * cw,
-                    rect.top() + (cy as f32 + 0.5) * ch,
-                );
-                if !clip.contains(centre) {
-                    return;
-                }
-            }
-            let at = cy as usize * cols + cx as usize;
-            let a = (mean[3] * k).min(1.0);
-            let lay = |cell: &mut [f32; 3]| {
-                for i in 0..3 {
-                    cell[i] = mean[i] * k + cell[i] * (1.0 - a);
-                }
-            };
-            // (how much it covers: without the half again - an additive
-            // glow too, which has no alpha)
-            if k >= 0.99 {
-                // (what is pending under it first)
-                lay_parts(acc, at);
-                lay(&mut acc.all[at]);
-                lay(&mut acc.big[at]);
-            } else {
-                let part = &mut acc.parts[at];
-                if !part.open {
-                    *part = Part {
-                        open: true,
-                        ..Part::default()
-                    };
-                    acc.touched.push(at as u32);
-                }
-                for i in 0..3 {
-                    part.sum[i] += mean[i] * k;
-                }
-                part.cover += a;
-                if a > 0.004 || mean[0] + mean[1] + mean[2] > 0.004 {
-                    acc.small[at] += k / SPREAD;
-                }
-            }
-        };
+        let blend =
+            |acc: &mut Onto<'_>, cx: i64, cy: i64, k: f32| blend(acc, &grid, cx, cy, k, mean);
         // (a small piece's share spread over the four cells nearest its
         // centre, as they lie: moving, it moves the estimate smoothly from
         // cell to cell - quantised to one cell, it jumped, and a twinkling
@@ -1683,10 +1873,9 @@ fn lay_pieces(
         // samples; most of a line's or a dot's pieces)
         // (a known picture is sampled cell by cell, however its triangles
         // lie)
-        if thumb.is_none() && x1 - x0 <= 3 && y1 - y0 <= 3 {
+        if thumb.is_none() && small {
             let centroid = Pos2::new((p0.x + p1.x + p2.x) / 3.0, (p0.y + p1.y + p2.y) / 3.0);
             let k = SPREAD * area.abs() / (cw * ch);
-            let (bw, bh) = ((max.x - min.x).max(1e-3), (max.y - min.y).max(1e-3));
             if (x1 - x0 >= 2 || y1 - y0 >= 2) && area.abs() >= bw * bh * 0.3 {
                 // (over three cells or four, filling its box - a rectangle's
                 // half, a dot's wedge - over its box, as it overlaps
@@ -1746,12 +1935,35 @@ fn lay_pieces(
             // (a cell at a time: half a cell at a time, a bar's thin edges
             // a whole picture tall cost hundreds of blends each)
             let n = ((length / cw.min(ch)).ceil() as usize).max(1);
-            let towards = (c - Pos2::new((a.x + b.x) / 2.0, (a.y + b.y) / 2.0)) / 3.0;
-            let share = SPREAD * area.abs() * (t1 - t0) * stride as f32 / n as f32 / (cw * ch);
+            // (as wide at each place along it as the triangle is there -
+            // nothing at the long edge's ends, most where its third corner
+            // stands over it: laid evenly along its length, the slivers of
+            // a fan - a rounded ground's, from one corner to the arc of
+            // the corner across - were too much at the fan's corner and
+            // half of the ground at the far one; on a light ground the
+            // estimate held a dark wedge from that corner in that no face
+            // draws, and the veil, made of the estimate, showed it; review
+            // 18, M1)
+            let ab = b - a;
+            let tc = ((c - a).dot(ab) / ab.length_sq().max(1e-6)).clamp(0.0, 1.0);
+            let wide = |t: f32| {
+                if t <= tc && tc > 1e-4 {
+                    t / tc
+                } else {
+                    (1.0 - t) / (1.0 - tc).max(1e-4)
+                }
+            };
+            let height = c - (a + ab * tc);
+            let share =
+                2.0 * SPREAD * area.abs() * (t1 - t0) * stride as f32 / n as f32 / (cw * ch);
             for k in 0..n {
                 let t = t0 + (t1 - t0) * ((k as f32 + 0.5) / n as f32);
-                let p = a + (b - a) * t + towards;
-                splat(acc, p, share);
+                let w = wide(t).clamp(0.0, 1.0);
+                if w <= 0.0 {
+                    continue;
+                }
+                let p = a + ab * t + height * (w / 2.0);
+                splat(acc, p, share * w);
             }
             continue;
         }
@@ -1887,6 +2099,75 @@ mod tests {
             hi = hi.max(v);
         }
         (lo, hi)
+    }
+
+    /// A light ground with rounded corners - a fan of triangles from one
+    /// corner, as egui tessellates it, long slivers of it reaching the
+    /// corner across - laid on the cells of a 240 x 135 picture: the
+    /// darkest cell within it.
+    fn rounded_ground_laid() -> f32 {
+        let rect = Rect::from_min_size(Pos2::ZERO, egui::vec2(240.0, 135.0));
+        let (cols, rows) = (128usize, 70usize);
+        let (cw, ch) = (rect.width() / cols as f32, rect.height() / rows as f32);
+        let radius = 10.0;
+        let mut points = Vec::new();
+        for (k, corner) in [
+            rect.right_bottom() + egui::vec2(-radius, -radius),
+            rect.left_bottom() + egui::vec2(radius, -radius),
+            rect.left_top() + egui::vec2(radius, radius),
+            rect.right_top() + egui::vec2(-radius, radius),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            for j in 0..=8 {
+                let angle = (k as f32 + j as f32 / 8.0) * std::f32::consts::FRAC_PI_2;
+                points.push(corner + egui::Vec2::angled(angle) * radius);
+            }
+        }
+        let mut mesh = Mesh::default();
+        for p in &points {
+            mesh.colored_vertex(*p, Color32::from_gray(236));
+        }
+        for i in 1..points.len() as u32 - 1 {
+            mesh.add_triangle(0, i, i + 1);
+        }
+        let mut all = vec![[0.0f32; 3]; cols * rows];
+        let mut big = all.clone();
+        let mut small = vec![0.0f32; cols * rows];
+        let mut parts = vec![Part::default(); cols * rows];
+        let mut touched = Vec::new();
+        let mut onto = Onto {
+            all: &mut all,
+            big: &mut big,
+            small: &mut small,
+            parts: &mut parts,
+            touched: &mut touched,
+        };
+        lay_mesh(&mut onto, &mesh, None, rect, cols, rows, cw, ch, rect);
+        let inset = (radius / cw).ceil() as usize + 1;
+        let mut lo = f32::MAX;
+        for cy in inset..rows - inset {
+            for cx in inset..cols - inset {
+                lo = lo.min(all[cy * cols + cx][0]);
+            }
+        }
+        lo
+    }
+
+    #[test]
+    fn a_rounded_ground_lies_even_on_the_cells() {
+        // (its slivers laid evenly along their length, the cells along the
+        // diagonal from the far corner held a quarter of the ground: a dark
+        // wedge in the estimate on every light ground - review 18, M1; as
+        // wide as they are at each place, every cell holds four fifths of
+        // it and more)
+        let lo = rounded_ground_laid();
+        assert!(
+            lo > 0.7 * 236.0 / 255.0,
+            "the ground's darkest cell: {lo} of {}",
+            236.0 / 255.0
+        );
     }
 
     #[test]

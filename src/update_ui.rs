@@ -70,6 +70,8 @@ pub struct Updater {
     frames: u32,
     /// The new program's window is up: this one closes.
     close: bool,
+    /// The program in place was replaced while this one ran (said once).
+    replaced: bool,
 }
 
 impl Default for Updater {
@@ -129,6 +131,7 @@ impl Updater {
             mode: UpdateMode::Off,
             not_by_itself: None,
             frames: 0,
+            replaced: false,
         }
     }
 
@@ -169,6 +172,19 @@ impl Updater {
             return;
         }
         self.last_check = Some((std::time::SystemTime::now(), false));
+        // (another player - a second one, --new-instance - put the new
+        // program in place: downloaded in full and refused every day after,
+        // "changed since this player started" - review 17, L4)
+        if self.install.replaced() {
+            if !std::mem::replace(&mut self.replaced, true) {
+                self.notice = Some(
+                    "axross-amp was updated by another player meanwhile: \
+                     restart it to use the new one"
+                        .into(),
+                );
+            }
+            return;
+        }
         self.quiet = true;
         // (by themselves only where the program's folder can be written:
         // else downloaded at every start and never put in place - said)

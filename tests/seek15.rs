@@ -27,13 +27,32 @@ fn window(dir: &Path, args: Vec<String>) -> Harness<'static, App> {
         .build_eframe(move |cc| App::with_setup(cc, args.clone(), setup.clone()))
 }
 
-/// `secs` of playing, taken at a device's pace.
+/// `secs` of sound played, taken as a device takes it: 10 ms at a time, a
+/// frame of the window between - and by the sound, not by the clock: the
+/// next 10 ms once the decoder has them. (By the clock a busy machine took
+/// little sound in "half a second": the track was at 0.3 s where the test
+/// reckoned with 1 s, and "Back 15 s" there is no seek to speak of - the
+/// test failed two times in eight under a load of 25: review 19, L6.)
 fn play(h: &mut Harness<'static, App>, out: &mut RenderState, secs: f32) {
-    let end = std::time::Instant::now() + std::time::Duration::from_secs_f32(secs);
+    let started = std::time::Instant::now();
+    let end = started + std::time::Duration::from_secs_f32(secs * 20.0 + 10.0);
     let mut buf = vec![0.0f32; 480 * 2];
-    while std::time::Instant::now() < end {
+    let mut taken = 0.0;
+    while taken < secs && std::time::Instant::now() < end {
+        let shared = &h.state().engine().shared;
+        let playing = shared.playing.load(std::sync::atomic::Ordering::Relaxed);
+        if playing && !shared.ready(480) {
+            // (the decoder's turn; a seek under way)
+            std::thread::sleep(std::time::Duration::from_millis(1));
+            // (a player that plays nothing more - the end of the list -
+            // still gets its frames, at the clock's pace)
+            if started.elapsed().as_secs_f32() < secs + 0.2 {
+                continue;
+            }
+        }
         h.state().engine().shared.render(&mut buf, 2, out);
         h.run_steps(1);
+        taken += 0.01;
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
 }
@@ -109,7 +128,10 @@ fn the_buttons_wind_15_seconds_and_show_it_at_once() {
     play(&mut h, &mut out, 0.5);
     let now = heard(&h);
     assert!((now - (before - 15.0)).abs() < 1.2, "{before} -> {now}");
-    // and from a few seconds in: to 0:00, no further
+    // and from a second in: to 0:00, no further
+    play(&mut h, &mut out, 0.5);
+    let now = heard(&h);
+    assert!((0.7..3.0).contains(&now), "a second in, not {now}");
     h.get_by_label("Back 15 s").click();
     h.run_steps(1);
     assert!(h.state_mut().shown_position() < 0.2);

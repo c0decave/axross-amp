@@ -80,7 +80,7 @@ fn the_pictures_go_to_a_display_and_come_back() {
         .get_by_role_and_label(egui::accesskit::Role::Button, "Show on display")
         .rect();
     h.hover_at(item.center());
-    settle(&mut h, 3);
+    settle(&mut h, 4);
     for name in ["HDMI-1 (LG TV) 3840 x 2160", "VGA-1 1024 x 768"] {
         assert!(h.query_by_label(name).is_some(), "{name} not offered");
     }

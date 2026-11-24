@@ -54,9 +54,7 @@ Back to the [README](../README.md) - everything in detail: the [extended README]
   not counted; `file://` URLs that are no UTF-8 are skipped; Next at the end
   of the list wraps where axross's stops.
 - Ordinary UI, by an independent review's clicks at 6.7 a second (review
-  16): the large popups (⚙, the faces' list, More, Sort) opened and shut
-  read 7 transitions a second in Paper (at 5 clicks a second 6), and Next
-  moving the playing row's highlight in a 640 x 480 window 7 by the review's
+  16): Next moving the playing row's highlight in a 640 x 480 window 7 by the review's
   meter, 11 by the project's; the oscilloscope through a DC step at 3.5 Hz
   under a tone in white on black and the tunnel through a full-scale 4 Hz
   square in black on white, *Intense*, read 7 - 9 by the project's strict
@@ -67,9 +65,22 @@ Back to the [README](../README.md) - everything in detail: the [extended README]
   itself: one that crashes before its window is up is replaced by the
   program before it at the *next* start (the crash is not caught as it
   happens), and only where the program's folder can be written.
-- No CJK, Arabic or Hebrew font is bundled: such names are drawn as boxes
-  (they take their room, cut and in tooltips as any other), and a
-  right-to-left name is laid left to right.
+- No CJK, Arabic, Hebrew, Thai or Devanagari font is bundled: such a name is
+  written with a font of the system (asked for off the window's thread, each
+  file gone through glyph by glyph before it is used; `AXROSS_AMP_FONTS` names
+  more files or folders), so where the system has none for a script its
+  letters are boxes. A font file that is damaged is not used: its letters are
+  egui's own, or boxes. Should a font panic while a text is drawn all the
+  same, it cannot be told which: the fonts found for other scripts are all let
+  go (boxes from then on, until the next start), at a second panic the bold
+  and serif faces too.
+  The frames before a font is found show boxes too (a fraction of a second,
+  once per script). Emoji are egui's own, in one colour. A right-to-left
+  name reads from the right, its numbers and Latin words in place (the
+  Unicode algorithm with its rule for pairs of brackets, without explicit
+  embeddings); one too long for its room
+  is cut at the end of what is shown, which for such a name is its
+  beginning - the whole name is in the tooltip.
 - The flash guard dims the line face in very fast music more often than
   needed (it over-estimates the moving fill); nothing flashes, the picture is
   just darker at times.
@@ -90,5 +101,21 @@ rest it costs about nothing. There was no
 GPU of its own to measure on here: the GPU's cost of the faces
 (`--ignored` in `tests/faces.rs`) has only been measured on Mesa's lavapipe and
 llvmpipe, by the clock.
+An Ogg file with pages on which no packet ends (packets longer than a page) is
+sought by decoding: from the last of the places the page scan keeps - one every four
+seconds - before the place sought, so a seek costs the decoding of up to five seconds
+of sound (some hundredths of a second) wherever it goes; where a link has no such
+place before the one sought (its first seconds), from its start.
+Which graphics adapter draws the window is chosen at the start (Options › Graphics
+is taken at the next one); the choice among several GPUs has been tested as a
+function of what adapters say of themselves, not on a machine with two. Whether
+the machine has a battery (*Auto*) is asked on Linux and Windows only: elsewhere,
+and where Linux's list of power supplies is empty or cannot be read, Auto is
+the integrated GPU; a desktop with a UPS that says it is the system's battery
+is taken for a laptop. Where the adapter chosen cannot draw after all, the
+start fails and says which variables choose another; there is no second try.
+A file cut short (a copy that stopped) plays what is there. A WAV or AIFF file
+shows its true length at once; a FLAC, MP3 or other file shows the length its
+header says until its end is read, and only then the true one.
 The beat is found from the onsets; on syncopated music the tempo may read half or
 double. The notes below about C2 are not told apart from their neighbours.

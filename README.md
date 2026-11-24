@@ -7,7 +7,7 @@ axross's Media Player as a program of its own - written in Rust.
 - **Plays almost anything** - MP3, FLAC, Ogg Vorbis, Opus, AAC / M4A, ALAC, WAV, AIFF, CAF, folders, M3U / PLS and internet radio
 - **Truly gapless** - not a sample of silence between an album's tracks; an optional crossfade that never cuts into an album
 - **Bit for bit at unity gain** - ReplayGain, a ten-band equalizer, true-peak limiters, a band-limited resampler
-- **49 visualizations** - all eighteen of axross's classic faces, eight analysis tools, 23 generative ones
+- **69 visualizations** - all eighteen of axross's classic faces, eight analysis tools, 34 generative ones, nine spectra and scopes
 - **Guarded against flashes** - every face measured by WCAG 2.3.1 / 2.3.2 and ITU-R BT.1702, a flash guard at the output
 - **Ten designs** - Modern, Zen, Hi-fi rack, 90s desktop, Cassette deck, Terminal, Brutalist, Glass, Soft, Collage
 - **Twelve themes** - design tokens, contrast tested to WCAG AA (AAA in High contrast), follows the desktop's light or dark
@@ -45,7 +45,11 @@ axross's Media Player as a program of its own - written in Rust.
   </tr>
   <tr>
     <td><img src="docs/faces-analysis.png" alt="The analysis faces"></td>
+    <td><img src="docs/faces-spectral.png" alt="The spectral faces"></td>
+  </tr>
+  <tr>
     <td><img src="docs/mixer.png" alt="The Mixer tab"></td>
+    <td><img src="docs/bluetooth.png" alt="The Bluetooth tab"></td>
   </tr>
 </table>
 
@@ -89,12 +93,36 @@ axross-amp https://example.org/radio.mp3
 Space plays and pauses, V changes the face, D shows the pictures on another
 display, F11 is full screen. All keys and options: [Use](docs/README-extended.md#use).
 
+**Graphics.** The window is drawn by the GPU through wgpu. With an integrated
+and a dedicated GPU, *Auto* takes the integrated one on a machine with a
+battery (a player sits on one for hours) and the dedicated one on a machine
+without (Linux and Windows say which it is; elsewhere the integrated one); a
+software adapter only where there is no GPU. *Options › Graphics* (Auto, Power
+saving, High performance) chooses and names the adapter in use; the choice is
+taken at the next start. With *Power saving* on a desktop the shader faces are
+slower on a 4K monitor than the dedicated card would draw them. The
+environment decides instead of the setting, and a start whose graphics cannot
+be set up names these variables:
+
+| Variable | What it does |
+|---|---|
+| `WGPU_BACKEND` | the backends asked at all: `vulkan`, `gl`, `metal`, `dx12` (several with commas) |
+| `WGPU_ADAPTER_NAME` | the adapter whose name holds this (any case), e.g. `WGPU_ADAPTER_NAME=nvidia` |
+| `WGPU_POWER_PREF` | `low` (the integrated GPU) or `high` (the dedicated one) |
+| `AMP_GPU_SHADERS` | `1` / `0`: the shader faces by the GPU's shaders or drawn by the CPU, whatever was measured at the start |
+
+**Titles in other scripts.** Chinese, Japanese, Korean, Arabic, Hebrew, Thai
+and Devanagari are written with the system's fonts (found in the background,
+each file checked before it is used); right-to-left titles read from the
+right. `AXROSS_AMP_FONTS` names further font files or folders of them
+(separated as `PATH` is), asked first.
+
 ## Documentation
 
 | Page | What it covers |
 |---|---|
 | [Extended README](docs/README-extended.md) | everything in detail: features, install, use and keys, build, status, tests |
-| [Faces](docs/FACES.md) | the 49 visualizations, their colour schemes and options, the face sheets |
+| [Faces](docs/FACES.md) | the 69 visualizations, their colour schemes and options, the face sheets |
 | [Designs](docs/DESIGNS.md) | the ten window designs and how they are tested |
 | [Themes](docs/THEMES.md) | the twelve window themes and their contrast checks |
 | [Show on display](docs/DISPLAY.md) | the pictures on a monitor of their own, with the sound |

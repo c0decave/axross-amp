@@ -212,3 +212,138 @@ fn a_start_handing_its_files_over_starts_nothing() {
     let _ = daemon.kill();
     let _ = daemon.wait();
 }
+
+/// The program where an update puts it (not a build folder: the updater's
+/// watch is for a release's program), the marker of its first start as an
+/// update by itself leaves it, and a stand-in for the program it replaced
+/// that says when it runs.
+fn updated_program(home: &Path) -> (std::path::PathBuf, Vec<u8>) {
+    use std::os::unix::fs::PermissionsExt;
+    let bin = home.join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let program = bin.join("axross-amp");
+    let bytes = std::fs::read(env!("CARGO_BIN_EXE_axross-amp")).unwrap();
+    std::fs::write(&program, &bytes).unwrap();
+    std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let old = bin.join("axross-amp.previous");
+    std::fs::write(
+        &old,
+        format!("#!/bin/sh\ntouch '{}'\n", home.join("old-ran").display()),
+    )
+    .unwrap();
+    std::fs::set_permissions(&old, std::fs::Permissions::from_mode(0o755)).unwrap();
+    std::fs::write(
+        bin.join("axross-amp.first-start"),
+        format!("{}\ninstalled\n", env!("CARGO_PKG_VERSION")),
+    )
+    .unwrap();
+    (program, bytes)
+}
+
+fn updated_command(home: &Path, program: &Path) -> Command {
+    let mut c = Command::new(program);
+    c.env("HOME", home)
+        .env("XDG_CACHE_HOME", home.join("cache"))
+        .env("XDG_CONFIG_HOME", home.join("config"))
+        .env("AXROSS_AMP_NO_UPDATE_CHECK", "1")
+        .env_remove("DBUS_SESSION_BUS_ADDRESS")
+        .env_remove("AXROSS_AMP_DETACHED")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    c
+}
+
+/// An update put in place by itself, started first from a terminal: the
+/// start goes to the background, and the child that opens the window is
+/// the one watched - the update stays (review 17, H1: the parent marked the
+/// first start, the child took it for a start that never drew its window,
+/// put the old program back and refused the new one for good).
+#[test]
+fn an_updates_first_start_from_a_terminal_keeps_it() {
+    let home = Scratch::new("first-start-tty");
+    let (program, bytes) = updated_program(&home);
+    let pidfile = home.join("pid");
+    let out = updated_command(&home, &program)
+        .env("AXROSS_AMP_ASSUME_TTY", "1")
+        .env("AXROSS_AMP_FAKE_WINDOW", "2")
+        .env("AXROSS_AMP_FAKE_PIDFILE", &pidfile)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    let child = read_pid(&pidfile).expect("the background child started");
+    let end = Instant::now() + Duration::from_secs(10);
+    while alive(child) && Instant::now() < end {
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let bin = home.join("bin");
+    assert!(!home.join("old-ran").exists(), "the old program was run");
+    assert_eq!(
+        std::fs::read(&program).unwrap(),
+        bytes,
+        "the update was undone"
+    );
+    assert!(
+        !bin.join("axross-amp.refused").exists(),
+        "the update was refused"
+    );
+    assert!(
+        !bin.join("axross-amp.first-start").exists(),
+        "its first start, up, still watched"
+    );
+}
+
+/// A file opened while the player that installed the update still runs:
+/// the start hands the file over and ends - it is not the update's first
+/// start, and its watch is left as it was (review 17, H1: marked
+/// "starting" by it, the next real start put the old program back).
+#[cfg(target_os = "linux")]
+#[test]
+fn a_start_handing_its_files_over_leaves_the_first_start_watch() {
+    use std::io::{BufRead, BufReader};
+    let home = Scratch::new("first-start-hand");
+    let Ok(mut daemon) = Command::new("dbus-daemon")
+        .args(["--session", "--nofork", "--nopidfile", "--print-address=1"])
+        .arg(format!("--address=unix:dir={}", home.display()))
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+    else {
+        eprintln!("no dbus-daemon: skipped");
+        return;
+    };
+    let mut bus = String::new();
+    BufReader::new(daemon.stdout.take().unwrap())
+        .read_line(&mut bus)
+        .unwrap();
+    let bus = bus.trim().to_owned();
+    // the player running (the old one, as it was: from the build)
+    let mut first = amp(&home)
+        .args(["--foreground"])
+        .env("DBUS_SESSION_BUS_ADDRESS", &bus)
+        .env("AXROSS_AMP_FAKE_WINDOW", "8")
+        .spawn()
+        .unwrap();
+    std::thread::sleep(Duration::from_millis(1500));
+    // the update in place meanwhile; a file opened with it
+    let (program, _) = updated_program(&home);
+    let track = home.join("a.wav");
+    std::fs::write(&track, b"").unwrap();
+    let out = updated_command(&home, &program)
+        .arg(&track)
+        .env("DBUS_SESSION_BUS_ADDRESS", &bus)
+        .env("AXROSS_AMP_FAKE_WINDOW", "5")
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    let marker = std::fs::read_to_string(home.join("bin/axross-amp.first-start")).unwrap();
+    assert!(
+        marker.contains("installed"),
+        "the hand-over took the first start: {marker:?}"
+    );
+    assert!(!home.join("bin/axross-amp.refused").exists());
+    let _ = first.kill();
+    let _ = first.wait();
+    let _ = daemon.kill();
+    let _ = daemon.wait();
+}

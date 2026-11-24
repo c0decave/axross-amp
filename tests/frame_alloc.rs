@@ -142,6 +142,18 @@ fn a_frame_allocates_nothing_of_its_own() {
             face.key, counts[0], counts[1]
         ));
         most = most.max(counts[1]);
+        // the spectral faces draw into their one mesh, the Pitch spiral's
+        // names too (laid out name by name they were 40 a frame: review
+        // 18, L4)
+        if face.group == Group::Spectral {
+            assert!(
+                counts[0] <= 24 && counts[1] <= 24,
+                "{}: {} and {} allocations a frame",
+                face.key,
+                counts[0],
+                counts[1]
+            );
+        }
         // not one a bar, a point, a star
         assert!(
             counts[1] <= counts[0] + 4,

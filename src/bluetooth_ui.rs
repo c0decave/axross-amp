@@ -571,7 +571,7 @@ fn body_in(ui: &mut Ui, page: &mut BluetoothPage, client: &Bluetooth, view: &Blu
         });
         card(ui, |ui| {
             for d in &group {
-                device_row(ui, page, view, d);
+                device_row(ui, page, client, view, d, adapter.powered);
             }
         });
     }
@@ -588,7 +588,14 @@ fn body_in(ui: &mut Ui, page: &mut BluetoothPage, client: &Bluetooth, view: &Blu
     message_line(ui, page);
 }
 
-fn device_row(ui: &mut Ui, page: &mut BluetoothPage, view: &BluetoothView, d: &Device) {
+fn device_row(
+    ui: &mut Ui,
+    page: &mut BluetoothPage,
+    client: &Bluetooth,
+    view: &BluetoothView,
+    d: &Device,
+    powered: bool,
+) {
     let selected = page.selected.as_deref() == Some(d.path.as_str());
     let mut detail = vec![d.kind().to_owned(), d.address.clone()];
     if let Some(b) = d.battery {
@@ -631,6 +638,14 @@ fn device_row(ui: &mut Ui, page: &mut BluetoothPage, view: &BluetoothView, d: &D
     let (rect, response) = ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::click());
     let name = d.display_name();
     response.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, true, selected, &name));
+    // (said only where a double click does something: not while the
+    // device is busy or the adapter is off)
+    let double_click = double_click(d, powered, view.busy.contains_key(&d.path));
+    let response = match double_click {
+        Some(DoubleClick::Connect) => response.on_hover_text("Double-click to connect."),
+        Some(DoubleClick::Pair) => response.on_hover_text("Double-click to pair."),
+        None => response,
+    };
     if ui.is_rect_visible(rect) {
         let visuals = ui.style().interact_selectable(&response, selected);
         if selected || response.hovered() || response.has_focus() {
@@ -659,6 +674,47 @@ fn device_row(ui: &mut Ui, page: &mut BluetoothPage, view: &BluetoothView, d: &D
     }
     if response.clicked() {
         page.selected = Some(d.path.clone());
+    }
+    // a double click connects: what the Connect button does (Pair first for
+    // a device not paired yet); nothing while it is busy or connected
+    if response.double_clicked()
+        && let Some(what) = double_click
+    {
+        page.selected = Some(d.path.clone());
+        match what {
+            DoubleClick::Connect => {
+                page.say(format!("Connecting to {}…", d.display_name()), false);
+                client.act(Action::Connect {
+                    device: d.path.clone(),
+                });
+            }
+            DoubleClick::Pair => {
+                page.say(format!("Pairing with {}…", d.display_name()), false);
+                client.act(Action::Pair {
+                    device: d.path.clone(),
+                });
+            }
+        }
+    }
+}
+
+/// What a double click on a device's row does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DoubleClick {
+    Connect,
+    Pair,
+}
+
+/// What a double click on `d`'s row does - and so what the row's hover
+/// text says: nothing where the adapter is off, the device is busy
+/// (connecting, pairing) or it is connected already.
+fn double_click(d: &Device, powered: bool, busy: bool) -> Option<DoubleClick> {
+    if !powered || busy || d.connected {
+        None
+    } else if d.paired {
+        Some(DoubleClick::Connect)
+    } else {
+        Some(DoubleClick::Pair)
     }
 }
 
@@ -861,6 +917,59 @@ fn dialogs(ui: &mut Ui, page: &mut BluetoothPage, client: &Bluetooth, view: &Blu
             }
             Some(false) => page.confirm_forget = None,
             None => {}
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn device(paired: bool, connected: bool) -> Device {
+        Device {
+            path: "/org/bluez/hci0/dev_00".into(),
+            adapter: "/org/bluez/hci0".into(),
+            address: "00:11:22:33:44:55".into(),
+            name: "Headset".into(),
+            alias: "Headset".into(),
+            icon: "audio-headset".into(),
+            class: 0,
+            appearance: None,
+            rssi: None,
+            paired,
+            trusted: false,
+            connected,
+            blocked: false,
+            uuids: Vec::new(),
+            battery: None,
+        }
+    }
+
+    /// The row said "Double-click to connect." while the device was busy
+    /// and with the adapter off, when a double click does nothing (review
+    /// 19, L8): the words and the deed are one function now.
+    #[test]
+    fn a_row_offers_a_double_click_only_where_one_does_something() {
+        assert_eq!(
+            double_click(&device(true, false), true, false),
+            Some(DoubleClick::Connect)
+        );
+        assert_eq!(
+            double_click(&device(false, false), true, false),
+            Some(DoubleClick::Pair)
+        );
+        for (paired, connected, powered, busy) in [
+            (true, false, true, true),
+            (false, false, true, true),
+            (true, false, false, false),
+            (false, false, false, false),
+            (true, true, true, false),
+        ] {
+            assert_eq!(
+                double_click(&device(paired, connected), powered, busy),
+                None,
+                "paired {paired}, connected {connected}, adapter on {powered}, busy {busy}"
+            );
         }
     }
 }

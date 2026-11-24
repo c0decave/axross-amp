@@ -642,6 +642,58 @@ fn no_generative_face_flashes() {
     assert!(f.is_empty(), "{f:#?}");
 }
 
+#[test]
+fn no_spectral_face_flashes() {
+    let f = sweep(
+        Some(Group::Spectral),
+        &[Motion::Calm],
+        &["classic"],
+        (384.0, 216.0),
+        1.2,
+        FPS,
+    );
+    assert!(f.is_empty(), "{f:#?}");
+}
+
+/// The faces added after the 49 (the spectral ones and the generative ones
+/// from the orbits on) at their most - Intense, white on black - and the
+/// other way round - Calm, black on white: within the project's readings
+/// and review 11's own meter (m11) alike.
+#[test]
+fn the_newer_faces_in_the_starkest_schemes() {
+    let start = FACES.iter().position(|f| f.key == "orbits").unwrap();
+    let only = std::env::var("AMP_FLASH_ONLY").ok();
+    let mut failures = Vec::new();
+    for face in FACES[start..].iter().filter(|f| f.group != Group::Off) {
+        if only
+            .as_deref()
+            .is_some_and(|o| !o.split(',').any(|w| w == face.key))
+        {
+            continue;
+        }
+        for (motion, scheme) in [(Motion::Intense, "bw"), (Motion::Calm, "wb")] {
+            let r = run(face.key, motion, scheme, (320.0, 180.0), 0.6, FPS, |_| {});
+            let line = format!(
+                "{motion:?} {scheme} {}: transitions/s {} ({})  red {} ({})  stripes {:.2} ({} frames)  area {}  m11 {}",
+                face.key,
+                r.transitions,
+                r.strict,
+                r.red,
+                r.strict_red,
+                r.stripes,
+                r.pattern_frames,
+                r.area,
+                r.review
+            );
+            println!("{line}");
+            if r.fails() || r.review > 6 {
+                failures.push(line);
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{failures:#?}");
+}
+
 /// Every face as the player draws it - 30 frames a second - and as a
 /// software renderer may - 12 (the meter counts a second as so many
 /// frames, "at once" as 34 ms).
@@ -739,7 +791,8 @@ fn the_veil_stays_off_where_nothing_flashes() {
             // guard over-estimates the line's moving fill - its own count
             // comes to its budget of 7 where the meter reads 4 strictly - and
             // veils it about half the time (48 %; so before review 9's line
-            // change too, when the strict reading was 5). Safe - dimmed, no
+            // change too, when the strict reading was 5; 36 % since 0.16.4's
+            // estimate of a rectangle). Safe - dimmed, no
             // flash let through - but darker than needed. Held where it is:
             // the veil at most 55 %, the strict reading at most 4.
             // TODO: the guard's estimate of a moving gradient fill.
@@ -1118,6 +1171,11 @@ fn the_guard_sees_the_shader_faces() {
         ("smoke", true),
         ("julia", true),
         ("plasma", false),
+        // (the shader faces added since: a picture the CPU keeps - the
+        // water's surface -, and a function of the pixel alone)
+        ("water", true),
+        ("contours", true),
+        ("water", false),
         // (and the cover: its pixels as they are, not a flat grey)
         ("cover", true),
     ] {
@@ -1252,6 +1310,12 @@ fn no_red_flash_in_any_scheme() {
         ("isometric", Motion::Intense, "fire", 12.0),
         ("spectrum", Motion::Intense, "classic", FPS),
         ("isometric", Motion::Calm, "classic", 12.0),
+        // (the faces added since that fill much of the picture with the
+        // scheme's colours)
+        ("water", Motion::Intense, "fire", FPS),
+        ("honeycomb", Motion::Intense, "fire", FPS),
+        ("bouncing", Motion::Intense, "fire", 12.0),
+        ("contours", Motion::Intense, "fire", FPS),
     ] {
         let r = run(key, motion, scheme, (320.0, 180.0), 1.2, fps, |_| {});
         let line = format!(

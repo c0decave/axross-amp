@@ -1,6 +1,6 @@
 [package]
 name = "axross-amp"
-version = "0.16.3"
+version = "0.17.0"
 description = "axross's Media Player as a program of its own, in Rust: playlists, a ten-band equalizer, visualizations, internet radio"
 license = "Apache-2.0"
 repository = "https://github.com/c0decave/axross-amp"
@@ -13,7 +13,6 @@ edition = "2024"
 cpal = { version = "0.18.2", features = ["pulseaudio"] }
 crossbeam-channel = "0.5.17"
 dirs = "7.0.0"
-eframe = "0.37.0"
 egui = "0.37"
 egui-file-dialog = "0.16.0"
 image = { version = "0.25.10", default-features = false, features = ["jpeg", "png"] }
@@ -23,6 +22,9 @@ ring = "0.17.14"
 rustfft = "6.4.1"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
+# (already in the lock through egui: a font file parsed before egui is given
+# it - egui panics on one it cannot parse; src/fonts.rs)
+skrifa = { version = "0.44.0", default-features = false, features = ["std"] }
 symphonia = { version = "0.6.1", features = ["all"] }
 symphonia-adapter-libopus = "0.3.0"
 ureq = { version = "3.5.1", default-features = false, features = ["rustls"] }
@@ -35,6 +37,20 @@ lto = "thin"
 codegen-units = 1
 strip = true
 
+# The window: eframe as it is everywhere but on Android. There it comes
+# without AccessKit (eframe refuses it with a NativeActivity), the clipboard,
+# links and the desktop's window systems; the Android app (axross-amp-android)
+# adds the activity feature it uses.
+[target.'cfg(not(target_os = "android"))'.dependencies]
+# (already in the lock through eframe, which installs it on the window's
+# thread: the system's fonts for scripts egui's own cannot write - asked on
+# a thread of their own here; src/fonts.rs)
+egui_system_font_provider = "0.37.0"
+eframe = "0.37.0"
+
+[target.'cfg(target_os = "android")'.dependencies]
+eframe = { version = "0.37.0", default-features = false, features = ["default_fonts", "wgpu"] }
+
 [target.'cfg(unix)'.dependencies]
 # (already in the lock through the sound and window crates: setsid and fcntl
 # for going to the background)
@@ -42,8 +58,12 @@ libc = "0.2.191"
 
 [target.'cfg(windows)'.dependencies]
 # (already in the lock through the window and sound crates: AttachConsole,
-# for --help and messages from a GUI program started in a terminal)
-windows-sys = { version = "0.61.2", features = ["Win32_System_Console"] }
+# for --help and messages from a GUI program started in a terminal;
+# GetSystemPowerStatus, for whether the machine has a battery)
+windows-sys = { version = "0.61.2", features = [
+    "Win32_System_Console",
+    "Win32_System_Power",
+] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 # BlueZ over D-Bus (the Bluetooth tab); already in the tree through accesskit

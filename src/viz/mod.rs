@@ -3,8 +3,10 @@
 //! ([`analysis`]: an analyzer with note names, a loudness meter after EBU
 //! R128, phase and stereo width, a goniometer, the track's waveform, a
 //! chromagram, a piano roll, a mel spectrogram) and pictures it moves
-//! ([`generative`]) - the pixel effects among them drawn by shaders on
-//! the GPU ([`gpu`]), on the CPU where there is no wgpu.
+//! ([`generative`], more of them in [`scenes`]), and spectra, scopes and
+//! instruments of the sound drawn anew ([`spectral`]) - the pixel effects
+//! among them drawn by shaders on the GPU ([`gpu`]), on the CPU where there
+//! is no wgpu.
 //!
 //! Every face draws into meshes kept from frame to frame ([`Canvas`]):
 //! a frame allocates nothing of its own once they have grown.
@@ -14,6 +16,8 @@ pub mod classic;
 pub mod flashguard;
 pub mod generative;
 pub mod gpu;
+pub mod scenes;
+pub mod spectral;
 
 use crate::analyzer::{Analyzer, Needs};
 use egui::epaint::tessellator::Path;
@@ -26,6 +30,7 @@ pub enum Group {
     Classic,
     Analysis,
     Generative,
+    Spectral,
     Off,
 }
 
@@ -35,6 +40,7 @@ impl Group {
             Group::Classic => "Classic",
             Group::Analysis => "Analysis",
             Group::Generative => "Generative",
+            Group::Spectral => "Spectral",
             Group::Off => "",
         }
     }
@@ -79,10 +85,11 @@ const fn shader(mut f: Face) -> Face {
     f
 }
 
-use Group::{Analysis as A, Classic as C, Generative as G};
+use Group::{Analysis as A, Classic as C, Generative as G, Spectral as S};
 
 /// Every face, in the order a click steps through them: axross's own
-/// first (under its keys), then the analysis tools, then the pictures.
+/// first (under its keys), then the analysis tools, then the pictures,
+/// then the spectra, scopes and instruments drawn anew.
 pub const FACES: &[Face] = &[
     face("spectrum", "Spectrum", C),
     face("mirror", "Mirrored spectrum", C),
@@ -133,11 +140,32 @@ pub const FACES: &[Face] = &[
     face("beatrings", "Beat rings", G),
     shader(face("smoke", "Smoke", G)),
     face("typography", "Kinetic typography", G),
+    face("orbits", "Orbits", G),
+    face("filaments", "Plasma globe", G),
+    face("tree", "Fractal tree", G),
+    shader(face("water", "Water surface", G)),
+    face("constellation", "Constellation", G),
+    shader(face("attractor", "Strange attractor", G)),
+    face("bokeh", "Bokeh", G),
+    shader(face("cymatics", "Cymatics", G)),
+    shader(face("contours", "Contour map", G)),
+    face("knot", "Torus knot", G),
+    face("sunflower", "Sunflower", G),
+    face("circlewave", "Circular waveform", S),
+    face("bouncing", "Bouncing balls", S),
+    face("globe", "Spectrum globe", S),
+    face("honeycomb", "Honeycomb equalizer", S),
+    fine(face("spiral", "Pitch spiral", S)),
+    face("vinyl", "Spectral vinyl", S),
+    face("radar", "Radar", S),
+    face("pendulum", "Pendulum wave", S),
+    face("rain", "Spectrum rain", S),
     // (no picture at all: no frames drawn for it - a laptop's battery)
     face("off", "Off", Group::Off),
 ];
 
-/// The faces of axross's player (its keys, its order).
+/// The faces of axross's player: its keys, first in the list (in this
+/// program's order - axross's own list has them in another).
 pub const AXROSS_FACES: usize = 18;
 
 /// The face of axross's player nearest to `key` - what the shared state
@@ -164,6 +192,19 @@ pub fn axross_face(key: &str) -> &'static str {
         "plasma" | "julia" | "reaction" | "milkdrop" | "crystals" => "kaleidoscope",
         "isometric" => "ring",
         "spirograph" | "morph" => "polar",
+        // (the faces added since: each the one of axross's it is most like)
+        "circlewave" | "pendulum" => "scope",
+        "bouncing" => "spectrum",
+        "globe" | "knot" => "ring",
+        "honeycomb" => "led",
+        "spiral" | "sunflower" => "polar",
+        "vinyl" | "radar" | "filaments" => "radial",
+        "rain" => "particles",
+        "orbits" | "constellation" | "bokeh" => "starfield",
+        "tree" => "ribbon",
+        "attractor" => "lissajous",
+        "water" | "cymatics" => "kaleidoscope",
+        "contours" => "terrain",
         _ => "spectrum",
     }
 }
@@ -1379,6 +1420,8 @@ pub struct VizState {
     pub classic: classic::State,
     pub analysis: analysis::State,
     pub generative: generative::State,
+    pub scenes: scenes::State,
+    pub spectral: spectral::State,
     pub gpu: gpu::State,
     seed: u32,
     /// The face shown, and the one it is fading from (and how far, 0..1).
@@ -1590,7 +1633,9 @@ fn one(f: &Frame<'_>, key: &'static str, state: &mut VizState, opacity: f32, sec
     match face.group {
         Group::Classic => classic::draw(&frame, face.key, state),
         Group::Analysis => analysis::draw(&frame, face.key, state),
+        Group::Generative if scenes::draws(face.key) => scenes::draw(&frame, face.key, state),
         Group::Generative => generative::draw(&frame, face.key, state),
+        Group::Spectral => spectral::draw(&frame, face.key, state),
         Group::Off => {
             f.painter.text(
                 f.rect.center(),
@@ -1677,10 +1722,11 @@ mod tests {
     fn faces_cycle_and_unknown_keys_fall_back() {
         assert_eq!(next("spectrum"), "mirror");
         assert_eq!(next("starfield"), "analyzer");
-        assert_eq!(next("typography"), "spectrum", "off is never stepped into");
+        assert_eq!(next("typography"), "orbits");
+        assert_eq!(next("rain"), "spectrum", "off is never stepped into");
         // (the faces that went: their saved keys show the spectrum)
         assert_eq!(known("ripples"), "spectrum");
-        assert_eq!(previous("spectrum"), "typography");
+        assert_eq!(previous("spectrum"), "rain");
         assert_eq!(previous("mirror"), "spectrum");
         // every face of axross's player is drawn here, under its key
         for key in [
@@ -1715,8 +1761,28 @@ mod tests {
                 .iter()
                 .filter(|f| matches!(f.group, Group::Analysis | Group::Generative))
                 .count(),
-            31
+            42
         );
+        assert_eq!(
+            FACES.iter().filter(|f| f.group == Group::Spectral).count(),
+            9
+        );
+        // every face of this program's own maps to one of axross's (the
+        // shared state file's), the new ones not all to the spectrum
+        for f in &FACES[AXROSS_FACES..] {
+            let k = axross_face(f.key);
+            assert!(
+                FACES[..AXROSS_FACES].iter().any(|a| a.key == k),
+                "{}",
+                f.key
+            );
+        }
+        let start = FACES.iter().position(|f| f.key == "orbits").unwrap();
+        for f in &FACES[start..FACES.len() - 1] {
+            if f.key != "bouncing" {
+                assert_ne!(axross_face(f.key), "spectrum", "{}", f.key);
+            }
+        }
         assert_eq!(known("hologram"), "spectrum");
         // keys are unique, groups in order
         let mut keys: Vec<&str> = FACES.iter().map(|f| f.key).collect();
@@ -1732,6 +1798,7 @@ mod tests {
                 Group::Classic,
                 Group::Analysis,
                 Group::Generative,
+                Group::Spectral,
                 Group::Off
             ]
         );

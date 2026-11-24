@@ -263,6 +263,36 @@ pub struct App {
     /// and its schemes clicked in turn flipped the picture's ground at the
     /// clicks' pace - review 16, M1).
     scheme_shown: (String, bool),
+    /// A face asked for by V, Shift+V or a click on the picture, shown at
+    /// the window's turn (held, V stepped the face 15 times a second and
+    /// the picture flashed 8 - 13 times: review 17, H2); and whether the
+    /// Modern layout is the Cover face's - its card left out - which
+    /// follows the face at the turn too (review 17, M1).
+    face_pending: Option<&'static str>,
+    cover_layout: bool,
+    /// When a face was last stepped (egui's clock): one step for one press.
+    /// A viewport embedded in the window (where the platform has but one)
+    /// reads the window's keys as its own, and V stepped two faces.
+    face_step_at: f64,
+    /// The popups shown of late (menus, a list's choices), by viewport and
+    /// layer: what they drew, and when last seen ([`App::popup_ghosts`]).
+    popup_ghosts: std::collections::HashMap<(egui::ViewportId, egui::Id), Ghost>,
+    /// A right click the still picture of a shut menu took (where, in which
+    /// frame): over the picture, its menu opens again there.
+    menu_again: Option<egui::Pos2>,
+    menu_again_at: u64,
+    /// A face chosen in the picture's menu in a frame's first pass (which):
+    /// the menu is shut in the pass that is shown ([`App::visual_menu`]).
+    menu_shut: Option<u64>,
+    /// Where the menu's submenu buttons were drawn last (by their names).
+    submenu_buttons: Vec<(String, egui::Rect)>,
+    /// When the window last had any input (egui's clock): a popup's picture
+    /// is taken again only then and a moment after ([`App::popup_ghosts`]).
+    input_at: f64,
+    /// When N or P held last skipped (egui's clock): a held key's repeats
+    /// skip twice a second at most - the playing row ran through the list
+    /// at the repeat's pace (review 17, M3).
+    skip_at: f64,
     custom_colours: std::collections::BTreeMap<String, String>,
     options: VisualOptions,
     volume: u32,
@@ -275,6 +305,15 @@ pub struct App {
     /// second, and fewer as a frame costs more (a large window): the rate
     /// the CPU's budget allows, measured (when, CPU seconds, frames).
     slow: bool,
+    /// The system's fonts for what egui's own cannot write (src/fonts.rs).
+    font_fallback: Arc<crate::fonts::Fallback>,
+    /// A font panicked in a frame and the system's were let go: in which
+    /// frame last, how many times.
+    fonts_let_go: Option<(u64, u8)>,
+    /// The Graphics setting the window was started with.
+    graphics_at_start: crate::graphics::Preference,
+    /// The graphics adapter that draws the window (None: not wgpu).
+    adapter: Option<crate::graphics::Adapter>,
     budget_fps: f32,
     cost_from: Option<(Instant, f64, u64)>,
     frames_drawn: u64,
@@ -731,6 +770,13 @@ impl App {
         // cheap - a software rasterizer draws them small - and on a slow one
         // the frame rate lowered; AMP_GPU_SHADERS=1 / 0 decides instead)
         let mut slow = false;
+        let adapter = cc
+            .wgpu_render_state
+            .as_ref()
+            .map(|rs| crate::graphics::Adapter::of(&rs.adapter.get_info(), true));
+        if let Some(a) = &adapter {
+            eprintln!("axross-amp: drawn by {}", a.label());
+        }
         if let Some(render_state) = cc.wgpu_render_state.as_ref() {
             viz::gpu::install(render_state);
             let choice = viz::gpu::choose(render_state);
@@ -756,6 +802,12 @@ impl App {
                 slow_note(slow)
             );
         }
+        // a title in a script egui's fonts cannot write: the system's fonts,
+        // found on a thread of their own as they are needed (eframe's own
+        // way to them waits for the system's list of fonts on this thread)
+        crate::fonts::watch_panics();
+        let font_fallback = crate::fonts::Fallback::of_the_system(&cc.egui_ctx);
+        cc.egui_ctx.set_font_providers(vec![font_fallback.clone()]);
         let displays_wanted = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let mut app = App {
             engine,
@@ -805,6 +857,16 @@ impl App {
             mode: viz::face_to_show(&saved.visualizer, &amp.face),
             scheme_key: saved.visual_scheme.clone(),
             scheme_shown: (saved.visual_scheme.clone(), amp.cover_colours),
+            face_pending: None,
+            face_step_at: f64::NEG_INFINITY,
+            popup_ghosts: Default::default(),
+            input_at: f64::NEG_INFINITY,
+            menu_shut: None,
+            submenu_buttons: Vec::new(),
+            menu_again: None,
+            menu_again_at: 0,
+            cover_layout: false,
+            skip_at: f64::NEG_INFINITY,
             custom_colours: saved.visual_custom.clone(),
             options: saved.visual_options.clone(),
             volume: saved.volume,
@@ -813,6 +875,7 @@ impl App {
             eq_open: saved.equalizer_open,
             eq_page: false,
             slow,
+            adapter,
             budget_fps: SLOW_FPS,
             cost_from: None,
             frames_drawn: 0,
@@ -902,6 +965,9 @@ impl App {
             visible: Vec::new(),
             visible_for: (String::new(), u64::MAX),
             ctx: cc.egui_ctx.clone(),
+            font_fallback,
+            fonts_let_go: None,
+            graphics_at_start: crate::graphics::Preference::from_key(&amp.graphics),
             amp,
             amp_dirty: false,
             saver: crate::saver::Saver::start(
@@ -1109,6 +1175,22 @@ impl App {
         self.viz_state.gpu.max_pixels = 0.0;
         self.viz_state.gpu.ms_per_pixel = 0.0;
         self.viz_state.gpu.scale = 1.0;
+    }
+
+    /// The system's fonts for scripts egui's own cannot write: whether
+    /// nothing is being looked for any more, and the characters shown that
+    /// no font here has (tests).
+    pub fn fonts_settled(&self) -> bool {
+        self.font_fallback.settled()
+    }
+
+    /// How many times fonts were let go after a panic in a frame (tests).
+    pub fn fonts_let_go(&self) -> u8 {
+        self.fonts_let_go.map_or(0, |(_, n)| n)
+    }
+
+    pub fn fonts_missing(&self) -> Vec<char> {
+        self.font_fallback.missing()
     }
 
     /// How the pictures move: "calm" or "intense" (tests).
@@ -2034,6 +2116,10 @@ impl App {
                 Event::Loaded { generation, info } if generation == self.generation => {
                     self.take_info(ctx, info);
                 }
+                // (a file cut short, read to its end: as long as it is)
+                Event::Length { generation, secs } if generation == self.generation => {
+                    self.duration = Some(secs);
+                }
                 Event::Advanced { generation, info } => {
                     // the queued track is heard: it is the current one now
                     let Some((index, path, queued)) = self.queued.take() else {
@@ -2399,19 +2485,20 @@ impl App {
         if once(Key::M) {
             self.set_muted(!self.muted);
         }
-        if pressed(Key::N) {
+        // (N, P: a press at once; held, twice a second at most)
+        let now = ui.input(|i| i.time);
+        let skip = |k: Key, at: f64| once(k) || (pressed(k) && now - at >= THEME_EVERY);
+        if skip(Key::N, self.skip_at) {
+            self.skip_at = now;
             self.next(false);
         }
-        if pressed(Key::P) {
+        if skip(Key::P, self.skip_at) {
+            self.skip_at = now;
             self.previous();
         }
-        if pressed(Key::V) {
-            self.mode = if modifiers.shift {
-                viz::previous(self.mode)
-            } else {
-                viz::next(self.mode)
-            };
-            self.dirty = true;
+        // (V: its first press, a step at the window's turn)
+        if once(Key::V) {
+            self.step_face(ui.ctx(), modifiers.shift);
         }
     }
 
@@ -2896,14 +2983,9 @@ impl App {
                 } else if ctx.input(|i| first_press(i, Key::Escape)) {
                     self.layout(ctx, Change::CloseDisplay);
                 }
-                if ctx.input(|i| i.key_pressed(Key::V)) {
+                if ctx.input(|i| first_press(i, Key::V)) {
                     let back = ctx.input(|i| i.modifiers.shift);
-                    self.mode = if back {
-                        viz::previous(self.mode)
-                    } else {
-                        viz::next(self.mode)
-                    };
-                    self.dirty = true;
+                    self.step_face(ctx, back);
                 }
                 if ctx.input(|i| first_press(i, Key::Space)) {
                     self.toggle_play();
@@ -2964,14 +3046,9 @@ impl App {
                 if ctx.input(|i| first_press(i, Key::F11)) {
                     self.layout(ctx, Change::DetachedFull);
                 }
-                if ctx.input(|i| i.key_pressed(Key::V)) {
+                if ctx.input(|i| first_press(i, Key::V)) {
                     let back = ctx.input(|i| i.modifiers.shift);
-                    self.mode = if back {
-                        viz::previous(self.mode)
-                    } else {
-                        viz::next(self.mode)
-                    };
-                    self.dirty = true;
+                    self.step_face(ctx, back);
                 }
                 if ctx.input(|i| first_press(i, Key::Space)) {
                     self.toggle_play();
@@ -3005,8 +3082,7 @@ impl App {
                         if let Some(at) = self.detached_click {
                             if now - at > wait {
                                 self.detached_click = None;
-                                self.mode = viz::next(self.mode);
-                                self.dirty = true;
+                                self.step_face(ui.ctx(), false);
                             } else {
                                 ui.ctx().request_repaint_after(Duration::from_secs_f64(wait));
                             }
@@ -3016,6 +3092,10 @@ impl App {
                         ));
                         self.picture_menu(&response);
                     });
+                // (a window of its own: its own popups)
+                if !ctx.embed_viewports() {
+                    self.popup_ghosts(ctx);
+                }
             },
         );
         if close {
@@ -3247,7 +3327,12 @@ impl App {
             // (at the row's end, left to right - the faces' list, then ⚙:
             // Tab goes through them as they are seen)
             let room = ui.available_width() - 3.0 * ui.spacing().item_spacing.x - 36.0 - 28.0;
-            let mut mode = self.mode;
+            // (the face before the row: ⚙'s menu sets `self.mode` itself, and
+            // only a choice in the list is written back - compared with the
+            // face as it is after the row, the menu's choice was undone;
+            // review 18, H1)
+            let before = self.mode;
+            let mut mode = before;
             layouts::right_aligned(ui, egui::Id::unique("top-right"), |ui| {
                 // (narrower where the row is short; where even that does
                 // not fit beside URL, left out - never over it: the faces
@@ -3266,7 +3351,7 @@ impl App {
                     .response
                     .on_hover_text("Visualization");
             });
-            if mode != self.mode {
+            if mode != before {
                 self.mode = mode;
                 self.dirty = true;
             }
@@ -3278,53 +3363,393 @@ impl App {
     /// the menu shut and opened again as well; review 15, M1); its other
     /// entries shut it as they did.
     fn picture_menu(&mut self, response: &egui::Response) {
-        egui::Popup::context_menu(response)
+        // (a right click on the picture that the still picture of a menu
+        // just shut took: the menu here again, as if the picture had been
+        // clicked - [`App::popup_ghosts`])
+        let again = self.menu_again.is_some_and(|at| response.rect.contains(at));
+        if again {
+            self.menu_again = None;
+        }
+        let open = if response.secondary_clicked() || again {
+            Some(egui::SetOpenCommand::Bool(true))
+        } else if response.clicked() {
+            Some(egui::SetOpenCommand::Bool(false))
+        } else {
+            None
+        };
+        egui::Popup::menu(response)
+            .open_memory(open)
+            .at_pointer_fixed()
             .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
             .show(|ui| self.visual_menu(ui));
+    }
+
+    /// How tall a submenu of the visualization's menu may be where its
+    /// button's row begins at `top` and is `tall`: what there is above the
+    /// row or below it, whichever is more. A submenu no taller finds a place
+    /// beside, above or below its button; a taller one is laid over the
+    /// button, under the pointer - and the click that opened Options chose
+    /// an entry of it, the update mode (review 19, H1).
+    fn submenu_room(ui: &Ui, top: f32, tall: f32) -> f32 {
+        let window = ui.ctx().content_rect();
+        // (a menu's frame, its gap to the button, and what egui takes the
+        // button to be taller by)
+        let chrome = 46.0;
+        (top - window.top() - chrome)
+            .max(window.bottom() - (top + tall) - chrome)
+            .max(96.0)
+    }
+
+    /// A submenu of the visualization's menu: its entries in a list no
+    /// taller than `most` and no wider than the window, scrolled by the
+    /// wheel and to the entry that has the focus.
+    fn submenu(
+        &mut self,
+        ui: &mut Ui,
+        name: &str,
+        most: f32,
+        entries: fn(&mut App, &mut Ui),
+    ) -> egui::Response {
+        // as wide as fits beside its button's left or right end: a wider
+        // one finds no place above or below the button either, and is laid
+        // over it (its words wrap where the window is narrow)
+        let window = ui.ctx().content_rect();
+        let left = ui.cursor().left();
+        let words = ui
+            .painter()
+            .layout_no_wrap(
+                name.to_owned(),
+                egui::TextStyle::Button.resolve(ui.style()),
+                Color32::WHITE,
+            )
+            .size()
+            .x;
+        let wide = (window.right() - left)
+            .max(left + words - window.left())
+            .min(window.width())
+            - 30.0;
+        // Its clicks are told here, not by egui: a click in a submenu
+        // shuts the whole menu where it did before (⚙'s), and one beside
+        // the submenu and its menu does - but only a click whose press
+        // began there with the submenu seen. egui shut every menu at any click that began while a
+        // submenu was open, wherever: the pointer come to "Theme" and
+        // pressed in the same frame or the next - a short tap on a touch
+        // screen - opened the submenu and shut the menu (328 of 460 such
+        // clicks at the default width: review 20, L3).
+        let parent = ui.layer_id().id;
+        // (a click within it shuts the menu where the menu is one that a
+        // click shuts - ⚙'s; the picture's own menu stays open at it, to
+        // try one colour scheme after another, as before)
+        let config = egui::containers::menu::MenuConfig::find(ui);
+        let shuts = config.close_behavior == egui::PopupCloseBehavior::CloseOnClick;
+        let config = config.close_behavior(egui::PopupCloseBehavior::IgnoreClicks);
+        let (response, shut) = egui::containers::menu::SubMenuButton::new(name)
+            .config(config)
+            .ui(ui, |ui| {
+                if wide < 460.0 {
+                    ui.set_max_width(wide);
+                    ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
+                }
+                // (its bar to be seen: egui's is all but unseen until the
+                // pointer is on it - review 20, L11)
+                seen_scroll_bar(ui);
+                egui::ScrollArea::both()
+                    .max_height(most)
+                    .max_width(wide)
+                    // (as tall from the pass that measures it on)
+                    .min_scrolled_height(most)
+                    .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
+                    .show(ui, |ui| {
+                        entries(self, ui);
+                        follow_focus(ui);
+                    });
+                // where it was drawn in the frame before (none: it is new)
+                let own = ui.layer_id().id;
+                let (seen, around) = ui.ctx().memory(|m| (m.area_rect(own), m.area_rect(parent)));
+                // (in it: within its entries' frame - its area is larger
+                // by its margin and its shadow, and lay over the edge of
+                // its own button in the Brutalist design)
+                let within = seen.map(|_| ui.min_rect().expand(4.0));
+                let pressed_in = own.with("amp-pressed-in-it");
+                let (pressed, clicked, at) = ui.input(|i| {
+                    (
+                        i.pointer.any_pressed(),
+                        i.pointer.any_click(),
+                        i.pointer.interact_pos(),
+                    )
+                });
+                let inside = |r: Option<egui::Rect>| {
+                    r.zip(at).is_some_and(|(r, p)| r.contains(p)) && !ui.is_sizing_pass()
+                };
+                if pressed {
+                    // (0: not in it; 1: in it; 2: beside it and its menu)
+                    // (nor on one of the menu's submenu buttons: in a
+                    // design whose menu wraps them into a row of their
+                    // own, that row lies outside what egui takes for the
+                    // menu's area)
+                    let on_a_button =
+                        at.is_some_and(|p| self.submenu_buttons.iter().any(|(_, r)| r.contains(p)));
+                    let place: u8 = if inside(within) {
+                        1
+                    } else if seen.is_some() && !inside(around) && !on_a_button {
+                        2
+                    } else {
+                        0
+                    };
+                    ui.data_mut(|d| d.insert_temp(pressed_in, place));
+                }
+                let place = ui.data(|d| d.get_temp::<u8>(pressed_in)).unwrap_or(0);
+
+                let shut = clicked
+                    && match place {
+                        1 => shuts && inside(within),
+                        2 => !inside(seen) && !inside(around),
+                        _ => false,
+                    };
+                if clicked {
+                    ui.data_mut(|d| d.remove::<u8>(pressed_in));
+                }
+                shut
+            });
+        if shut.is_some_and(|s| s.inner) {
+            egui::Popup::close_all(ui.ctx());
+            ui.ctx().request_repaint();
+        }
+        match self.submenu_buttons.iter_mut().find(|(n, _)| n == name) {
+            Some((_, rect)) => *rect = response.rect,
+            None => self.submenu_buttons.push((name.to_owned(), response.rect)),
+        }
+        response
     }
 
     /// The visualization's menu (⚙, and a right click on the picture):
     /// the face, the colours (the custom ones edited here), the options,
     /// full screen, the playlist shown or not - axross's context menu.
     fn visual_menu(&mut self, ui: &mut Ui) {
+        // (a face chosen in this frame's first pass: shut in this one)
+        // (or, where no second pass came, in the next frame)
+        let frame = ui.ctx().cumulative_frame_nr();
+        if self
+            .menu_shut
+            .take()
+            .is_some_and(|chosen| frame.saturating_sub(chosen) <= 1)
+        {
+            ui.close();
+        }
+        let window = ui.ctx().content_rect();
+        // (what of the window's width a menu's inside may take)
+        let room = (window.width() - 36.0).max(200.0);
         ui.label(RichText::new("Visualization").strong());
         // the groups side by side: every face at a glance, in the menu itself
         // (a submenu this wide lay over its own menu); scrolled in a low window
         // (the whole menu within the window, else it is moved about and
-        // its lower rows miss their clicks: rows close together, the grid
-        // scrolled where the window is low)
-        let most = (ui.ctx().content_rect().height() - 300.0).max(160.0);
-        egui::ScrollArea::vertical()
+        // its lower rows miss their clicks: the grid scrolled where the
+        // window is low)
+        // (270 points for what the menu has but the grid - its place under
+        // ⚙, its title, its three boxes, its row of submenus, its frame -
+        // or 300 with two rows of them; by the window's height alone: the
+        // menu from the picture is moved to where it fits, and its grid
+        // must not change with its place. 300 always left a strip of the
+        // default window unused: review 19, L1)
+        let most = (window.height() - if room < 480.0 { 300.0 } else { 270.0 }).max(160.0);
+        // a row is a target of 24 points (the least of every control here;
+        // review 18, M3: 16 - 18 before)
+        const ROW: f32 = 24.0;
+        use viz::Group::{Analysis, Classic, Generative, Spectral};
+        let generative = viz::FACES.iter().filter(|f| f.group == Generative).count();
+        let half = generative.div_ceil(2);
+        let all = usize::MAX;
+        // three columns about as tall: axross's faces and the analysis
+        // tools; the generative ones, the second half of them beside the
+        // first with the spectral ones under it (a fourth column was wider
+        // than a narrow window, one of all the generative ones taller than
+        // a low one). Two columns, or one, where the window is narrower
+        // than three: no column cut off at the window's edge.
+        type Part = (viz::Group, usize, usize, bool);
+        let three: [&[Part]; 3] = [
+            &[(Classic, 0, all, true), (Analysis, 0, all, true)],
+            &[(Generative, 0, half, true)],
+            &[(Generative, half, all, false), (Spectral, 0, all, true)],
+        ];
+        let two: [&[Part]; 2] = [
+            &[
+                (Classic, 0, all, true),
+                (Analysis, 0, all, true),
+                (Spectral, 0, all, true),
+            ],
+            &[(Generative, 0, all, true)],
+        ];
+        let one: [&[Part]; 1] = [&[
+            (Classic, 0, all, true),
+            (Analysis, 0, all, true),
+            (Generative, 0, all, true),
+            (Spectral, 0, all, true),
+        ]];
+        let faces_of = |&(group, from, to, _): &Part| {
+            viz::FACES
+                .iter()
+                .filter(move |f| f.group == group)
+                .skip(from)
+                .take(to.saturating_sub(from))
+        };
+        // (a row's width: its mark, its name; the names' layouts are egui's
+        // cached ones)
+        let font = egui::TextStyle::Button.resolve(ui.style());
+        let mark = ui.spacing().icon_width + ui.spacing().icon_spacing;
+        let gap = ui.spacing().item_spacing.x;
+        let bar = ui.spacing().scroll.bar_width + ui.spacing().scroll.bar_inner_margin + 4.0;
+        let width_of = |columns: &[&[Part]]| -> f32 {
+            columns
+                .iter()
+                .map(|column| {
+                    column
+                        .iter()
+                        .flat_map(faces_of)
+                        .map(|f| {
+                            ui.painter()
+                                .layout_no_wrap(f.name.to_owned(), font.clone(), Color32::WHITE)
+                                .size()
+                                .x
+                        })
+                        .fold(0.0f32, f32::max)
+                        + mark
+                })
+                .sum::<f32>()
+                + gap * (columns.len() - 1) as f32
+                + bar
+        };
+        let columns: &[&[Part]] = if width_of(&three) <= room {
+            &three
+        } else if width_of(&two) <= room {
+            &two
+        } else {
+            &one
+        };
+        // (both ways: a design with letters wider than one column of a
+        // window at its least still shows every name)
+        egui::ScrollArea::both()
             .max_height(most)
+            // (as tall from the pass that measures the menu on: a popup is
+            // given its height over several frames, and the grid grew in
+            // the menu's first frames seen)
+            .min_scrolled_height(most)
+            .max_width(room)
+            // (seen whenever there is more than is shown - not only while
+            // the pointer is over the list)
+            .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
             .show(ui, |ui| {
-                ui.spacing_mut().item_spacing.y = 1.0;
-                ui.spacing_mut().interact_size.y = 18.0;
+                ui.spacing_mut().item_spacing.y = 0.0;
+                ui.spacing_mut().interact_size.y = ROW;
+                let mut choice = None;
+                // (the rows by column, for the arrows left and right)
+                let mut ids: Vec<Vec<egui::Id>> = Vec::with_capacity(columns.len());
                 ui.horizontal_top(|ui| {
-                    for group in [
-                        viz::Group::Classic,
-                        viz::Group::Analysis,
-                        viz::Group::Generative,
-                    ] {
+                    for (c, column) in columns.iter().enumerate() {
+                        ids.push(Vec::new());
+                        let ids = &mut ids[c];
                         ui.vertical(|ui| {
-                            ui.label(RichText::new(group.name()).strong().color(th().muted));
-                            for face in viz::FACES.iter().filter(|f| f.group == group) {
-                                if ui.radio(self.mode == face.key, face.name).clicked() {
-                                    self.mode = face.key;
-                                    self.dirty = true;
-                                    ui.close();
+                            let mut row = |ui: &mut Ui, key: &'static str, name: &str| {
+                                // (its height said outright: in the pass that
+                                // measures a menu a row is as low as its
+                                // words, and the menu was laid out anew, 50
+                                // points taller, in its first frame seen)
+                                let r = ui
+                                    .horizontal(|ui| {
+                                        ui.set_min_height(ROW);
+                                        ui.radio(self.mode == key, name)
+                                    })
+                                    .inner;
+                                // (the keys' way through the grid is seen:
+                                // the row with the focus scrolled into sight)
+                                if r.gained_focus() {
+                                    r.scroll_to_me(None);
+                                }
+                                // (and seen: a ring in the theme's accent -
+                                // the mark alone went from one dark grey to
+                                // another; review 19, L1)
+                                if r.has_focus() {
+                                    ui.painter().rect_stroke(
+                                        r.rect.expand2(vec2(3.0, 0.0)),
+                                        4.0,
+                                        Stroke::new(2.0, th().accent),
+                                        egui::StrokeKind::Inside,
+                                    );
+                                }
+                                ids.push(r.id);
+                                if r.clicked() {
+                                    choice = Some(key);
+                                }
+                            };
+                            for (k, part) in column.iter().enumerate() {
+                                if k > 0 {
+                                    ui.add_space(8.0);
+                                }
+                                // (the second half's place for a heading kept
+                                // empty: its rows beside the first half's)
+                                let title = if part.3 { part.0.name() } else { " " };
+                                ui.label(RichText::new(title).strong().color(th().muted));
+                                for face in faces_of(part) {
+                                    row(ui, face.key, face.name);
                                 }
                             }
-                            if group == viz::Group::Analysis {
+                            if c == 0 {
                                 ui.add_space(8.0);
-                                if ui.radio(self.mode == "off", "Off").clicked() {
-                                    self.mode = "off";
-                                    self.dirty = true;
-                                    ui.close();
-                                }
+                                row(ui, "off", "Off");
                             }
                         });
                     }
                 });
+                // the arrows left and right: to the row beside, in the
+                // column before or after (egui's menus know up and down
+                // only: left took the focus out of the grid, right did
+                // nothing - review 19, L1)
+                let focused = ui.memory(|m| m.focused());
+                let at = focused.and_then(|f| {
+                    ids.iter()
+                        .enumerate()
+                        .find_map(|(c, col)| Some((c, col.iter().position(|id| *id == f)?)))
+                });
+                if let Some((c, k)) = at {
+                    let step = ui.input(|i| {
+                        i.key_pressed(egui::Key::ArrowRight) as i32
+                            - i.key_pressed(egui::Key::ArrowLeft) as i32
+                    });
+                    if step != 0 {
+                        let to = (c as i32 + step).clamp(0, ids.len() as i32 - 1) as usize;
+                        let row = k.min(ids[to].len().saturating_sub(1));
+                        let next = ids[to].get(row).copied();
+                        ui.memory_mut(|m| {
+                            // (not the menu's own answer to the key)
+                            m.move_focus(egui::FocusDirection::None);
+                            if let Some(next) = next.filter(|_| to != c) {
+                                m.request_focus(next);
+                            }
+                        });
+                    }
+                }
+                if let Some(key) = choice {
+                    self.mode = key;
+                    self.dirty = true;
+                    // this frame is drawn again, with the choice, and the
+                    // menu shut then: what is left a moment where it was
+                    // shows the row chosen, not the one before it (review
+                    // 18, L3)
+                    let ctx = ui.ctx().clone();
+                    ctx.request_discard("a face chosen: its menu drawn with it");
+                    if ctx.will_discard() {
+                        // (shut in the pass that is shown: the click is
+                        // the first pass's alone)
+                        self.menu_shut = Some(ctx.cumulative_frame_nr());
+                        // (⚙'s menu shuts at any click, in the pass thrown
+                        // away too - and was not there to be drawn again:
+                        // egui's mark of a press begun while it was open,
+                        // without which a click does not shut it)
+                        let pressed = ui.layer_id().id.with("press_started_while_open");
+                        ctx.data_mut(|d| d.remove::<bool>(pressed));
+                    } else {
+                        ui.close();
+                    }
+                }
             });
         ui.separator();
         let mut full = self.fullscreen;
@@ -3346,13 +3771,30 @@ impl App {
         }
         // (last: their menus open over nothing of this one but themselves)
         ui.separator();
+        // (in two rows where the window is narrower than one: its last
+        // entries lay past the window's edge - Brutalist's "Options" at
+        // 420 points; rows of their own, not one that wraps: in a wrapping
+        // row the submenus did not open)
+        let narrow = room < 480.0;
+        let tall = ui.spacing().interact_size.y.max(24.0);
+        let most = Self::submenu_room(ui, ui.cursor().top(), tall);
         ui.horizontal(|ui| {
-            ui.menu_button("Show on display", |ui| self.display_menu(ui));
-            ui.menu_button("Design", |ui| self.design_menu(ui));
-            ui.menu_button("Theme", |ui| self.theme_menu(ui));
-            ui.menu_button("Colours", |ui| self.colours_menu(ui));
-            ui.menu_button("Options", |ui| self.options_menu(ui));
+            self.submenu(ui, "Show on display", most, Self::display_menu);
+            self.submenu(ui, "Design", most, Self::design_menu);
+            if !narrow {
+                self.submenu(ui, "Theme", most, Self::theme_menu);
+                self.submenu(ui, "Colours", most, Self::colours_menu);
+                self.submenu(ui, "Options", most, Self::options_menu);
+            }
         });
+        if narrow {
+            let most = Self::submenu_room(ui, ui.cursor().top(), tall);
+            ui.horizontal(|ui| {
+                self.submenu(ui, "Theme", most, Self::theme_menu);
+                self.submenu(ui, "Colours", most, Self::colours_menu);
+                self.submenu(ui, "Options", most, Self::options_menu);
+            });
+        }
     }
 
     /// The window's design: a click shows and keeps it (shown as the
@@ -3596,6 +4038,8 @@ impl App {
             self.amp_dirty = true;
         }
         ui.separator();
+        self.graphics_menu(ui);
+        ui.separator();
         if self.updater.menu(ui, &mut self.amp.update_mode) {
             self.amp_dirty = true;
         }
@@ -3634,6 +4078,62 @@ impl App {
         if o != self.options {
             self.options = o.clamped();
             self.dirty = true;
+        }
+    }
+
+    /// Options → Graphics: which adapter draws the window - the one in use
+    /// by its backend and name, the setting for the next start.
+    fn graphics_menu(&mut self, ui: &mut Ui) {
+        use crate::graphics::Preference;
+        ui.label(RichText::new("Graphics").strong());
+        let chosen = Preference::from_key(&self.amp.graphics);
+        for p in Preference::ALL {
+            let hint = match p {
+                Preference::Auto => {
+                    "On a machine with a battery the integrated GPU, on one without the \
+                     dedicated one; a software adapter only where there is no GPU"
+                }
+                Preference::PowerSaving => {
+                    "The integrated GPU where there is one, on a desktop too"
+                }
+                Preference::HighPerformance => "The dedicated GPU where there is one",
+            };
+            if ui
+                .radio(chosen == p, p.name())
+                .on_hover_text(hint)
+                .clicked()
+                && chosen != p
+            {
+                self.amp.graphics = p.key().into();
+                self.amp_dirty = true;
+                // (the menu shuts at the click: said where it is read)
+                self.status = if p == self.graphics_at_start {
+                    format!("Graphics: {} (as it is now).", p.name())
+                } else {
+                    format!("Graphics: {} - taken at the next start.", p.name())
+                };
+            }
+        }
+        if let Some(a) = &self.adapter {
+            ui.label(
+                RichText::new(format!("In use: {}", a.label()))
+                    .small()
+                    .color(th().muted),
+            );
+            if a.software() {
+                ui.label(
+                    RichText::new("A software adapter: the shader faces are drawn by the CPU.")
+                        .small()
+                        .color(th().muted),
+                );
+            }
+        }
+        if Preference::from_key(&self.amp.graphics) != self.graphics_at_start {
+            ui.label(
+                RichText::new("Taken at the next start.")
+                    .small()
+                    .color(th().muted),
+            );
         }
     }
 
@@ -3773,6 +4273,236 @@ impl App {
         }
         self.turn_at = now;
         self.scheme_shown = (chosen.0.to_owned(), chosen.1);
+        ctx.request_repaint();
+    }
+
+    /// A popup shut (a menu, a list's choices) leaves what it showed a
+    /// moment where it was - a quarter second, then faded out in another:
+    /// opened and shut at a click's pace, 5 times a second, its light frame,
+    /// its words and its shadow came and went with it, 10 transitions a
+    /// second (review 17, L3; review 16, L1). One opened again over it
+    /// meanwhile changes nothing there. (Under every popup and window:
+    /// Middle.)
+    ///
+    /// Where a click in it shut it - a choice - the whole picture takes the
+    /// pointer's clicks while it is drawn: a second click on a row the
+    /// screen still shows went to what lay under it - the next face, Play
+    /// (review 18, L3; a spot at the first click alone took them, and a
+    /// click on another row of the picture paused the music: review 19,
+    /// M2). Three things it does not stand in the way of: a window or
+    /// dialog the choice opened (the picture goes at once where one comes
+    /// over it), the right button on the picture under it (its menu opens
+    /// again there), and a menu shut by Escape or a click elsewhere (no
+    /// click was in it: what lies under it is clicked as ever).
+    fn popup_ghosts(&mut self, ctx: &egui::Context) {
+        const HOLD: f64 = 0.25;
+        const FADE: f64 = 0.25;
+        // (a popup changes with the window's input, and a moment after it:
+        // its picture is not copied in every frame it is open)
+        const AFTER_INPUT: f64 = 0.3;
+        let now = ctx.input(|i| i.time);
+        if ctx.input(|i| !i.events.is_empty()) {
+            self.input_at = now;
+        }
+        let fresh = now - self.input_at <= AFTER_INPUT;
+        let viewport = ctx.viewport_id();
+        let screen = ctx.content_rect().shrink(1.0);
+        let shown: Vec<(egui::LayerId, egui::Rect)> = ctx.memory(|m| {
+            let modal = m.top_modal_layer();
+            // (no allocation in a frame without a popup)
+            m.layer_ids()
+                .filter(|l| l.order == egui::Order::Foreground && Some(*l) != modal)
+                .filter(|l| m.areas().is_visible(l))
+                .filter_map(|l| Some((l, m.area_rect(l.id)?)))
+                // (a modal's backdrop: the whole window)
+                .filter(|(_, r)| !r.contains_rect(screen))
+                .collect()
+        });
+        // (what it drew once faded in - none in its first, measuring pass,
+        // nor when it was shut in this frame)
+        let faded_in = ctx.global_style().animation_time as f64 + 0.02;
+        for (layer, rect) in shown {
+            let since = egui::AreaState::load(ctx, layer.id)
+                .and_then(|a| a.last_became_visible_at)
+                .map_or(0.0, |at| now - at);
+            if since < faded_in {
+                continue;
+            }
+            let key = (viewport, layer.id);
+            let clicked_now = ctx.input(|i| {
+                i.pointer.any_click() && i.pointer.interact_pos().is_some_and(|p| rect.contains(p))
+            });
+            let clicked = match self.popup_ghosts.get(&key) {
+                _ if clicked_now => Some(now),
+                Some(ghost) => ghost.clicked,
+                None => None,
+            };
+            if !fresh && let Some(ghost) = self.popup_ghosts.get_mut(&key) {
+                ghost.seen = now;
+                ghost.rect = rect;
+                ghost.clicked = clicked;
+                continue;
+            }
+            let shapes: Vec<_> = ctx.graphics(|g| {
+                g.get(layer)
+                    .map(|list| {
+                        list.all_entries()
+                            .filter(|c| !matches!(c.shape, egui::Shape::Noop))
+                            .cloned()
+                            .collect()
+                    })
+                    .unwrap_or_default()
+            });
+            if !shapes.is_empty() {
+                self.popup_ghosts.insert(
+                    key,
+                    Ghost {
+                        shapes,
+                        seen: now,
+                        rect,
+                        clicked,
+                    },
+                );
+            }
+        }
+        // (one that takes the pointer stays while a button is down: a press
+        // on it in its last frames, let go after it was gone, was a click
+        // on nothing - the right button 0.40 s after a choice opened no
+        // menu: review 20, L2)
+        // (and in the frame it is let go in: the click is told there)
+        let held = ctx.input(|i| i.pointer.any_down() || i.pointer.any_released());
+        self.popup_ghosts.retain(|_, g| {
+            g.seen <= now
+                && (now - g.seen < HOLD + FADE
+                    || (held && g.clicked.is_some() && now - g.seen < HOLD + FADE + 2.0))
+        });
+        let painter_layer =
+            egui::LayerId::new(egui::Order::Middle, egui::Id::unique("amp-popup-ghosts"));
+        // a window, a dialog or another popup come since over a still
+        // picture: that picture gone at once
+        if self.popup_ghosts.values().any(|g| g.seen < now) {
+            let own: Vec<egui::Id> = self
+                .popup_ghosts
+                .keys()
+                .flat_map(|(_, layer)| [*layer, Self::ghost_blocker(*layer)])
+                .collect();
+            let others: Vec<(egui::Id, egui::Rect)> = ctx.memory(|m| {
+                m.layer_ids()
+                    .filter(|l| {
+                        matches!(l.order, egui::Order::Middle | egui::Order::Foreground)
+                            && *l != painter_layer
+                            && !own.contains(&l.id)
+                            && m.areas().is_visible(l)
+                    })
+                    .filter_map(|l| Some((l.id, m.area_rect(l.id)?)))
+                    .collect()
+            });
+            let newer: Vec<(egui::Rect, f64)> = others
+                .into_iter()
+                .filter_map(|(id, rect)| {
+                    Some((
+                        rect,
+                        egui::AreaState::load(ctx, id)?.last_became_visible_at?,
+                    ))
+                })
+                .collect();
+            self.popup_ghosts.retain(|(v, _), g| {
+                *v != viewport
+                    || g.seen >= now
+                    || !newer
+                        .iter()
+                        // (in the frame of the choice too: a dialog it opened)
+                        .any(|(rect, since)| *since >= g.seen && rect.intersects(g.rect))
+            });
+        }
+        let mut painter = ctx.layer_painter(painter_layer);
+        let mut fading = false;
+        let mut blockers = Vec::new();
+        for ((v, layer), ghost) in &self.popup_ghosts {
+            if *v != viewport {
+                continue;
+            }
+            let age = now - ghost.seen;
+            let a = (1.0 - ((age - HOLD) / FADE).max(0.0)).clamp(0.0, 1.0) as f32;
+            fading |= age > 0.0;
+            painter.set_opacity(a);
+            for shape in &ghost.shapes {
+                painter.set_clip_rect(shape.clip_rect);
+                painter.add(shape.shape.clone());
+            }
+            // (from the frame of the click on: the next frame's clicks are
+            // told by what this one laid out)
+            if ghost.clicked.is_some_and(|when| ghost.seen - when < 0.2) {
+                blockers.push((*layer, ghost.rect));
+            }
+        }
+        for (layer, rect) in blockers {
+            let taken = egui::Area::new(Self::ghost_blocker(layer))
+                .order(egui::Order::Middle)
+                .fixed_pos(rect.min)
+                .constrain(false)
+                .show(ctx, |ui| {
+                    ui.allocate_exact_size(rect.size(), Sense::click())
+                        .1
+                        .secondary_clicked()
+                })
+                .inner;
+            if taken {
+                self.menu_again = ctx.input(|i| i.pointer.interact_pos());
+                self.menu_again_at = ctx.cumulative_frame_nr();
+                ctx.request_repaint();
+            }
+        }
+        // (a right click taken where no picture is: forgotten)
+        if self.menu_again.is_some() && ctx.cumulative_frame_nr() > self.menu_again_at + 2 {
+            self.menu_again = None;
+        }
+        if fading {
+            ctx.request_repaint();
+        }
+    }
+
+    /// The area that takes the clicks on the still picture of popup `layer`.
+    fn ghost_blocker(layer: egui::Id) -> egui::Id {
+        egui::Id::unique(("amp-popup-ghost-clicks", layer))
+    }
+
+    /// The next face (the previous one: `back`) after the one shown or the
+    /// one waiting: shown at the window's turn, the last one asked for.
+    fn step_face(&mut self, ctx: &egui::Context, back: bool) {
+        let now = ctx.input(|i| i.time);
+        if now == self.face_step_at {
+            return;
+        }
+        self.face_step_at = now;
+        let from = self.face_pending.unwrap_or(self.mode);
+        self.face_pending = Some(if back {
+            viz::previous(from)
+        } else {
+            viz::next(from)
+        });
+        self.pump_face(ctx);
+    }
+
+    /// The face waiting, and the Modern layout's card with the face shown,
+    /// at the window's turn.
+    fn pump_face(&mut self, ctx: &egui::Context) {
+        let cover = self.face_pending.unwrap_or(self.mode) == "cover";
+        if self.face_pending.is_none() && cover == self.cover_layout {
+            return;
+        }
+        let now = ctx.input(|i| i.time);
+        let wait = THEME_EVERY - (now - self.turn_at);
+        if wait > 0.0 {
+            ctx.request_repaint_after(Duration::from_secs_f64(wait));
+            return;
+        }
+        self.turn_at = now;
+        if let Some(face) = self.face_pending.take() {
+            self.mode = face;
+            self.dirty = true;
+        }
+        self.cover_layout = self.mode == "cover";
         ctx.request_repaint();
     }
 
@@ -4770,8 +5500,7 @@ impl App {
         if let Some(at) = self.pending_click {
             if now - at > wait {
                 self.pending_click = None;
-                self.mode = viz::next(self.mode);
-                self.dirty = true;
+                self.step_face(ui.ctx(), false);
             } else {
                 ui.ctx()
                     .request_repaint_after(std::time::Duration::from_secs_f64(wait));
@@ -4836,8 +5565,11 @@ impl App {
 
     fn transport(&mut self, ui: &mut Ui) {
         ui.horizontal(|ui| {
-            // (a narrow window: smaller keys, room for the volume)
-            let narrow = ui.available_width() < 520.0;
+            // (a narrow window: smaller keys, room for the volume - the
+            // large ones and the volume need some 540 points: at 520 - 540
+            // the volume and the rows below were pushed past the window's
+            // edge, review 17)
+            let narrow = ui.available_width() < 540.0;
             if narrow {
                 ui.spacing_mut().button_padding.x = 5.0;
             }
@@ -5539,7 +6271,7 @@ impl App {
     fn layout_modern(&mut self, ui: &mut Ui) {
         // (a low window, or the cover as the picture: what plays
         // in one line)
-        if ui.available_height() < 560.0 || self.mode == "cover" {
+        if ui.available_height() < 560.0 || self.cover_layout {
             self.title_line(ui);
         } else {
             self.now_playing(ui);
@@ -5557,7 +6289,10 @@ impl App {
             let list = if self.eq_page {
                 240.0
             } else {
-                (self.visible_rows().len() as f32 * 44.0 + 76.0).max(130.0)
+                // (the list's rows as it is, not as filtered: typing in the
+                // filter moved the picture and all under it at each
+                // keystroke - review 17, M2)
+                (self.playlist.tracks.len() as f32 * 44.0 + 76.0).max(130.0)
             };
             // the picture gives way first: the list keeps at least
             // three rows whatever the window
@@ -5846,8 +6581,13 @@ impl eframe::App for App {
         // (a change of the layout waiting its turn; the picture's colours)
         self.pump_layout(ctx);
         self.pump_scheme(ctx);
+        self.pump_face(ctx);
         // (the updates, also while the window is minimised)
         self.updater.background(ctx, self.amp.update_mode);
+        // (a font found for a title's script: the text laid out with it)
+        if self.font_fallback.take_fresh() {
+            ctx.set_font_providers(vec![self.font_fallback.clone()]);
+        }
         self.handle_events(ctx);
         self.show_art(ctx);
         self.poll_adding();
@@ -5876,7 +6616,70 @@ impl eframe::App for App {
         }
     }
 
-    fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut Ui, frame: &mut eframe::Frame) {
+        // a font that panics as a text is laid out or drawn - a damaged
+        // file no check foresaw - does not end the program: the fonts of
+        // the system are let go (those found for other scripts first, then
+        // the bold, serif and monospace faces of the start), and the next
+        // frame is drawn with what is left - egui's own at the last
+        let ctx = ui.ctx().clone();
+        let drawn = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.frame(ui, frame);
+        }));
+        if let Err(panic) = drawn {
+            if !crate::fonts::panic_in_a_font() || !self.let_fonts_go(&ctx) {
+                std::panic::resume_unwind(panic);
+            }
+            ctx.request_repaint();
+        }
+    }
+
+    fn on_exit(&mut self) {
+        self.put_back_on_quit();
+        self.save(true);
+        #[cfg(target_os = "linux")]
+        self.saver.save(crate::saver::Job::Cover(None));
+    }
+}
+
+impl App {
+    /// The fonts of the system that may have panicked are not used any
+    /// more: false when there are none left to let go.
+    fn let_fonts_go(&mut self, ctx: &egui::Context) -> bool {
+        // (the fonts are egui's to change at the next frame's start: a
+        // second pass of this frame is laid out with the old ones still)
+        if self
+            .fonts_let_go
+            .is_some_and(|(at, _)| at == ctx.cumulative_frame_nr())
+        {
+            return true;
+        }
+        let times = self.fonts_let_go.map_or(0, |(_, n)| n);
+        let found = self.font_fallback.drop_all();
+        let let_go = if found > 0 {
+            eprintln!(
+                "axross-amp: a font panicked while a text was drawn - the {found} found for other scripts are not used any more"
+            );
+            true
+        } else if crate::fonts::only_built_in() {
+            eprintln!(
+                "axross-amp: a font panicked while a text was drawn - the system's bold and serif faces are not used any more"
+            );
+            true
+        } else {
+            false
+        };
+        if let_go {
+            self.fonts_let_go = Some((ctx.cumulative_frame_nr(), times + 1));
+            ctx.set_font_providers(vec![self.font_fallback.clone()]);
+            fonts(ctx, self.fonts_mono.unwrap_or(false));
+            self.status = "A font of the system is damaged: it is not used any more.".to_owned();
+        }
+        let_go
+    }
+
+    /// A frame of the window.
+    fn frame(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
         self.update_theme(&ui.ctx().clone());
         let ctx = ui.ctx().clone();
         // the cover made at the sizes it is shown: what is done comes in
@@ -6039,6 +6842,7 @@ impl eframe::App for App {
                 let _ = std::fs::write(&*path, format!("frames {frames}\n"));
             }
         }
+        self.popup_ghosts(&ctx);
         // the pictures on a display of their own
         if self.external.is_some() {
             self.external_view(&ctx);
@@ -6069,13 +6873,6 @@ impl eframe::App for App {
         {
             ctx.request_repaint_after(Duration::from_secs_f32(1.0 / fps));
         }
-    }
-
-    fn on_exit(&mut self) {
-        self.put_back_on_quit();
-        self.save(true);
-        #[cfg(target_os = "linux")]
-        self.saver.save(crate::saver::Job::Cover(None));
     }
 }
 
@@ -6326,7 +7123,12 @@ pub(crate) fn one_line(
     colour: Color32,
     width: f32,
 ) -> std::sync::Arc<egui::Galley> {
-    let mut job = egui::text::LayoutJob::simple_singleline(text.to_owned(), font, colour);
+    // (right-to-left text in the order it is read in: src/bidi.rs)
+    let mut job = egui::text::LayoutJob::simple_singleline(
+        crate::bidi::seen(text).into_owned(),
+        font,
+        colour,
+    );
     job.wrap = egui::text::TextWrapping {
         max_width: width.max(1.0),
         max_rows: 1,
@@ -6380,12 +7182,41 @@ pub(crate) fn whole_on_hover(response: egui::Response, text: &str) -> egui::Resp
     })
 }
 
+/// The scroll bars of what `ui` holds from here on: egui's, which float
+/// over the content's edge and take no room (a bar beside the entries
+/// made a submenu too large for its place: it was laid over its button
+/// again) - but to be seen without the pointer on them: five points wide,
+/// the handle in the text's colour, nearly opaque, on a faint track.
+fn seen_scroll_bar(ui: &mut Ui) {
+    let scroll = &mut ui.style_mut().spacing.scroll;
+    scroll.floating = true;
+    scroll.floating_width = 5.0;
+    scroll.floating_allocated_width = 0.0;
+    scroll.foreground_color = true;
+    scroll.dormant_handle_opacity = 0.85;
+    scroll.dormant_background_opacity = 0.25;
+}
+
 /// A label in one line, cut to an ellipsis where it does not fit, its
 /// whole in a wrapped tooltip (egui's own laid it in one line, as wide as
 /// the window and more).
 pub(crate) fn fit_label(ui: &mut Ui, text: impl Into<egui::WidgetText>) -> egui::Response {
     let text: egui::WidgetText = text.into();
     let whole = text.text().to_owned();
+    // (a title written right to left: its parts in the order they are read
+    // in - src/bidi.rs)
+    let text = match crate::bidi::seen(&whole) {
+        std::borrow::Cow::Borrowed(_) => text,
+        std::borrow::Cow::Owned(seen) => {
+            let job =
+                text.into_layout_job(ui.style(), egui::FontSelection::Default, ui.text_valign());
+            let mut job = std::sync::Arc::unwrap_or_clone(job);
+            if job.sections.len() == 1 && seen.len() == job.text.len() {
+                job.text = seen;
+            }
+            egui::WidgetText::LayoutJob(std::sync::Arc::new(job))
+        }
+    };
     let galley = text.into_galley(
         ui,
         Some(egui::TextWrapMode::Truncate),
@@ -6448,84 +7279,10 @@ fn style(ctx: &egui::Context) {
 /// them; `mono`: every text in the monospace face (the terminal's and the
 /// 90s desktop's designs - their rows, their words, not only their titles).
 fn fonts(ctx: &egui::Context, mono: bool) {
-    // Hack (the monospace font) as the last fallback of the proportional
-    // one: a character the others lack is drawn, not a box.
-    let mut fonts = egui::FontDefinitions::default();
-    if let Some(family) = fonts.families.get_mut(&egui::FontFamily::Proportional)
-        && !family.iter().any(|f| f == "Hack")
-    {
-        family.push("Hack".to_owned());
-    }
-    // a bold face for titles, where the system has one (egui brings only a
-    // light one); else the titles are in that one too
-    let proportional = fonts
-        .families
-        .get(&egui::FontFamily::Proportional)
-        .cloned()
-        .unwrap_or_default();
-    let mut bold = proportional.clone();
-    if let Some(data) = BOLD_FONTS.iter().find_map(|p| std::fs::read(p).ok()) {
-        fonts.font_data.insert(
-            "axross-bold".to_owned(),
-            std::sync::Arc::new(egui::FontData::from_owned(data)),
-        );
-        bold.insert(0, "axross-bold".to_owned());
-    }
-    fonts
-        .families
-        .insert(egui::FontFamily::Name("bold".into()), bold.clone());
-    // (a serif face for the collage's cut-out words, where there is one)
-    let mut serif = proportional.clone();
-    if let Some(data) = SERIF_FONTS.iter().find_map(|p| std::fs::read(p).ok()) {
-        fonts.font_data.insert(
-            "axross-serif".to_owned(),
-            std::sync::Arc::new(egui::FontData::from_owned(data)),
-        );
-        serif.insert(0, "axross-serif".to_owned());
-    }
-    fonts
-        .families
-        .insert(egui::FontFamily::Name("serif".into()), serif);
-    if mono {
-        let monospace = fonts
-            .families
-            .get(&egui::FontFamily::Monospace)
-            .cloned()
-            .unwrap_or_default();
-        let mut all = monospace.clone();
-        all.extend(proportional.iter().cloned());
-        fonts
-            .families
-            .insert(egui::FontFamily::Proportional, all.clone());
-        let mut bold_mono = all;
-        if let Some(data) = MONO_BOLD_FONTS.iter().find_map(|p| std::fs::read(p).ok()) {
-            fonts.font_data.insert(
-                "axross-mono-bold".to_owned(),
-                std::sync::Arc::new(egui::FontData::from_owned(data)),
-            );
-            bold_mono.insert(0, "axross-mono-bold".to_owned());
-        }
-        fonts
-            .families
-            .insert(egui::FontFamily::Name("bold".into()), bold_mono);
-    }
-    ctx.set_fonts(fonts);
+    // (each file parsed before egui is given it, read off this thread
+    // within a quarter second: src/fonts.rs)
+    ctx.set_fonts(crate::fonts::Faces::of_the_system().definitions(mono));
 }
-
-/// Serif faces looked for (the collage).
-const SERIF_FONTS: [&str; 4] = [
-    "/usr/share/fonts/truetype/dejavu/DejaVuSerif-Bold.ttf",
-    "/usr/share/fonts/truetype/liberation/LiberationSerif-Bold.ttf",
-    "/System/Library/Fonts/Supplemental/Georgia Bold.ttf",
-    "C:\\Windows\\Fonts\\georgiab.ttf",
-];
-
-/// Bold monospace faces looked for (the terminal's titles).
-const MONO_BOLD_FONTS: [&str; 3] = [
-    "/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Bold.ttf",
-    "/usr/share/fonts/truetype/liberation/LiberationMono-Bold.ttf",
-    "C:\\Windows\\Fonts\\consolab.ttf",
-];
 
 /// A theme and an accent on the window: egui's visuals of both its light
 /// and dark styles (whichever the theme is, egui is told so), its density.
@@ -6552,16 +7309,6 @@ fn apply_theme(
         s.spacing.button_padding = s.spacing.button_padding.max(vec2(padding[0], padding[1]));
     });
 }
-
-/// Bold system faces looked for (Linux, macOS, Windows), in order.
-const BOLD_FONTS: [&str; 6] = [
-    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-    "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
-    "/usr/share/fonts/TTF/DejaVuSans-Bold.ttf",
-    "/usr/share/fonts/dejavu/DejaVuSans-Bold.ttf",
-    "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
-    "C:\\Windows\\Fonts\\segoeuib.ttf",
-];
 
 /// The bold face at `size` (the type scale's titles).
 fn bold(size: f32) -> egui::FontId {
@@ -6922,6 +7669,34 @@ fn card_format(i: &crate::engine::TrackInfo) -> String {
     });
     parts.push(format!("{} ch", i.channels));
     parts.join(" · ")
+}
+
+/// In a scrolled list: the entry that has just taken the keyboard's focus
+/// scrolled into sight (after the list's entries, in its own `ui`).
+fn follow_focus(ui: &mut Ui) {
+    let Some(focused) = ui.memory(|m| m.focused()) else {
+        return;
+    };
+    let Some(r) = ui.ctx().read_response(focused) else {
+        return;
+    };
+    if r.layer_id != ui.layer_id() {
+        return;
+    }
+    let seen = ui.unique_id().with("focus followed");
+    if ui.data(|d| d.get_temp::<egui::Id>(seen)) != Some(focused) {
+        ui.data_mut(|d| d.insert_temp(seen, focused));
+        ui.scroll_to_rect(r.rect, None);
+    }
+}
+
+/// What a popup drew when last seen, and where ([`App::popup_ghosts`]).
+struct Ghost {
+    shapes: Vec<egui::epaint::ClippedShape>,
+    seen: f64,
+    rect: egui::Rect,
+    /// When it was last clicked in.
+    clicked: Option<f64>,
 }
 
 /// The theme's light or dark ink, whichever reads better on `fill`.

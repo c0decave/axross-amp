@@ -696,6 +696,16 @@ fn cover(f: &Frame<'_>, cv: &mut super::Canvas, st: &mut State, thumb: Option<&s
 
 // -- the flow field ------------------------------------------------------------------
 
+/// Which of the flow field's hairs are drawn in a picture `tall` high:
+/// every one, or every second or third in a small picture.
+fn flow_every(tall: f32, dark: bool) -> usize {
+    match (tall < 200.0, dark) {
+        (false, _) => 1,
+        (true, true) => 2,
+        (true, false) => 3,
+    }
+}
+
 fn flowfield(f: &Frame<'_>, pen: &mut Pen<'_>, st: &mut State, dt: f32) {
     let (a, s, r) = (f.a, f.s, f.rect);
     let aspect = r.width() / r.height().max(1.0);
@@ -760,7 +770,14 @@ fn flowfield(f: &Frame<'_>, pen: &mut Pen<'_>, st: &mut State, dt: f32) {
         1.0
     };
     let reach = reach * (0.6 + 0.4 * slow);
+    // (in a small picture fewer hairs: all of them, as close as they lie
+    // there, were rows of lines - the guard's pattern stage softened the
+    // face nine frames in ten in Paper at 240 x 135: review 20, L9)
+    let every = flow_every(r.height(), super::scenes::dark(s));
     for (k, q) in st.flow.iter().enumerate() {
+        if k % every != 0 {
+            continue;
+        }
         // fading in as it is born and out as it ends
         let life = (q.age / 0.5).min(1.0) * ((q.life - q.age) / 0.8).clamp(0.0, 1.0) * reach;
         let hue =
@@ -814,7 +831,18 @@ fn synthwave(f: &Frame<'_>, pen: &mut Pen<'_>, st: &mut State, dt: f32) {
         );
     }
     // the sun: stripes cut into its lower half, growing with the bass
-    let radius = w.min(h) * 0.22 * (1.0 + 0.18 * a.bass + 0.08 * a.beat.pulse);
+    // (on a light ground the sun is the dark thing and the rows are dark
+    // lines: it swells half as much there and they come half as fast with
+    // the bass, fainter - in a small light window fast music had the guard
+    // veil a picture that read three transitions a second)
+    // (and in a small picture on any ground: at 240 x 135 in Midnight the
+    // veil lay over it a fifth of an ordinary song)
+    let light = if super::scenes::dark(s) && r.height() >= 200.0 {
+        1.0
+    } else {
+        0.5
+    };
+    let radius = w.min(h) * 0.22 * (1.0 + (0.18 * a.bass + 0.08 * a.beat.pulse) * light);
     let c = pos2(r.center().x, horizon - radius * 0.38);
     pen.radial(c, radius * 1.7, glow(s.high, 0.45), Color32::TRANSPARENT);
     let stripes = 22;
@@ -885,7 +913,7 @@ fn synthwave(f: &Frame<'_>, pen: &mut Pen<'_>, st: &mut State, dt: f32) {
     // the floor: lines to the vanishing point, rows coming nearer
     let floor = Rect::from_min_max(pos2(r.left(), horizon), r.max);
     pen.vertical(floor, mix(s.background, s.mid, 0.12), s.background);
-    st.synth_scroll = (st.synth_scroll + dt * (0.5 + 2.5 * a.bass + a.beat.pulse)) % 1.0;
+    st.synth_scroll = (st.synth_scroll + dt * (0.5 + (2.5 * a.bass + a.beat.pulse) * light)) % 1.0;
     // (the lines to the vanishing point faint: 29 of them, side by side,
     // under rows scrolling over them, were a moving grating)
     let line_colour = super::faint(mix(s.background, s.mid, 0.85), s.background);
@@ -905,7 +933,11 @@ fn synthwave(f: &Frame<'_>, pen: &mut Pen<'_>, st: &mut State, dt: f32) {
         let z = k as f32 + 1.0 - st.synth_scroll;
         let y = horizon + (r.bottom() - horizon) * (1.0 / z).min(1.0) * 0.98;
         let near = (1.0 / z).sqrt();
-        let colour = mix(s.background, s.mid, near * (0.6 + 0.4 * a.beat.pulse));
+        let colour = mix(
+            s.background,
+            s.mid,
+            near * (0.6 + 0.4 * a.beat.pulse) * (0.4 + 0.6 * light),
+        );
         // (the far rows, packed together near the horizon, faint: they lay
         // in a grating there, scrolling)
         let colour = if near < 0.7 {
@@ -1392,6 +1424,15 @@ fn spirograph(f: &Frame<'_>, pen: &mut Pen<'_>, st: &mut State, dt: f32) {
     // that run off its sides
     let size = r.height() / 2.0 - 4.0;
     let fade = st.spiro_fade;
+    // (no glow on a light ground: light added to it - more of it where
+    // the line's pieces overlap at its many joints - lightened the paper,
+    // and as a new wheel came and the old one was drawn with half the
+    // points, the whole picture went a thirtieth darker in one frame: a
+    // step the guard counted, and veiled; review 18, M1)
+    // (nor in a small picture, where the glow is most of what is drawn:
+    // the same step, on a dark ground - veiled a fifth of drum and bass at
+    // 240 x 135 in Midnight)
+    let glowing = super::luminance(s.background) < 0.3 && r.height() >= 200.0;
     let wheels = [(st.spiro_from, 1.0 - fade), (st.spiro.1, fade)];
     for (wheel, weight) in wheels {
         if weight < 0.01 {
@@ -1441,12 +1482,16 @@ fn spirograph(f: &Frame<'_>, pen: &mut Pen<'_>, st: &mut State, dt: f32) {
                         * faint
                         * (1.0 - 0.5 * s.stark()),
                 );
-                glowing_line(
-                    pen,
-                    1.0 + 0.5 * inner as f32,
-                    colour,
-                    faint * (0.8 + 0.2 * a.energy),
-                );
+                if glowing {
+                    glowing_line(
+                        pen,
+                        1.0 + 0.5 * inner as f32,
+                        colour,
+                        faint * (0.8 + 0.2 * a.energy),
+                    );
+                } else {
+                    pen.line(1.0 + 0.5 * inner as f32, colour);
+                }
             }
         }
     }
@@ -1703,7 +1748,11 @@ fn typography(f: &Frame<'_>, pen: &mut Pen<'_>, st: &mut State, dt: f32) {
     // (a word a beat at most every 0.75 s: a big word coming and the last
     // one going is a rise and a fall over much of the picture - at every
     // beat of a fast song, more than three of them a second)
-    if (beat && st.word_age > 0.75) || st.word_age > 2.0 {
+    // (on a light ground every 1.1 s: there the word is the dark thing,
+    // and with the guard's margin for it a word each 0.75 s had the
+    // picture veiled a sixth of a song that read three)
+    let gap = if super::scenes::dark(s) { 0.75 } else { 1.1 };
+    if (beat && st.word_age > gap) || st.word_age > 2.0 {
         st.previous_word = st.word;
         st.word = (st.word + 1) % st.words.len();
         st.word_age = 0.0;
@@ -1736,7 +1785,12 @@ fn typography(f: &Frame<'_>, pen: &mut Pen<'_>, st: &mut State, dt: f32) {
         let way = if row % 2 == 0 { 1.0 } else { -1.0 };
         let shift =
             (st.marquee * way * (0.6 + 0.25 * row as f32) + row as f32 * 97.0).rem_euclid(lw);
-        let colour = glow(
+        // (light added on a dark ground, a tint laid on a light one: light
+        // added to a light ground, the rows flared with every beat - by the
+        // guard's count four transitions in half a second, and the face
+        // was veiled two thirds of an ordinary song; review 18, M1)
+        let colour = super::scenes::shine(
+            s,
             if row % 2 == 0 { s.low } else { s.mid },
             0.07 + 0.06 * a.beat.pulse,
         );
@@ -1794,7 +1848,7 @@ fn typography(f: &Frame<'_>, pen: &mut Pen<'_>, st: &mut State, dt: f32) {
         let off = Vec2::angled(k as f32 / 8.0 * TAU) * (2.0 + 1.5 * pulse);
         put_glyphs(pen, &galley, uv, c, scale, tilt, |glyph| {
             let (lift, a) = arrive(glyph);
-            (lift + off, glow(s.mid, 0.07 * a))
+            (lift + off, super::scenes::shine(s, s.mid, 0.07 * a))
         });
     }
     put_glyphs(pen, &galley, uv, c, scale, tilt, |glyph| {
@@ -1808,7 +1862,12 @@ fn typography(f: &Frame<'_>, pen: &mut Pen<'_>, st: &mut State, dt: f32) {
     let wide = galley.size().x * scale * (0.25 + 0.75 * a.energy.min(1.0)) * ease;
     let y = c.y + height * 0.62;
     let (l, rr) = (pos2(c.x - wide / 2.0, y), pos2(c.x + wide / 2.0, y));
-    pen.segment(l, rr, 10.0, glow(s.mid, 0.15 + 0.25 * pulse));
+    pen.segment(
+        l,
+        rr,
+        10.0,
+        super::scenes::shine(s, s.mid, 0.15 + 0.25 * pulse),
+    );
     pen.segment(l, rr, 3.0, mix(s.mid, s.peak, pulse * 0.6));
     // the spectrum as a line under it
     let y = r.bottom() - 6.0;

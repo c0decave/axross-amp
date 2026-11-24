@@ -1,0 +1,27 @@
+{
+ "r17-obig-plain.opus": {
+  "codec": "libopus",
+  "rate": 48000,
+  "channels": 2,
+  "secs": 4,
+  "intro": 0,
+  "kind": "silence",
+  "capture": false,
+  "name": "r17-obig-plain.opus",
+  "pages": 101
+ },
+ "r17-chain70caps.opus": {
+  "codec": "libopus",
+  "rate": 48000,
+  "channels": 1,
+  "capture": true,
+  "shift": 0,
+  "t0": 2.58,
+  "approx_secs": 29.4,
+  "link1": 0.42,
+  "chained": true,
+  "name": "r17-chain70caps.opus",
+  "pages": 210,
+  "repeat": true
+ }
+}

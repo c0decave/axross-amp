@@ -869,3 +869,71 @@ fn every_face_survives_resizes_paused_and_playing() {
         }
     }
 }
+
+/// The faces in every kind of scheme - axross's five, the window's theme in
+/// a light one and a dark one, black on white - at the default size and
+/// small, a sheet a face in `target/screenshots/sheets/` (to look at them:
+/// `cargo test --test faces -- --ignored sheets`; AMP_SHEET_FACES=a,b for
+/// some, else the faces after axross's and the analysis tools' own).
+#[test]
+#[ignore]
+fn sheets_of_the_faces_in_every_scheme() {
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/screenshots/sheets");
+    std::fs::create_dir_all(&dir).unwrap();
+    let wanted = std::env::var("AMP_SHEET_FACES").ok();
+    let keys: Vec<&'static str> = match wanted.as_deref() {
+        Some(list) => FACES
+            .iter()
+            .filter(|f| list.split(',').any(|k| k == f.key))
+            .map(|f| f.key)
+            .collect(),
+        None => FACES
+            .iter()
+            .skip_while(|f| f.key != "orbits")
+            .filter(|f| f.group != Group::Off)
+            .map(|f| f.key)
+            .collect(),
+    };
+    let schemes = [
+        "classic", "fire", "ice", "neon", "mono", "paper", "midnight", "wb",
+    ];
+    let sizes = [vec2(620.0, 300.0), vec2(240.0, 135.0)];
+    for key in keys {
+        let (w, h) = (620 + 8 + 240, schemes.len() as u32 * 308);
+        let mut sheet = image::RgbaImage::from_pixel(w, h, image::Rgba([40, 40, 40, 255]));
+        for (row, scheme) in schemes.iter().enumerate() {
+            for (k, size) in sizes.iter().enumerate() {
+                let mut hrn = faces::harness(key, *size, true, 4.0);
+                {
+                    let app = hrn.state_mut();
+                    match *scheme {
+                        "paper" | "midnight" => {
+                            axross_amp::theme::set(scheme);
+                            app.scheme = "theme".into();
+                        }
+                        "wb" => {
+                            app.scheme = "custom".into();
+                            for (c, v) in [
+                                ("background", "#ffffff"),
+                                ("low", "#000000"),
+                                ("high", "#000000"),
+                                ("peak", "#000000"),
+                            ] {
+                                app.custom.insert(c.into(), v.into());
+                            }
+                        }
+                        other => app.scheme = other.into(),
+                    }
+                }
+                for _ in 0..80 {
+                    faces::frame(&mut hrn);
+                }
+                let shot = hrn.render().unwrap();
+                let x = if k == 0 { 0 } else { 628 };
+                image::imageops::overlay(&mut sheet, &shot, x, row as i64 * 308);
+            }
+        }
+        sheet.save(dir.join(format!("{key}.png"))).unwrap();
+    }
+    axross_amp::theme::set("midnight");
+}

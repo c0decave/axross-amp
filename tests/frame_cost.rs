@@ -119,9 +119,10 @@ fn calibration_ms() -> f64 {
 /// faster one keeps them as they are.
 const CALIBRATION_REFERENCE_MS: f64 = 0.34;
 
-/// The median CPU time of a frame of `face` at `w` x `h` (frames 5 - 29:
-/// the first ones fill the analysis and the meshes).
-fn frame_ms(face: &'static str, w: f32, h: f32) -> (f64, f64) {
+/// The CPU time of a frame of `face` at `w` x `h` - the median, the 95th
+/// percentile and the worst of frames 5 - 44 (the first ones fill the
+/// analysis and the meshes).
+fn frame_ms(face: &'static str, w: f32, h: f32) -> (f64, f64, f64) {
     let mut harness = faces::harness_cpu(face, egui::vec2(w, h), 3.0);
     // (AMP_NO_GUARD: what the face costs without the flash guard)
     harness.state_mut().state.flash_off = std::env::var_os("AMP_NO_GUARD").is_some();
@@ -134,7 +135,7 @@ fn frame_ms(face: &'static str, w: f32, h: f32) -> (f64, f64) {
         };
     }
     let mut times = Vec::new();
-    for frame in 0..30 {
+    for frame in 0..45 {
         let started = cpu_ms();
         faces::frame(&mut harness);
         let took = cpu_ms() - started;
@@ -143,11 +144,14 @@ fn frame_ms(face: &'static str, w: f32, h: f32) -> (f64, f64) {
         }
     }
     times.sort_by(f64::total_cmp);
-    (times[times.len() / 2], times[times.len() - 1])
+    let p95 = times[(times.len() * 95).div_ceil(100) - 1];
+    (times[times.len() / 2], p95, times[times.len() - 1])
 }
 
 /// Every face's frame within its limit at every size - measured as CPU
-/// time, the median of 25 frames, the limits scaled to this machine by a
+/// time, the median of 40 frames and their 95th percentile (the median
+/// alone hid a face whose cost spikes every few frames: review 17, L6),
+/// the limits scaled to this machine by a
 /// calibration of the same kind of work, and a face over its limit
 /// measured once more (the machine calibrated again) before it fails:
 /// 0.16.2's release run failed on a shared runner reading 1.4 times this
@@ -174,25 +178,35 @@ fn every_face_draws_a_frame_in_a_few_milliseconds_at_any_size() {
     );
     let mut report = Vec::new();
     let mut slow = Vec::new();
-    for face in FACES.iter().filter(|f| f.group != Group::Off) {
+    // (AMP_COST_ONLY: these faces only, by key, comma-separated)
+    let only = std::env::var("AMP_COST_ONLY").ok();
+    for face in FACES.iter().filter(|f| {
+        f.group != Group::Off
+            && only
+                .as_deref()
+                .is_none_or(|o| o.split(',').any(|k| k == f.key))
+    }) {
         let mut line = format!("{:<13}", face.key);
         for (w, h, limit) in sizes {
-            let (mut median, mut worst) = frame_ms(face.key, w, h);
-            if median > limit * scale {
+            let (mut median, mut p95, mut worst) = frame_ms(face.key, w, h);
+            if median.max(p95) > limit * scale {
                 // (once more: a busy neighbour, a slowed clock)
                 // (never stricter than the first calibration said)
                 let (c, s) = scale_now();
                 scale = scale.max(s);
-                (median, worst) = frame_ms(face.key, w, h);
+                (median, p95, worst) = frame_ms(face.key, w, h);
                 println!(
-                    "{} at {w}x{h} measured again (calibration {c:.2} ms): {median:.2} ms",
+                    "{} at {w}x{h} measured again (calibration {c:.2} ms): {median:.2} ms, \
+                     95th percentile {p95:.2}",
                     face.key
                 );
             }
-            line.push_str(&format!(" {w:>4}x{h:<4} {median:>6.2} ms ({worst:>6.2})"));
-            if median > limit * scale {
+            line.push_str(&format!(
+                " {w:>4}x{h:<4} {median:>6.2} ms ({p95:>6.2}, {worst:>6.2})"
+            ));
+            if median.max(p95) > limit * scale {
                 slow.push(format!(
-                    "{} at {w}x{h}: {median:.2} ms (limit {:.2})",
+                    "{} at {w}x{h}: {median:.2} ms, 95th percentile {p95:.2} (limit {:.2})",
                     face.key,
                     limit * scale
                 ));

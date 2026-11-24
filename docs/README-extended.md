@@ -165,8 +165,8 @@ them) are on a page of their own: [Known limitations](LIMITATIONS.md).
   chroma; the pictures are dithered (no bands in slow gradients). Nothing to play: a drop zone with
   Open files, Open folder, Add a URL and the keys. Paused, the picture stands still;
   changing faces fades one into the next.
-- **Visualizations**, 49 of them in three groups - *Classic* (all eighteen of
-  axross's), *Analysis* and *Generative* - how they are drawn, their colour
+- **Visualizations**, 69 of them in four groups - *Classic* (all eighteen of
+  axross's), *Analysis*, *Generative* and *Spectral* - how they are drawn, their colour
   schemes and options: [Faces](FACES.md).
 - **Show on display** (⚙ → Show on display, or D): the pictures on a monitor
   of their own, the sound with them: [Show on display](DISPLAY.md).
@@ -210,8 +210,15 @@ them) are on a page of their own: [Known limitations](LIMITATIONS.md).
   Connect, Disconnect, Forget - grouped as connected, paired and nearby, each with
   its kind's sign - through BlueZ on the system D-Bus
   ([zbus](https://github.com/dbus2/zbus)). A pairing that asks (confirm a passkey,
-  type a PIN) asks in a dialog; nothing is accepted without an answer. **Use as audio
-  output** connects a speaker or headset and makes its output this player's.
+  type a PIN) asks in a dialog; nothing is accepted without an answer. A double
+  click on a device connects it (pairs it first where it is not paired yet). **Use
+  as audio output** connects a speaker or headset and makes its output this player's.
+- **Graphics** (Options): the window is drawn through wgpu. Where there are two GPUs,
+  *Auto* takes the integrated one on a machine with a battery - a player runs for
+  hours on one - and the dedicated one on a machine without; *Power saving* and
+  *High performance* say which outright. A software adapter (llvmpipe, WARP) only
+  where there is no GPU; Options names the adapter in use. `WGPU_BACKEND`,
+  `WGPU_ADAPTER_NAME` and `WGPU_POWER_PREF` decide instead ([README](../README.md#quick-start)).
 - **Shares its state with axross**: the playlist, the track and its position, the
   volume, the visualization (`~/.config/axross/media_player.json`) and axross's one
   equalizer (`~/.config/axross/audio.json`) - the player inside axross and this
@@ -361,7 +368,9 @@ starts it at once and watches its start: should it end before its window is
 up, the old one is put back and this one goes on, saying so. The program
 started so waits for the player's name on the session bus and takes it when
 the old one ends (a file opened from the file manager then goes to it, not to
-a second player). What a download that was cut off (the window closed, a
+a second player). A second player (`--new-instance`) whose program another
+one updated meanwhile neither checks nor downloads again: it says to restart
+it. What a download that was cut off (the window closed, a
 crash) left beside the program is removed at the next start. A folder that cannot be written
 (an app in a system folder) keeps the program as it is: the checked file is
 left in `~/.cache/axross-amp/update/` and the window says where. How a

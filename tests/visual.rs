@@ -54,7 +54,7 @@ fn a_right_click_on_the_picture_offers_its_options() {
         .get_by_role_and_label(egui::accesskit::Role::Button, "Colours")
         .rect();
     h.hover_at(colours.center());
-    settle(&mut h, 2);
+    settle(&mut h, 4);
     if h.query_by_label("Follow the theme").is_none() {
         h.get_by_role_and_label(egui::accesskit::Role::Button, "Colours")
             .click();
@@ -102,7 +102,7 @@ fn off_draws_no_analysis() {
         "the analysis ran with the picture off"
     );
     // a click on the picture never steps into "off"
-    assert_eq!(axross_amp::viz::next("typography"), "spectrum");
+    assert_eq!(axross_amp::viz::next("rain"), "spectrum");
 }
 
 #[test]
@@ -178,7 +178,7 @@ fn intense_motion_only_after_the_photosensitivity_warning() {
         .get_by_role_and_label(egui::accesskit::Role::Button, "Options")
         .rect();
     h.hover_at(options.center());
-    settle(&mut h, 2);
+    settle(&mut h, 4);
     if h.query_by_label("Intense…").is_none() {
         h.get_by_role_and_label(egui::accesskit::Role::Button, "Options")
             .click();

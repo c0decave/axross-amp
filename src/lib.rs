@@ -3,6 +3,7 @@
 
 pub mod analyzer;
 pub mod app;
+pub mod bidi;
 #[cfg(target_os = "linux")]
 pub mod bluetooth;
 #[cfg(target_os = "linux")]
@@ -14,7 +15,9 @@ pub mod detach;
 pub mod display;
 pub mod engine;
 pub mod eq;
+pub mod fonts;
 pub mod fspath;
+pub mod graphics;
 pub mod icon;
 pub mod limiter;
 pub mod meters;

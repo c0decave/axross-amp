@@ -322,6 +322,12 @@ impl Install {
 
     /// Whether the program's folder can be written - a new program put in
     /// place there - (a file made and removed again); None when it can.
+    /// The program in place is no longer the one this program found at
+    /// its start: another player (or a hand) put another there.
+    pub fn replaced(&self) -> bool {
+        self.seen.is_some() && seen(&self.target) != self.seen
+    }
+
     pub fn unwritable(&self) -> Option<String> {
         let folder = self.target.parent()?;
         let probe = folder.join(format!(".axross-amp-update-{}", unique()));

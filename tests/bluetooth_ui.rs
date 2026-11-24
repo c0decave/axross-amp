@@ -198,6 +198,37 @@ fn the_bluetooth_tab_pairs_connects_and_makes_a_headset_the_output() {
         view(h).device(&speaker).unwrap().paired
     });
 
+    // a double click on a paired device connects it
+    assert!(!view(&harness).device(&speaker).unwrap().connected);
+    steps_until(&mut harness, "the pairing over", |h| {
+        view(h).busy.is_empty() && h.query_by_label("PIN").is_none()
+    });
+    let at = harness.get_by_label("Kitchen Speaker").rect().center();
+    harness.event(egui::Event::PointerMoved(at));
+    harness.run_steps(1);
+    // (each click whole in a frame of its own, a step of the harness - a
+    // quarter second - apart: `Harness::event` gives every event a frame,
+    // so a press and its release are a step apart and the second click
+    // came half a second after the first - past the 0.3 s egui allows a
+    // double click, and it was counted as two single ones)
+    for _ in 0..2 {
+        for pressed in [true, false] {
+            harness.input_mut().events.push(egui::Event::PointerButton {
+                pos: at,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::NONE,
+            });
+        }
+        harness.run_steps(1);
+    }
+    steps_until(&mut harness, "connected by the double click", |h| {
+        view(h).device(&speaker).unwrap().connected
+    });
+    steps_until(&mut harness, "said", |h| {
+        h.state().bluetooth_page().message == "Connected to Kitchen Speaker."
+    });
+
     // the filter: audio only hides the keyboard and the nameless one
     assert!(harness.query_by_label("Keyboard K380").is_some());
     harness.get_by_label("Audio only").click();

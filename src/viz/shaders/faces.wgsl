@@ -538,6 +538,248 @@ fn crystals(p: vec2<f32>) -> vec3<f32> {
     return face * (0.96 + 0.04 * facet) + colour(4) * edge * (0.02 + 0.04 * level);
 }
 
+// -- the faces added since (gpu.rs mirrors them too) ------------------------
+
+// Water: a height field the CPU moves (drops on the beat where the music
+// is loudest, a fine rain with the treble), 0.5 its rest. Lit from above:
+// the pool's floor seen through it, bent by its slopes, the light the
+// surface gathers on it a drifting net; each slope lit on one side and in
+// shade on the other, a sheen where it faces the light. On a light ground
+// the water is clear over the scheme's ground and its ripples are drawn in
+// the scheme's ink.
+fn water(uv: vec2<f32>, aspect: f32) -> vec3<f32> {
+    let size = vec2<f32>(textureDimensions(data));
+    // (a cell and a half each way: between two cells, their mean - the
+    // height's 256 steps showed as lines in its slopes)
+    let dx = vec2<f32>(1.5 / size.x, 0.0);
+    let dy = vec2<f32>(0.0, 1.5 / size.y);
+    let h = textureSampleLevel(data, data_sampler, uv, 0.0).r;
+    let l = textureSampleLevel(data, data_sampler, uv - dx, 0.0).r;
+    let r = textureSampleLevel(data, data_sampler, uv + dx, 0.0).r;
+    let t = textureSampleLevel(data, data_sampler, uv - dy, 0.0).r;
+    let b = textureSampleLevel(data, data_sampler, uv + dy, 0.0).r;
+    let slope = vec2<f32>(r - l, b - t) * 6.0;
+    // the pool's floor (soft noise) seen through the surface, bent by its
+    // slopes; the net of light on it where two such fields meet
+    let q = vec2<f32>(uv.x * aspect, uv.y) * 2.2 + slope * 0.9;
+    let floor = fbm(q + vec2<f32>(u.t.x * 0.02, 0.0));
+    // (broad and soft, and not bent by the slopes: a fine net bent by the
+    // height's 256 steps was a scribble)
+    let n = vec2<f32>(uv.x * aspect, uv.y) * 2.2;
+    let net = abs(noise(n * 2.3 + vec2<f32>(u.t.x * 0.05, 0.0)) - noise(n * 3.1 + vec2<f32>(7.3, 2.1 - u.t.x * 0.04)));
+    let caustic = pow(clamp(1.0 - net * 2.5, 0.0, 1.0), 2.0);
+    // each slope lit from up and to the left
+    let light = clamp(-(slope.x * 0.6 + slope.y * 0.8), -1.0, 1.0);
+    let lit = max(light, 0.0);
+    let shade = max(-light, 0.0);
+    // (where it stands above its rest: by its height, not by how it is
+    // curved - the height's 256 steps, curved, were squiggles)
+    let crest = clamp((h - 0.5) * 3.0, 0.0, 1.0);
+    let ground = colour(0);
+    // (in the starkest schemes - white on black, black on white - its
+    // lights and shades a third as strong: every ring a white edge on
+    // black, the surface read nine transitions a second, strictly)
+    let k = 1.0 - 0.65 * smoothstep(0.6, 0.95, abs(luma(colour(3)) - luma(ground)));
+    var c: vec3<f32>;
+    if luma(ground) > 0.4 {
+        let ink = mix(colour(2), colour(3), 0.5);
+        // (a middle tone under it: on the ground itself, a ripple seen at
+        // all is a change of luminance the flash rule does not allow a
+        // whole surface)
+        let pool = mix(mix(ground, colour(1), 0.32 + 0.15 * floor), ground, 0.3 * uv.y);
+        // (the net of light as a net of ink, five times as strong as it
+        // was - it moves slowly, and a pale sheet shaded was all but blank
+        // - and the rings and the drops' rims a little darker where the
+        // surface is steep: no more than a little - rings in ink as strong
+        // as the net read ten transitions a second, strictly, in Paper)
+        let ring = smoothstep(0.22, 0.6, length(slope));
+        c = mix(pool, ink, clamp((shade * 0.28 + crest * 0.1 + ring * 0.1) * k + caustic * 0.36, 0.0, 0.85));
+        c = mix(c, vec3<f32>(1.0), (lit * 0.28 + pow(lit, 4.0) * 0.3) * k);
+    } else {
+        let pool = mix(mix(ground, colour(1), 0.5 + 0.2 * floor), ground, 0.3 * uv.y);
+        c = pool + colour(2) * caustic * 0.1;
+        c = c + colour(3) * lit * 0.55 * k - c * shade * 0.5 * k;
+        c = c + colour(4) * pow(lit, 3.0) * 0.55 * k + colour(2) * crest * 0.22 * k;
+    }
+    c = toward_grey(c);
+    return no_red(c);
+}
+
+// A colour near saturated red taken smoothly toward a grey as light (no
+// red, and no step where `no_red` would begin: a surface of a red
+// scheme's colours, each pixel a little different, showed its edge).
+fn toward_grey(c: vec3<f32>) -> vec3<f32> {
+    let l = pow(max(c, vec3<f32>(0.0)), vec3<f32>(2.2));
+    let sum = l.x + l.y + l.z;
+    if sum <= 0.0 {
+        return c;
+    }
+    let k = smoothstep(0.5, 0.7, l.x / sum);
+    return mix(c, vec3<f32>(pow(luma(c), 1.0 / 2.2)), k * 0.85);
+}
+
+// Strange attractor: the density of a Clifford attractor's orbit the CPU
+// keeps (a log of the hits, fading), a glow round it.
+fn attractor(uv: vec2<f32>) -> vec3<f32> {
+    let size = vec2<f32>(textureDimensions(data));
+    let d = textureSampleLevel(data, data_sampler, uv, 0.0).r;
+    var halo = 0.0;
+    for (var k = 0; k < 4; k = k + 1) {
+        let a = f32(k) * 1.5707963 + 0.785398;
+        let o = vec2<f32>(cos(a), sin(a)) * 2.5 / size;
+        halo = halo + textureSampleLevel(data, data_sampler, uv + o, 0.0).r;
+    }
+    halo = halo * 0.25;
+    let body = mix(colour(1), colour(2), smoothstep(0.1, 0.6, d));
+    var c = mix(colour(0), body, smoothstep(0.0, 0.35, d));
+    c = mix(c, colour(3), smoothstep(0.45, 0.9, d) * 0.7);
+    c = c + colour(4) * pow(d, 3.0) * 0.35;
+    c = mix(c, mix(colour(0), colour(1), 0.6), smoothstep(0.0, 0.3, halo) * (1.0 - smoothstep(0.0, 0.2, d)) * 0.35);
+    return no_red(c);
+}
+
+// A Chladni figure: where a square plate of modes n and m stands still.
+fn chladni(q: vec2<f32>, n: f32, m: f32, sign: f32) -> f32 {
+    let pi = 3.14159265;
+    return cos(n * pi * q.x) * cos(m * pi * q.y) + sign * cos(m * pi * q.x) * cos(n * pi * q.y);
+}
+
+fn plate(q: vec2<f32>) -> f32 {
+    let e = u.extra[1];
+    let k = u.extra[2];
+    return mix(chladni(q, e.x, e.y, k.y), chladni(q, e.z, e.w, k.z), k.x);
+}
+
+// Cymatics: sand on a vibrating plate gathering on its nodal lines; the
+// figure the sound's centre of weight chooses (eased into the next), the
+// lines sharper as it gets louder, the sand lit by the bands from the
+// plate's middle outwards, its grains thrown about on the beat. The plate
+// is a square in the picture's middle - its figure is regular lines, and
+// lines over more than two fifths of a picture are a pattern (BT.1702): it
+// covers 37 % - and round it the bands' light spills from under it, the
+// bass to the left, the treble to the right.
+fn cymatics(p: vec2<f32>, pixel: f32, aspect: f32) -> vec3<f32> {
+    // (a square, also in a wide picture: its figure is regular lines, and
+    // as wide as the picture they were stripes over two thirds of it -
+    // 0.65 by the meter, where 0.4 is the most)
+    let half = vec2<f32>(0.84, 0.84);
+    // (how far out, as on a square plate: 1 at its edge)
+    let edge = max(abs(p.x) - half.x, abs(p.y) - half.y) / 0.84 + 1.0;
+    // (the plate trembles: its figure quivers, more as it gets louder)
+    let t = u.t.x;
+    let level = u.extra[2].w;
+    // (and jumps on the beat: the sand is thrown off its lines and
+    // settles back)
+    let shake = 0.005 + 0.003 * level + 0.018 * u.t.y;
+    let q = p / half + shake * vec2<f32>(sin(t * 7.0 + p.y * 9.0), cos(t * 6.0 + p.x * 8.0));
+    let ground = colour(0);
+    let light = luma(ground) > 0.4;
+    if edge > 1.03 {
+        // (a soft shadow round the plate, and the light from under it:
+        // faint - less than a tenth of the luminance - and smooth)
+        let shade = 1.0 - 0.3 * (1.0 - smoothstep(1.03, 1.14, edge));
+        let tone = band(clamp(0.5 + p.x / (2.0 * aspect), 0.0, 1.0));
+        let spill = tone * exp(-(edge - 1.0) * 1.6) * 0.09 * smoothstep(1.03, 1.2, edge);
+        if light {
+            return mix(ground * shade, colour(1), spill * 0.8);
+        }
+        return ground * shade + mix(colour(1), colour(2), tone) * spill;
+    }
+    let f = plate(q);
+    let e = 0.01;
+    let gx = (plate(q + vec2<f32>(e, 0.0)) - f) / e / half.x;
+    let gy = (plate(q + vec2<f32>(0.0, e)) - f) / e / half.y;
+    // (the distance to the nearest still line, in the face's units)
+    let d = abs(f) / max(length(vec2<f32>(gx, gy)), 0.6);
+    let width = (0.003 + 0.004 * level) * 0.84;
+    let core = 1.0 - smoothstep(width, width + 1.5 * pixel, d);
+    // (grains scattered near the lines, fewer further off; more of them
+    // off the lines for a moment on the beat)
+    let grain = noise(p * 107.0 + vec2<f32>(t * 3.0, 0.0));
+    let scatter = (1.0 - smoothstep(0.0, width * (5.0 + 12.0 * u.t.y) + 2.0 * pixel, d)) * smoothstep(0.55 - 0.3 * u.t.y, 0.8, grain);
+    // (lines finer than a pixel - the flash guard's coarse look at it, a
+    // small picture - as faint as the share of the pixel they cover, not
+    // as wide as the pixel)
+    // (on a light ground, dark sand fainter, and fainter still in a small
+    // picture: stark lines there are stripes)
+    let cover = clamp(3.0 * width / pixel, 0.0, 1.0) * select(1.0, 0.55 + 0.15 * clamp((0.012 - pixel) / 0.006, 0.0, 1.0), light);
+    let sand = clamp(core * (0.8 + 0.2 * grain) + scatter * 0.55, 0.0, 1.0) * cover;
+    // the plate: brushed metal, lit in the middle
+    let metal = mix(ground, colour(1), 0.2) + colour(4) * 0.06 * (1.0 - 0.5 * length(q));
+    // (the sand's colour the band's that sounds there: the bass in the
+    // middle, the treble at the rim)
+    let tone = band(clamp(length(q) * 0.75, 0.0, 1.0));
+    let lit = mix(metal, mix(colour(3), colour(4), 0.3 + 0.4 * tone), 0.85);
+    var c = mix(metal, lit, sand * (0.7 + 0.15 * u.t.z + 0.15 * tone));
+    // (the plate's rim)
+    c = mix(c, mix(metal, colour(4), 0.3), smoothstep(0.985, 1.0, edge) * (1.0 - smoothstep(1.015, 1.03, edge)));
+    c = mix(c, ground, smoothstep(1.015, 1.03, edge));
+    return no_red(c);
+}
+
+// The contour map's height: slow noise, raised by six hills that are the
+// bands' (bass on the left, treble on the right; extra[1] and extra[2].xy:
+// eased by the motion setting, scenes.rs).
+fn land(p: vec2<f32>) -> f32 {
+    let t = u.t.x * 0.02;
+    // (three octaves of noise: smooth hills, not a crumpled sheet)
+    let q = p * 0.8 + vec2<f32>(t, -0.7 * t);
+    var h = (0.5 * noise(q) + 0.25 * noise(q * 2.03 + vec2<f32>(1.7, 9.2)) + 0.125 * noise(q * 4.1 + vec2<f32>(4.6, 2.9))) * 0.9;
+    var hills = array<f32, 6>(u.extra[1].x, u.extra[1].y, u.extra[1].z, u.extra[1].w, u.extra[2].x, u.extra[2].y);
+    for (var k = 0; k < 6; k = k + 1) {
+        let fk = f32(k);
+        let c = vec2<f32>((fk - 2.5) * 0.55 + 0.25 * sin(t * 3.0 + fk * 1.9), 0.45 * sin(fk * 2.3 + t * 2.0));
+        let d = p - c;
+        h = h + hills[k] * 0.42 * exp(-dot(d, d) * 3.5);
+    }
+    return h;
+}
+
+// Contour map: a hypsometric tint of the land, shaded, its contour lines
+// (each fifth stronger) faint against it and fading where they crowd.
+fn contours(p: vec2<f32>, pixel: f32) -> vec3<f32> {
+    let h = land(p);
+    let hx = land(p + vec2<f32>(pixel, 0.0)) - h;
+    let hy = land(p + vec2<f32>(0.0, pixel)) - h;
+    let slope = length(vec2<f32>(hx, hy)) / pixel;
+    let spacing = 0.05;
+    let v = h / spacing;
+    // (the distance to the nearest line, in pixels; lines closer than four
+    // pixels fade out: no grating where the land is steep)
+    // (in the face's units - 2 across its height - as wide at any
+    // resolution; lines closer than about four of a 300-point face's
+    // pixels fade out: no grating where the land is steep)
+    let apart = spacing / max(slope, 1e-5);
+    let d = abs(fract(v + 0.5) - 0.5) * apart;
+    let line = (1.0 - smoothstep(0.004, 0.004 + pixel, d)) * clamp((apart - 0.027) / 0.04, 0.0, 1.0)
+        * clamp(0.012 / pixel, 0.0, 1.0);
+    let major = 1.0 - smoothstep(0.02, 0.12, abs(fract((floor(v + 0.5)) / 5.0 + 0.5) - 0.5));
+    let high = clamp(h * 0.9, 0.0, 1.0);
+    let tint = palette(0.12 + 0.62 * high);
+    // (on a light ground the land is a middle tone of the ground and the
+    // tint, darker the higher it is, and a line is the land's own colour a
+    // shade darker - by less than a tenth of the luminance: ink on a pale
+    // ground is seen only from a step of luminance that makes regular lines
+    // a pattern, 55 % of the picture striped in black on white; at a middle
+    // tone a smaller step shows. More than half the tint everywhere made a
+    // dark slab of that scheme. Its relief is fainter there, where the
+    // height's coarse cells showed.)
+    let light = luma(colour(0)) > 0.4;
+    // (in the starkest schemes - black on white - the low land nearly the
+    // ground and the heights the middle tone: one tone all over was a grey
+    // slab)
+    let stark = smoothstep(0.6, 0.95, abs(luma(colour(3)) - luma(colour(0))));
+    let fill = mix(colour(0), tint, select(0.55, mix(0.3 + 0.3 * high, 0.18 + 0.42 * high, stark), light));
+    let shade = clamp(0.96 + (hy - hx) / pixel * select(0.3, 0.1, light), 0.86, 1.05);
+    var ink = mix(fill, colour(4), 0.17 + 0.17 * major);
+    if light {
+        let land = fill * shade;
+        let lf = max(luma(land), 0.001);
+        ink = land * pow(max(lf - 0.05 - 0.04 * major, 0.0) / lf, 1.0 / 2.2);
+    }
+    return no_red(mix(fill * shade, ink, line));
+}
+
 fn to_linear(c: vec3<f32>) -> vec3<f32> {
     let low = c / 12.92;
     let high = pow((c + 0.055) / 1.055, vec3<f32>(2.4));
@@ -563,6 +805,10 @@ fn face_colour(uv: vec2<f32>, aspect: f32, pixel: f32) -> vec3<f32> {
         case 11: { c = flyover(uv, aspect, 96); }
         case 12: { c = crystals(p); }
         case 15: { c = spectrogram(uv); }
+        case 16: { c = water(uv, aspect); }
+        case 17: { c = attractor(uv); }
+        case 18: { c = cymatics(p, pixel, aspect); }
+        case 19: { c = contours(p, pixel); }
         default: { c = phosphor(uv); }
     }
     return clamp(c, vec3<f32>(0.0), vec3<f32>(1.0));

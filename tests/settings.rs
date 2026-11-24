@@ -257,7 +257,7 @@ fn opening_options_leaves_axross_s_values_alone() {
         .get_by_role_and_label(egui::accesskit::Role::Button, "Options")
         .rect();
     h.hover_at(options.center());
-    settle(&mut h, 3);
+    settle(&mut h, 4);
     if h.query_all_by_label_contains("Smoothing").next().is_none() {
         h.get_by_role_and_label(egui::accesskit::Role::Button, "Options")
             .click();

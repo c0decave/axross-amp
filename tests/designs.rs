@@ -39,7 +39,9 @@ fn window(dir: &Path, args: Vec<String>, size: egui::Vec2) -> Harness<'static, A
 
 fn hover(h: &mut Harness<'static, App>, at: Pos2) {
     h.event(Event::PointerMoved(at));
-    settle(h, 2);
+    // (a submenu the pointer opens finds its place - beside, above or below
+    // its button - in the frame after it is measured)
+    settle(h, 4);
 }
 
 fn click_at(h: &mut Harness<'static, App>, at: Pos2) {
@@ -268,7 +270,9 @@ fn check_controls(h: &mut Harness<'static, App>, what: &str, size: egui::Vec2) {
     for (i, (a, ra)) in rects.iter().enumerate() {
         for (b, rb) in &rects[i + 1..] {
             if ra.shrink(1.0).intersects(rb.shrink(1.0)) {
-                failures.push(format!("{what}: {a} and {b} lie over each other"));
+                failures.push(format!(
+                    "{what}: {a} and {b} lie over each other ({ra:?}, {rb:?})"
+                ));
             }
         }
     }
@@ -457,6 +461,50 @@ fn every_design_keeps_every_control_at_every_size() {
             click_through(&mut h, &what, &mut out);
         }
     }
+}
+
+/// Every design at the window's default size (620 x 860) and at every
+/// width from 400 to 900, 10 apart, at that height: every control within
+/// the window, large enough, none over another (review 17, M4: Brutalist at
+/// 600 - 630 points wide - the default - had Next half outside the window).
+#[test]
+fn every_control_lies_within_the_window_at_every_width() {
+    let only = std::env::var("AMP_DESIGN_ONLY").ok();
+    let mut failures = Vec::new();
+    for d in DESIGNS.iter().filter(|d| {
+        only.as_deref()
+            .is_none_or(|o| o.split(',').any(|k| k == d.key))
+    }) {
+        let home = Scratch::new(&format!("design-widths-{}", d.key));
+        let tracks = two_tracks(&home);
+        let mut h = window(&home, tracks, egui::vec2(620.0, 860.0));
+        assert!(until(&mut h, 5.0, |a| a.is_loaded()));
+        h.state_mut().set_design(d.key);
+        settle(&mut h, 3);
+        for w in std::iter::once(620).chain((400..=900).step_by(10)) {
+            let size = egui::vec2(w as f32, 860.0);
+            h.set_size(size);
+            settle(&mut h, 3);
+            let what = format!("{} at {w} x 860", d.name);
+            if std::env::var_os("AMP_DESIGN_SHOTS").is_some() {
+                h.render()
+                    .unwrap()
+                    .save(shots().join(format!("{}-w{w}.png", d.key)))
+                    .unwrap();
+            }
+            let checked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                check_controls(&mut h, &what, size)
+            }));
+            if let Err(e) = checked {
+                let said = e
+                    .downcast_ref::<String>()
+                    .cloned()
+                    .unwrap_or_else(|| format!("{what}: failed"));
+                failures.push(said);
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
 /// The designs that move on their own (the cassette's reels, the rack's

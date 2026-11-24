@@ -1612,7 +1612,17 @@ fn lissajous(f: &Frame<'_>, g: Area, cv: &mut Canvas, st: &mut State, trails: bo
         let ease = 1.0 - (-f.dt / if covered > st.figure_busy { 0.02 } else { 1.5 }).exp();
         st.figure_busy += (covered - st.figure_busy) * ease;
     }
-    let bright = ((0.4 - st.figure_busy) / 0.25).clamp(0.0, 1.0);
+    // (in a small picture on a light ground, sooner: its lines are as wide
+    // there and darker against the ground than light ones on a dark one -
+    // the wide chorus of an ordinary song was four transitions in under
+    // half a second by the guard's count, and veiled for most of the song;
+    // review 18, M1)
+    let tight = if super::luminance(s.background) < 0.3 {
+        1.0
+    } else {
+        (reach / 140.0).clamp(0.35, 1.0)
+    };
+    let bright = ((0.4 * tight - st.figure_busy) / (0.25 * tight)).clamp(0.0, 1.0);
     let shown = |c: Color32| mix(faint(c, s.background), c, bright);
     let figures = &st.figures;
     let (newest, kept) = (

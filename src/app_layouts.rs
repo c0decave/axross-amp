@@ -338,7 +338,10 @@ impl App {
         let fill = design::card_fill(d, t, self.accent);
         if room.width() >= 760.0 && !self.list_elsewhere {
             ui.allocate_rect(room, Sense::hover());
-            let left_w = (room.width() * 0.34).clamp(300.0, 430.0);
+            // (its keys' row - the 15 s keys as wide as their words - needs
+            // some 310 points: at 300 Next lay over the playlist's filter,
+            // review 17)
+            let left_w = (room.width() * 0.34).clamp(350.0, 430.0);
             let left = Rect::from_min_size(room.min, vec2(left_w, room.height()));
             let right = Rect::from_min_max(pos2(left.right() + 14.0, room.top()), room.max);
             design::panel(ui.painter(), left, d, t, fill, 3);
@@ -1620,10 +1623,13 @@ impl App {
         );
         // the keys: heavy blocks with their names
         let narrow = w < 560.0;
+        // (five keys and Play half again as wide within the width: at 96
+        // points they were 624 wide, and at 600 - 630 - the default window
+        // - Next lay half outside it and the length was cut: review 17, M4)
         let kw = if narrow {
             ((w - 24.0) / 6.0).clamp(30.0, 90.0)
         } else {
-            96.0
+            ((w - 4.0) / 6.5).min(96.0)
         };
         let k = Keys {
             look: KeyLook::Slab,

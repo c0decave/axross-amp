@@ -49,6 +49,9 @@ const MAX_RATE: u32 = 768_000;
 
 const AHEAD_SECS: f32 = 0.35;
 const STAGE_SECS: f32 = 3.0;
+/// An Ogg link sought by decoding is read from this long before the place
+/// at least (s): the decoder's run-up (Opus: 80 ms), a pre-skip.
+const SEEK_LEAD: f64 = 1.0;
 
 /// Tests: told when the output callback begins (true) and ends (false) -
 /// on the audio thread itself (an allocation counter watches it).
@@ -326,6 +329,12 @@ pub enum Event {
     },
     Ended {
         generation: u64,
+    },
+    /// The track is this long, not as long as its file said (it was cut
+    /// short): known when its end is read.
+    Length {
+        generation: u64,
+        secs: f64,
     },
     Failed {
         generation: u64,
@@ -1204,6 +1213,9 @@ fn downmix(input: &[f32], matrix: &[(f32, f32)], stereo: &mut Vec<f32>) {
 // -- decoding ----------------------------------------------------------------------------------
 
 struct Decoding {
+    /// Of an Ogg file cut in the middle of a page: where that page begins,
+    /// and what is whole of it as a page (`seektable::ogg_cut_page`).
+    ogg_tail: Option<(u64, Arc<Vec<u8>>)>,
     format: Box<dyn FormatReader>,
     decoder: Box<dyn AudioDecoder>,
     track_id: u32,
@@ -1261,6 +1273,8 @@ struct Decoding {
     /// not count it).
     preskip: i64,
     preskip_armed: bool,
+    /// Packets decoded and dropped on the way to a place sought.
+    dropped: u32,
 }
 
 /// The pre-skip of an Opus track (its OpusHead), else 0.
@@ -1443,6 +1457,85 @@ fn open_file(path: &str) -> Result<(MediaSourceStream<'static>, Hint), String> {
         MediaSourceStream::new(source, Default::default()),
         hint_for(path, None),
     ))
+}
+
+/// An AIFF file shorter than its header says (a copy interrupted): while
+/// it is opened, zeros up to the length it gives - its reader steps over
+/// the sound to look for the chunks after it - and once `opened`, its true
+/// end: the sound that is there is played, and the track ends with it.
+struct CutShort {
+    file: File,
+    at: u64,
+    /// The file's true length, and the one its header gives.
+    there: u64,
+    said: u64,
+    opened: Arc<AtomicBool>,
+}
+
+impl CutShort {
+    /// `path` as such a source, where it is an AIFF file shorter than its
+    /// FORM chunk says.
+    fn open(path: &std::path::Path) -> Option<CutShort> {
+        use std::io::{Read, Seek};
+        let mut file = File::open(path).ok()?;
+        let mut head = [0u8; 12];
+        file.read_exact(&mut head).ok()?;
+        if &head[..4] != b"FORM" || !matches!(&head[8..12], b"AIFF" | b"AIFC") {
+            return None;
+        }
+        let said = 8 + u32::from_be_bytes([head[4], head[5], head[6], head[7]]) as u64;
+        let there = file.metadata().ok()?.len();
+        file.seek(std::io::SeekFrom::Start(0)).ok()?;
+        (there < said).then(|| CutShort {
+            file,
+            at: 0,
+            there,
+            said,
+            opened: Arc::new(AtomicBool::new(false)),
+        })
+    }
+}
+
+impl std::io::Read for CutShort {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let n = if self.at < self.there {
+            self.file.read(buf)?
+        } else if self.at < self.said && !self.opened.load(Ordering::Relaxed) {
+            let n = buf.len().min((self.said - self.at) as usize);
+            buf[..n].fill(0);
+            n
+        } else {
+            0
+        };
+        self.at += n as u64;
+        Ok(n)
+    }
+}
+
+impl std::io::Seek for CutShort {
+    fn seek(&mut self, pos: std::io::SeekFrom) -> std::io::Result<u64> {
+        let to = match pos {
+            std::io::SeekFrom::Start(to) => Some(to),
+            std::io::SeekFrom::Current(by) => self.at.checked_add_signed(by),
+            std::io::SeekFrom::End(by) => self.said.checked_add_signed(by),
+        }
+        .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::InvalidInput))?;
+        self.at = to;
+        if to <= self.there {
+            self.file.seek(std::io::SeekFrom::Start(to))?;
+        }
+        Ok(to)
+    }
+}
+
+impl symphonia::core::io::MediaSource for CutShort {
+    fn is_seekable(&self) -> bool {
+        true
+    }
+
+    fn byte_len(&self) -> Option<u64> {
+        Some(self.said)
+    }
 }
 
 /// Tests: the next file read stalls this long once, after READ_STALL_AT bytes
@@ -1654,8 +1747,10 @@ fn open_media(
         link_title: None,
         sounded: false,
         damaged: 0,
+        ogg_tail: None,
         preskip: opus_preskip(&params),
         preskip_armed: true,
+        dropped: 0,
     };
     Ok((decoding, info))
 }
@@ -1672,19 +1767,30 @@ fn open(
         thread::sleep(Duration::from_millis(delay));
     }
     let (mss, hint) = open_file(path)?;
-    open_media(mss, hint, true, path, out_rate, measure, loudness).or_else(|why| {
+    let on_disk = crate::fspath::to_path(path);
+    // an Ogg file cut in the middle of a page (a copy that stopped): its
+    // whole pages, and of that page the packets that are whole - the
+    // reader, where it opens such a file at all, stops at its last whole
+    // page: up to a second and more of sound on the disk not played
+    // (review 19, L9)
+    let cut = crate::seektable::ogg_cut_page(&on_disk).map(|(at, page)| (at, Arc::new(page)));
+    let in_pieces = |why: String| -> Result<(Decoding, TrackInfo), String> {
         // an Ogg file damaged in its middle: symphonia's reader reads to its
         // end as it opens it, and refused it whole - what comes before the
         // damage is played (review 14)
         // (its whole pages: also those after damage in its first page of
         // sound, where nothing came before it - review 15)
-        let on_disk = crate::fspath::to_path(path);
         let Some(pages) = crate::seektable::ogg_whole_pages(&on_disk) else {
             return Err(why);
         };
-        let pieces = crate::seektable::Pieces::open(&on_disk, pages).map_err(|_| why.clone())?;
+        let mut pieces =
+            crate::seektable::Pieces::open(&on_disk, pages).map_err(|_| why.clone())?;
+        let tail = cut.clone().filter(|(at, _)| *at == pieces.end());
+        if let Some((_, page)) = &tail {
+            pieces = pieces.with_tail(page.clone());
+        }
         let mss = MediaSourceStream::new(Box::new(pieces), Default::default());
-        open_media(
+        let (mut decoding, info) = open_media(
             mss,
             hint_for(path, None),
             true,
@@ -1693,8 +1799,77 @@ fn open(
             measure,
             loudness,
         )
-        .map_err(|_| why)
-    })
+        .map_err(|_| why)?;
+        decoding.ogg_tail = tail;
+        Ok((decoding, info))
+    };
+    if cut.is_some()
+        && let Ok(opened) = in_pieces(String::new())
+    {
+        return Ok(opened);
+    }
+    let opened = open_media(mss, hint, true, path, out_rate, measure, loudness).or_else(|why| {
+        // an AIFF file cut short: its reader goes past the sound for what
+        // may follow it, and refused the file whole where a WAV file cut
+        // at the same place plays - read as long as it says it is while
+        // it is opened, and to its true end after (review 19, L9)
+        if let Some(cut) = CutShort::open(&on_disk) {
+            let opened = cut.opened.clone();
+            let mss = MediaSourceStream::new(Box::new(cut), Default::default());
+            if let Ok(decoding) = open_media(
+                mss,
+                hint_for(path, None),
+                true,
+                path,
+                out_rate,
+                measure,
+                loudness,
+            ) {
+                opened.store(true, Ordering::Relaxed);
+                return Ok(decoding);
+            }
+        }
+        in_pieces(why)
+    })?;
+    Ok(pcm_there(&on_disk, opened))
+}
+
+/// A WAV or AIFF file of plain samples that is shorter than its first
+/// bytes say (a copy that stopped): its length by the bytes that are
+/// there, not by its header - 20 s were shown over 10 s of sound (review
+/// 20, L5). What else is cut short says its true length when its end is
+/// read ([`Event::Length`]).
+fn pcm_there(
+    path: &std::path::Path,
+    (decoding, mut info): (Decoding, TrackInfo),
+) -> (Decoding, TrackInfo) {
+    use std::io::Read as _;
+    let said = || -> Option<u64> {
+        let mut head = [0u8; 12];
+        File::open(path).ok()?.read_exact(&mut head).ok()?;
+        let length = [head[4], head[5], head[6], head[7]];
+        match (&head[..4], &head[8..12]) {
+            (b"RIFF", b"WAVE") => Some(8 + u32::from_le_bytes(length) as u64),
+            (b"FORM", b"AIFF" | b"AIFC") => Some(8 + u32::from_be_bytes(length) as u64),
+            _ => None,
+        }
+    };
+    if let (true, Some(secs), Some(bits), Some(said), Ok(meta)) = (
+        info.codec.starts_with("PCM"),
+        info.duration,
+        info.bits,
+        said(),
+        std::fs::metadata(path),
+    ) {
+        let rate = (info.rate as u64 * info.channels as u64 * bits as u64 / 8) as f64;
+        let there = meta.len();
+        if rate > 0.0 && there < said {
+            // (what the file says it has before and after its samples)
+            let around = (said as f64 - secs * rate).max(12.0);
+            info.duration = Some(((there as f64 - around).max(0.0) / rate).min(secs));
+        }
+    }
+    (decoding, info)
 }
 
 impl Decoding {
@@ -1710,6 +1885,33 @@ impl Decoding {
             let i = links.iter().rposition(|l| l.start <= secs).unwrap_or(0);
             let (offset, start, base) = (links[i].offset, links[i].start, links[i].base);
             let within = secs - start;
+            if links[i].gaps {
+                // pages where no packet ends lead symphonia's seek astray: the
+                // link decoded from a page some seconds before the place (its
+                // header pages, then its sound from there - from its start
+                // where it has none so early), the sound before `within`
+                // dropped (review 17; review 18, M4: from its start always,
+                // a seek near the end of an hour was 9 s of silence)
+                let media = within + base + self.delay as f64 / self.rate.max(1) as f64;
+                let pieces = self.file.as_ref().and_then(|path| {
+                    let len = std::fs::metadata(crate::fspath::to_path(path)).ok()?.len();
+                    links[i].pieces_from(media, SEEK_LEAD, len)
+                });
+                match pieces {
+                    // (the reader, begun in the stream's middle, tells its
+                    // packets' times by the pages' granule positions: the
+                    // link's own time, as from its start)
+                    Some(pieces) => self.reopen_pieces(pieces).ok()?,
+                    None => self.reopen(offset).ok()?,
+                }
+                self.link = i;
+                let tb = self.time_base?;
+                let ts = media * tb.denom.get() as f64 / tb.numer.get() as f64;
+                self.until_ts = Some(ts.round() as i64);
+                let played = ((within + base) * self.rate as f64) as u64;
+                self.left = self.length.map(|l| l.saturating_sub(played));
+                return Some((secs * 1000.0).round() as u64);
+            }
             if i != self.link {
                 self.reopen(offset).ok()?;
                 self.link = i;
@@ -1746,10 +1948,33 @@ impl Decoding {
         let path = self.file.clone().ok_or("not a file")?;
         let window = crate::seektable::Window::open(&crate::fspath::to_path(&path), offset)
             .map_err(|e| e.to_string())?;
-        let mss = MediaSourceStream::new(Box::new(window), Default::default());
+        self.reopen_from(&path, Box::new(window))
+    }
+
+    /// Open `pieces` of the file again, read as one (an Ogg link's header
+    /// pages, then its sound from a page in its middle).
+    fn reopen_pieces(&mut self, pieces: Vec<(u64, u64)>) -> Result<(), String> {
+        let path = self.file.clone().ok_or("not a file")?;
+        let mut pieces = crate::seektable::Pieces::open(&crate::fspath::to_path(&path), pieces)
+            .map_err(|e| e.to_string())?;
+        // (a file cut in a page: what is whole of that page after them)
+        if let Some((at, page)) = &self.ogg_tail
+            && *at == pieces.end()
+        {
+            pieces = pieces.with_tail(page.clone());
+        }
+        self.reopen_from(&path, Box::new(pieces))
+    }
+
+    fn reopen_from(
+        &mut self,
+        path: &str,
+        source: Box<dyn symphonia::core::io::MediaSource>,
+    ) -> Result<(), String> {
+        let mss = MediaSourceStream::new(source, Default::default());
         let format = symphonia::default::get_probe()
             .probe(
-                &hint_for(&path, None),
+                &hint_for(path, None),
                 mss,
                 FormatOptions::default(),
                 MetadataOptions::default(),
@@ -1950,6 +2175,14 @@ impl Decoding {
                         self.stereo.drain(..drop * 2);
                         if begins + frames >= until {
                             self.until_ts = None;
+                        } else if frames > 0 {
+                            // (still before the place sought: back to the
+                            // caller now and then - a seek that overtakes
+                            // this one need not wait for it)
+                            self.dropped += 1;
+                            if self.dropped.is_multiple_of(64) {
+                                return Ok(true);
+                            }
                         }
                     }
                     if self.skip > 0 {
@@ -2553,7 +2786,16 @@ fn read_file(
             }
             Control::Gain(g) => d.gain = g,
         };
+        // (of the seeks waiting - a drag of the slider - the last one only:
+        // each was decoded to its place before the next, review 18, M4)
+        let mut seek = None;
         while let Ok(c) = controls.try_recv() {
+            match c {
+                Control::Seek { .. } => seek = Some(c),
+                gain => handle(gain, &mut epoch, &mut ended, &mut d),
+            }
+        }
+        if let Some(c) = seek {
             handle(c, &mut epoch, &mut ended, &mut d);
         }
         if ended || queued.load(Ordering::Relaxed) >= budget {
@@ -2566,6 +2808,8 @@ fn read_file(
         }
         let mut samples = Vec::with_capacity(4096);
         match d.step(&mut samples) {
+            // (nothing yet: on the way to a place sought)
+            Ok(true) if samples.is_empty() => {}
             Ok(true) => {
                 queued.fetch_add(samples.len() / 2, Ordering::Relaxed);
                 if tx.send(Feed::Pcm { epoch, samples }).is_err() {
@@ -3390,6 +3634,23 @@ impl Player {
                 Feed::End { epoch } => {
                     if epoch == f.epoch {
                         f.end = true;
+                        // a file shorter than it says (a copy that
+                        // stopped: FLAC and MP3 say their length in their
+                        // first bytes): its true length, now that its end
+                        // is read - the header's 20 s stood over 10 s of
+                        // sound (review 20, L5)
+                        let at =
+                            f.from_ms as f64 / 1000.0 + f.decoded as f64 / f.rate.max(1) as f64;
+                        if f.rate > 0
+                            && let Some(info) = f.info.as_mut()
+                            && info.duration.is_some_and(|d| d - at > 0.5)
+                        {
+                            info.duration = Some(at);
+                            self.send(Event::Length {
+                                generation,
+                                secs: at,
+                            });
+                        }
                     }
                 }
                 Feed::Failed(message) => {

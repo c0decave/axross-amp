@@ -799,6 +799,42 @@ fn two_players_by_themselves_keep_the_old_program() {
     );
 }
 
+/// A second player whose program another one updated: it downloads
+/// nothing, fails nothing, and says to restart - it downloaded the release
+/// in full every day and failed to install it ("changed since this player
+/// started"), with that notice (review 17, L4).
+#[test]
+fn a_second_player_after_the_first_updated_downloads_nothing() {
+    let dir = Dir::new("second");
+    let gh = Arc::new(FakeGitHub::default());
+    let key = keypair();
+    serve(&gh, &key, None);
+    let target = dir.join("axross-amp");
+    let install = linux_at(&target);
+    let ctx = egui::Context::default();
+    let mut a = updater(
+        install.clone(),
+        gh.clone(),
+        &key,
+        dir.join("cache"),
+        |_, _| Ok(()),
+    );
+    let mut b = updater(install, gh.clone(), &key, dir.join("cache"), |_, _| Ok(()));
+    until_rest(&mut a, &ctx, UpdateMode::Install);
+    assert!(matches!(a.stage, Stage::Ready(_)), "{:?}", a.stage);
+    let asked = gh.asked.lock().unwrap().len();
+    until_rest(&mut b, &ctx, UpdateMode::Install);
+    let after: Vec<String> = gh.asked.lock().unwrap()[asked..].to_vec();
+    let notice = b.take_notice().unwrap_or_default();
+    eprintln!("b: {:?}; asked {after:?}; said {notice:?}", b.stage);
+    assert!(
+        !after.iter().any(|u| u.contains(NAME)),
+        "downloaded the program again: {after:?}"
+    );
+    assert!(!matches!(b.stage, Stage::Failed(_)), "{:?}", b.stage);
+    assert!(notice.contains("restart"), "said {notice:?}");
+}
+
 /// Off chosen while a check by themselves is under way: nothing is
 /// downloaded or put in place (review 16, L3).
 #[test]

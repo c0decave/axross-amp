@@ -394,3 +394,72 @@ fn a_missing_window_library_is_said_not_a_panic() {
     );
     assert!(!said.contains("panicked"), "{said}");
 }
+
+/// A start whose graphics cannot be set up (here: only a backend this
+/// system has not, `WGPU_BACKEND=dx12` on Linux) said
+/// `Error: Wgpu(CreateSurfaceError(CreateSurfaceError { inner: Hal(…) }))`
+/// and no more; Options, where the adapter is chosen, cannot be reached
+/// then. It names the variables that choose from outside (review 19, L2).
+#[test]
+#[cfg(target_os = "linux")]
+fn a_start_without_usable_graphics_says_what_can_be_tried() {
+    let xvfb = ["/usr/bin/Xvfb", "/usr/local/bin/Xvfb"]
+        .into_iter()
+        .map(PathBuf::from)
+        .find(|p| p.exists());
+    let Some(xvfb) = xvfb else {
+        let message = "SKIPPED: no Xvfb - the failing start was not tried";
+        assert!(std::env::var_os("AMP_REQUIRE_X").is_none(), "{message}");
+        eprintln!("\n*** {message} ***\n");
+        return;
+    };
+    let home = player::Scratch::new("real-window-nographics");
+    let display = 40 + (std::process::id() + 23) % 50;
+    let _x = Killed(
+        Command::new(xvfb)
+            .arg(format!(":{display}"))
+            .args(["-screen", "0", "1280x1024x24"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("Xvfb starts"),
+    );
+    std::thread::sleep(Duration::from_secs(1));
+    let runtime = home.join("runtime");
+    std::fs::create_dir_all(&runtime).unwrap();
+    let mut command = Command::new(env!("CARGO_BIN_EXE_axross-amp"));
+    command
+        .args(["--new-instance", "--foreground"])
+        .env("DISPLAY", format!(":{display}"))
+        .env_remove("WAYLAND_DISPLAY")
+        .env("WGPU_BACKEND", "dx12")
+        .env("HOME", &*home)
+        .env("XDG_CONFIG_HOME", home.join(".config"))
+        .env("XDG_RUNTIME_DIR", &runtime)
+        .env_remove("DBUS_SESSION_BUS_ADDRESS")
+        .stdout(Stdio::null())
+        .stderr(std::fs::File::create(home.join("app.log")).unwrap());
+    let mut app = Killed(command.spawn().expect("the player starts"));
+    let started = Instant::now();
+    let status = loop {
+        if let Some(s) = app.0.try_wait().unwrap() {
+            break Some(s);
+        }
+        if started.elapsed() > Duration::from_secs(30) {
+            break None;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    let said = std::fs::read_to_string(home.join("app.log")).unwrap_or_default();
+    let status = status.unwrap_or_else(|| panic!("it went on with no backend; it said:\n{said}"));
+    assert_eq!(status.code(), Some(1), "{said}");
+    for word in [
+        "the window's graphics could not be set up",
+        "WGPU_BACKEND=gl",
+        "WGPU_POWER_PREF=high",
+        "WGPU_ADAPTER_NAME=",
+    ] {
+        assert!(said.contains(word), "{word} is not in:\n{said}");
+    }
+    assert!(!said.contains("panicked"), "{said}");
+}

@@ -39,6 +39,14 @@ pub enum Shader {
     Phosphor = 13,
     /// The waterfall at high resolution (its picture: rows of time).
     Spectrogram = 15,
+    /// A height field the CPU moves (its picture), lit.
+    Water = 16,
+    /// A Clifford attractor's density (its picture), glowing.
+    Attractor = 17,
+    /// Sand on a Chladni plate.
+    Cymatics = 18,
+    /// A contour map of land the bands raise.
+    Contours = 19,
 }
 
 impl State {
@@ -64,6 +72,10 @@ impl Shader {
             "smoke" => Shader::Smoke,
             "flyover" => Shader::Flyover,
             "crystals" => Shader::Crystals,
+            "water" => Shader::Water,
+            "attractor" => Shader::Attractor,
+            "cymatics" => Shader::Cymatics,
+            "contours" => Shader::Contours,
             _ => return None,
         })
     }
@@ -1278,6 +1290,10 @@ pub fn shade(
             let h = picture.map_or(1, |pic| pic.height.max(1)) as f32;
             waterfall_colour(u, pic(uv[0], uv[1] + u.scroll() / h))
         }
+        16 => water(u, uv, aspect, picture),
+        17 => attractor(u, uv, picture),
+        18 => cymatics(u, p, pixel, aspect),
+        19 => contours(u, p, pixel),
         _ => magma(pic(uv[0], uv[1]).max(0.0).powf(0.6) * 0.95),
     };
     [
@@ -1662,6 +1678,255 @@ fn crystals(u: &Uniforms, p: [f32; 2]) -> V3 {
         scale(face, 0.96 + 0.04 * facet),
         scale(u.colour(4), edge * (0.02 + 0.04 * level)),
     )
+}
+
+// -- the faces added since (faces.wgsl's, line for line) ---------------------------
+
+fn water(u: &Uniforms, uv: [f32; 2], aspect: f32, picture: Option<&Picture>) -> V3 {
+    let Some(pc) = picture else {
+        return u.colour(0);
+    };
+    let (dx, dy) = (1.5 / pc.width.max(1) as f32, 1.5 / pc.height.max(1) as f32);
+    let h = pc.at(uv[0], uv[1]);
+    let l = pc.at(uv[0] - dx, uv[1]);
+    let r = pc.at(uv[0] + dx, uv[1]);
+    let t = pc.at(uv[0], uv[1] - dy);
+    let b = pc.at(uv[0], uv[1] + dy);
+    let slope = [(r - l) * 6.0, (b - t) * 6.0];
+    let q = [
+        uv[0] * aspect * 2.2 + slope[0] * 0.9,
+        uv[1] * 2.2 + slope[1] * 0.9,
+    ];
+    let time = u.time();
+    let floor = fbm([q[0] + time * 0.02, q[1]]);
+    let n = [uv[0] * aspect * 2.2, uv[1] * 2.2];
+    let net = (noise([n[0] * 2.3 + time * 0.05, n[1] * 2.3])
+        - noise([n[0] * 3.1 + 7.3, n[1] * 3.1 + 2.1 - time * 0.04]))
+    .abs();
+    let caustic = (1.0 - net * 2.5).clamp(0.0, 1.0).powi(2);
+    let light = (-(slope[0] * 0.6 + slope[1] * 0.8)).clamp(-1.0, 1.0);
+    let lit = light.max(0.0);
+    let shade = (-light).max(0.0);
+    let crest = ((h - 0.5) * 3.0).clamp(0.0, 1.0);
+    let ground = u.colour(0);
+    let k = 1.0 - 0.65 * smoothstep(0.6, 0.95, (luma(u.colour(3)) - luma(ground)).abs());
+    let c = if luma(ground) > 0.4 {
+        let ink = mix3(u.colour(2), u.colour(3), 0.5);
+        let pool = mix3(
+            mix3(ground, u.colour(1), 0.32 + 0.15 * floor),
+            ground,
+            0.3 * uv[1],
+        );
+        let ring = smoothstep(0.22, 0.6, len2(slope[0], slope[1]));
+        let c = mix3(
+            pool,
+            ink,
+            ((shade * 0.28 + crest * 0.1 + ring * 0.1) * k + caustic * 0.36).clamp(0.0, 0.85),
+        );
+        mix3(c, [1.0; 3], (lit * 0.28 + lit.powi(4) * 0.3) * k)
+    } else {
+        let pool = mix3(
+            mix3(ground, u.colour(1), 0.5 + 0.2 * floor),
+            ground,
+            0.3 * uv[1],
+        );
+        let c = add(pool, scale(u.colour(2), caustic * 0.1));
+        let c = add(
+            add(c, scale(u.colour(3), lit * 0.55 * k)),
+            scale(c, -shade * 0.5 * k),
+        );
+        add(
+            add(c, scale(u.colour(4), lit.powi(3) * 0.55 * k)),
+            scale(u.colour(2), crest * 0.22 * k),
+        )
+    };
+    no_red(toward_grey(c))
+}
+
+/// A colour near saturated red taken smoothly toward a grey as light
+/// (faces.wgsl's `toward_grey`).
+fn toward_grey(c: V3) -> V3 {
+    let l = [
+        c[0].max(0.0).powf(2.2),
+        c[1].max(0.0).powf(2.2),
+        c[2].max(0.0).powf(2.2),
+    ];
+    let sum = l[0] + l[1] + l[2];
+    if sum <= 0.0 {
+        return c;
+    }
+    let k = smoothstep(0.5, 0.7, l[0] / sum);
+    let g = luma(c).powf(1.0 / 2.2);
+    mix3(c, [g, g, g], k * 0.85)
+}
+
+fn attractor(u: &Uniforms, uv: [f32; 2], picture: Option<&Picture>) -> V3 {
+    let Some(pc) = picture else {
+        return u.colour(0);
+    };
+    let size = [pc.width.max(1) as f32, pc.height.max(1) as f32];
+    let d = pc.at(uv[0], uv[1]);
+    let mut halo = 0.0;
+    for k in 0..4 {
+        let a = k as f32 * std::f32::consts::FRAC_PI_2 + std::f32::consts::FRAC_PI_4;
+        halo += pc.at(
+            uv[0] + a.cos() * 2.5 / size[0],
+            uv[1] + a.sin() * 2.5 / size[1],
+        );
+    }
+    halo *= 0.25;
+    let c = |i| u.colour(i);
+    let body = mix3(c(1), c(2), smoothstep(0.1, 0.6, d));
+    let mut out = mix3(c(0), body, smoothstep(0.0, 0.35, d));
+    out = mix3(out, c(3), smoothstep(0.45, 0.9, d) * 0.7);
+    out = add(out, scale(c(4), d.powi(3) * 0.35));
+    out = mix3(
+        out,
+        mix3(c(0), c(1), 0.6),
+        smoothstep(0.0, 0.3, halo) * (1.0 - smoothstep(0.0, 0.2, d)) * 0.35,
+    );
+    no_red(out)
+}
+
+fn chladni(q: [f32; 2], n: f32, m: f32, sign: f32) -> f32 {
+    let pi = std::f32::consts::PI;
+    (n * pi * q[0]).cos() * (m * pi * q[1]).cos()
+        + sign * (m * pi * q[0]).cos() * (n * pi * q[1]).cos()
+}
+
+fn plate(u: &Uniforms, q: [f32; 2]) -> f32 {
+    let (e, k) = (u.extra(1), u.extra(2));
+    let a = chladni(q, e[0], e[1], k[1]);
+    let b = chladni(q, e[2], e[3], k[2]);
+    a + (b - a) * k[0]
+}
+
+fn cymatics(u: &Uniforms, p: [f32; 2], pixel: f32, aspect: f32) -> V3 {
+    let half = [0.84, 0.84];
+    let edge = (p[0].abs() - half[0]).max(p[1].abs() - half[1]) / 0.84 + 1.0;
+    let t = u.time();
+    let level = u.extra(2)[3];
+    let shake = 0.005 + 0.003 * level + 0.018 * u.pulse();
+    let q = [
+        p[0] / half[0] + shake * (t * 7.0 + p[1] * 9.0).sin(),
+        p[1] / half[1] + shake * (t * 6.0 + p[0] * 8.0).cos(),
+    ];
+    let ground = u.colour(0);
+    let light = luma(ground) > 0.4;
+    if edge > 1.03 {
+        let shade = 1.0 - 0.3 * (1.0 - smoothstep(1.03, 1.14, edge));
+        let tone = u.band((0.5 + p[0] / (2.0 * aspect)).clamp(0.0, 1.0));
+        let spill = tone * (-(edge - 1.0) * 1.6).exp() * 0.09 * smoothstep(1.03, 1.2, edge);
+        if light {
+            return mix3(scale(ground, shade), u.colour(1), spill * 0.8);
+        }
+        return add(
+            scale(ground, shade),
+            scale(mix3(u.colour(1), u.colour(2), tone), spill),
+        );
+    }
+    let f = plate(u, q);
+    let e = 0.01;
+    let gx = (plate(u, [q[0] + e, q[1]]) - f) / e / half[0];
+    let gy = (plate(u, [q[0], q[1] + e]) - f) / e / half[1];
+    let d = f.abs() / len2(gx, gy).max(0.6);
+    let width = (0.003 + 0.004 * level) * 0.84;
+    let core = 1.0 - smoothstep(width, width + 1.5 * pixel, d);
+    let grain = noise([p[0] * 107.0 + t * 3.0, p[1] * 107.0]);
+    let scatter = (1.0 - smoothstep(0.0, width * (5.0 + 12.0 * u.pulse()) + 2.0 * pixel, d))
+        * smoothstep(0.55 - 0.3 * u.pulse(), 0.8, grain);
+    let cover = (3.0 * width / pixel).clamp(0.0, 1.0)
+        * if light {
+            0.55 + 0.15 * ((0.012 - pixel) / 0.006).clamp(0.0, 1.0)
+        } else {
+            1.0
+        };
+    let sand = (core * (0.8 + 0.2 * grain) + scatter * 0.55).clamp(0.0, 1.0) * cover;
+    let metal = add(
+        mix3(ground, u.colour(1), 0.2),
+        scale(u.colour(4), 0.06 * (1.0 - 0.5 * len2(q[0], q[1]))),
+    );
+    let tone = u.band((len2(q[0], q[1]) * 0.75).clamp(0.0, 1.0));
+    let lit = mix3(
+        metal,
+        mix3(u.colour(3), u.colour(4), 0.3 + 0.4 * tone),
+        0.85,
+    );
+    let mut c = mix3(metal, lit, sand * (0.7 + 0.15 * u.energy() + 0.15 * tone));
+    c = mix3(
+        c,
+        mix3(metal, u.colour(4), 0.3),
+        smoothstep(0.985, 1.0, edge) * (1.0 - smoothstep(1.015, 1.03, edge)),
+    );
+    c = mix3(c, ground, smoothstep(1.015, 1.03, edge));
+    no_red(c)
+}
+
+fn land(u: &Uniforms, p: [f32; 2]) -> f32 {
+    let t = u.time() * 0.02;
+    let q = [p[0] * 0.8 + t, p[1] * 0.8 - 0.7 * t];
+    let mut h = (0.5 * noise(q)
+        + 0.25 * noise([q[0] * 2.03 + 1.7, q[1] * 2.03 + 9.2])
+        + 0.125 * noise([q[0] * 4.1 + 4.6, q[1] * 4.1 + 2.9]))
+        * 0.9;
+    let (e1, e2) = (u.extra(1), u.extra(2));
+    let hills = [e1[0], e1[1], e1[2], e1[3], e2[0], e2[1]];
+    for (k, hill) in hills.iter().enumerate() {
+        let fk = k as f32;
+        let c = [
+            (fk - 2.5) * 0.55 + 0.25 * (t * 3.0 + fk * 1.9).sin(),
+            0.45 * (fk * 2.3 + t * 2.0).sin(),
+        ];
+        let d = [p[0] - c[0], p[1] - c[1]];
+        h += hill * 0.42 * (-(d[0] * d[0] + d[1] * d[1]) * 3.5).exp();
+    }
+    h
+}
+
+fn contours(u: &Uniforms, p: [f32; 2], pixel: f32) -> V3 {
+    let h = land(u, p);
+    let hx = land(u, [p[0] + pixel, p[1]]) - h;
+    let hy = land(u, [p[0], p[1] + pixel]) - h;
+    let slope = len2(hx, hy) / pixel;
+    let spacing = 0.05;
+    let v = h / spacing;
+    let apart = spacing / slope.max(1e-5);
+    let d = (fract(v + 0.5) - 0.5).abs() * apart;
+    let line = (1.0 - smoothstep(0.004, 0.004 + pixel, d))
+        * ((apart - 0.027) / 0.04).clamp(0.0, 1.0)
+        * (0.012 / pixel).clamp(0.0, 1.0);
+    let major = 1.0
+        - smoothstep(
+            0.02,
+            0.12,
+            (fract((v + 0.5).floor() / 5.0 + 0.5) - 0.5).abs(),
+        );
+    let high = (h * 0.9).clamp(0.0, 1.0);
+    let tint = palette(u, 0.12 + 0.62 * high);
+    let light = luma(u.colour(0)) > 0.4;
+    let stark = smoothstep(0.6, 0.95, (luma(u.colour(3)) - luma(u.colour(0))).abs());
+    let fill = mix3(
+        u.colour(0),
+        tint,
+        if light {
+            let (pale, deep) = (0.3 + 0.3 * high, 0.18 + 0.42 * high);
+            pale + (deep - pale) * stark
+        } else {
+            0.55
+        },
+    );
+    let shade = (0.96 + (hy - hx) / pixel * if light { 0.1 } else { 0.3 }).clamp(0.86, 1.05);
+    let ink = if light {
+        let land = scale(fill, shade);
+        let lf = luma(land).max(0.001);
+        scale(
+            land,
+            ((lf - 0.05 - 0.04 * major).max(0.0) / lf).powf(1.0 / 2.2),
+        )
+    } else {
+        mix3(fill, u.colour(4), 0.17 + 0.17 * major)
+    };
+    no_red(mix3(scale(fill, shade), ink, line))
 }
 
 /// The feedback face's next pixel from its last frame `last` (w x h).

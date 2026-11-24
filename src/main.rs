@@ -76,32 +76,6 @@ fn main() -> eframe::Result {
         );
         return Ok(());
     }
-    // (the first start of a program the updater put in place: watched -
-    // where the one before it never drew its window, the program it
-    // replaced is put back and run instead: review 16, M4)
-    {
-        use axross_amp::update::{FirstStart, Install, Version, first_start};
-        let install = Install::current();
-        if install.can_update()
-            && let FirstStart::RolledBack(old) = first_start(&install.target, Version::current())
-        {
-            eprintln!(
-                "axross-amp: {} did not start here; the program it replaced is back",
-                Version::current()
-            );
-            let mut command = std::process::Command::new(&old);
-            command.args(std::env::args_os().skip(1));
-            #[cfg(unix)]
-            {
-                use std::os::unix::process::CommandExt;
-                let e = command.exec();
-                eprintln!("axross-amp: {}: {e}", old.display());
-                std::process::exit(1);
-            }
-            #[cfg(not(unix))]
-            std::process::exit(command.status().ok().and_then(|s| s.code()).unwrap_or(1));
-        }
-    }
     let new_instance = args.iter().any(|a| a == "--new-instance");
     // (started by the updater's Restart now: the player's name on the bus
     // is taken when the program it replaces lets go of it)
@@ -144,6 +118,37 @@ fn main() -> eframe::Result {
             axross_amp::detach::Start::Run => {}
         }
     }
+    // (the first start of a program the updater put in place: watched -
+    // where the one before it never drew its window, the program it
+    // replaced is put back and run instead: review 16, M4. Here, in the
+    // process that opens the window: before the hand-over and the going
+    // to the background, a start from a terminal - and its child, the
+    // same program, after it - or a file handed to the player running
+    // took a good update for one that never started, put the old program
+    // back and refused the new one for good: review 17, H1)
+    {
+        use axross_amp::update::{FirstStart, Install, Version, first_start};
+        let install = Install::current();
+        if install.can_update()
+            && let FirstStart::RolledBack(old) = first_start(&install.target, Version::current())
+        {
+            eprintln!(
+                "axross-amp: {} did not start here; the program it replaced is back",
+                Version::current()
+            );
+            let mut command = std::process::Command::new(&old);
+            command.args(std::env::args_os().skip(1));
+            #[cfg(unix)]
+            {
+                use std::os::unix::process::CommandExt;
+                let e = command.exec();
+                eprintln!("axross-amp: {}: {e}", old.display());
+                std::process::exit(1);
+            }
+            #[cfg(not(unix))]
+            std::process::exit(command.status().ok().and_then(|s| s.code()).unwrap_or(1));
+        }
+    }
     // (the tests' stand-in for the window: up at once, then N seconds of
     // nothing - so going to the background can be tested without a display)
     if let Some(secs) = std::env::var("AXROSS_AMP_FAKE_WINDOW")
@@ -154,6 +159,11 @@ fn main() -> eframe::Result {
             let _ = std::fs::write(path, std::process::id().to_string());
         }
         axross_amp::detach::signal_ready();
+        // (its window up: a first start watched went well)
+        let install = axross_amp::update::Install::current();
+        if install.can_update() {
+            axross_amp::update::first_start_done(&install.target);
+        }
         std::thread::sleep(std::time::Duration::from_secs(secs));
         return Ok(());
     }
@@ -165,12 +175,11 @@ fn main() -> eframe::Result {
         std::process::exit(1);
     }
     // the window as large as it was left
-    let size = axross_amp::state::read_amp(
+    let settings = axross_amp::state::read_amp(
         &axross_amp::state::config_dir().join(axross_amp::state::AMP_FILE),
-    )
-    .window
-    .unwrap_or([620.0, 860.0]);
-    let options = eframe::NativeOptions {
+    );
+    let size = settings.window.unwrap_or([620.0, 860.0]);
+    let mut options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("axross-amp")
             .with_app_id("axross-amp")
@@ -178,9 +187,19 @@ fn main() -> eframe::Result {
             .with_inner_size(size)
             .with_min_inner_size([420.0, 420.0])
             .with_drag_and_drop(true),
+        // (the system's fonts are this program's to ask, off this thread:
+        // src/fonts.rs)
+        system_font_fallback: false,
         ..Default::default()
     };
-    eframe::run_native(
+    // the graphics adapter: the integrated GPU before a dedicated one
+    // unless Options → Graphics says otherwise, a software one only where
+    // there is no other (egui's own choice: wgpu's high-performance one)
+    if let eframe::egui_wgpu::WgpuSetup::CreateNew(setup) = &mut options.wgpu_options.wgpu_setup {
+        let preference = axross_amp::graphics::Preference::from_key(&settings.graphics);
+        setup.native_adapter_selector = Some(axross_amp::graphics::selector(preference));
+    }
+    let started = eframe::run_native(
         "axross-amp",
         options,
         Box::new(move |cc| {
@@ -191,7 +210,17 @@ fn main() -> eframe::Result {
             axross_amp::detach::signal_ready();
             Ok(Box::new(app))
         }),
-    )
+    );
+    // (no adapter, no surface, no device: Options cannot be reached, so
+    // what can be tried from outside is said - not a line of nested Debug)
+    if let Err(error @ eframe::Error::Wgpu(_)) = &started {
+        eprintln!(
+            "{}",
+            axross_amp::graphics::start_failed(&format!("{error:?}"))
+        );
+        std::process::exit(1);
+    }
+    started
 }
 
 /// The first library the window needs (winit loads them as it starts, by

@@ -15,9 +15,16 @@ use std::time::{Duration, Instant};
 
 const RATE: u32 = 48_000;
 
-fn dir() -> String {
-    std::env::var("R16_OGG")
-        .unwrap_or_else(|_| concat!(env!("CARGO_MANIFEST_DIR"), "/tests/media/r16").into())
+/// The folders of media: review 16's, and review 17's (tests/media/r17, by
+/// tests/media/gen_ogg17.py: an Opus whose first page of sound ends no
+/// packet, granule -1, and a recording of 70 songs - more than 64 links).
+fn dirs() -> Vec<String> {
+    match std::env::var("R16_OGG") {
+        Ok(dir) => vec![dir],
+        Err(_) => ["r16", "r17"]
+            .map(|d| format!("{}/tests/media/{d}", env!("CARGO_MANIFEST_DIR")))
+            .to_vec(),
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -31,11 +38,14 @@ struct Entry {
     approx: f64,
     /// A chained capture: the first link's length (the second's chirp from 0).
     link1: f64,
+    /// A chain of the same recording again and again (from `t0` each).
+    repeat: bool,
+    dir: String,
 }
 
 /// manifest.json without a JSON crate: one object per file.
-fn manifest() -> Vec<Entry> {
-    let text = std::fs::read_to_string(format!("{}/manifest.json", dir())).unwrap();
+fn manifest(dir: &str) -> Vec<Entry> {
+    let text = std::fs::read_to_string(format!("{dir}/manifest.json")).unwrap();
     let mut out = Vec::new();
     for chunk in text.split("\"name\": \"").skip(1) {
         let name = chunk.split('"').next().unwrap().to_owned();
@@ -68,6 +78,8 @@ fn manifest() -> Vec<Entry> {
             t0: num("t0"),
             approx: num("approx_secs"),
             link1: num("link1"),
+            repeat: obj.contains("\"repeat\": true"),
+            dir: dir.to_owned(),
             name,
         });
     }
@@ -139,11 +151,11 @@ fn first_heard(left: &[f32]) -> Option<(f64, usize)> {
 fn oggs_and_their_recordings_are_timed_and_sought_as_they_are() {
     let only = std::env::var("R16_ONLY").ok();
     let mut bad = Vec::new();
-    for e in manifest() {
+    for e in dirs().iter().flat_map(|d| manifest(d)) {
         if only.as_deref().is_some_and(|o| !e.name.contains(o)) {
             continue;
         }
-        let path = format!("{}/{}", dir(), e.name);
+        let path = format!("{}/{}", e.dir, e.name);
         let links = axross_amp::seektable::ogg_links(std::path::Path::new(&path));
         let probed = axross_amp::engine::probe(&path).map(|i| i.duration);
         let (frames, _) = axross_amp::engine::decode_file(&path, RATE).unwrap();
@@ -182,7 +194,14 @@ fn oggs_and_their_recordings_are_timed_and_sought_as_they_are() {
                 continue;
             };
             let in_second = e.link1.is_finite() && t >= e.link1;
-            let landed = if in_second {
+            // (a chain of one recording: where the link it landed in begins
+            // as the player times it - its length is checked above)
+            let link = links
+                .as_ref()
+                .and_then(|l| l.iter().rev().find(|l| l.start <= t + 0.2));
+            let landed = if let (true, Some(link)) = (e.repeat, link) {
+                link.start + src - origin - at as f64 / RATE as f64
+            } else if in_second {
                 src + e.link1 - at as f64 / RATE as f64
             } else {
                 src - origin - at as f64 / RATE as f64

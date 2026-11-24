@@ -4,6 +4,308 @@ axross-amp is axross's Media Player as a program of its own, in Rust. The
 versions before 0.14.0 were not published; they are listed so the history
 reads whole.
 
+## 0.17.0 - 2026-11-24
+
+Twenty new faces, and what independent reviews 18, 19 and 20 found in them
+and around them.
+
+### Added
+- **Twenty new faces**, after the 49 there were (axross's eighteen keep
+  their keys; each new one is saved in the shared state file as the face
+  of axross's it is most like):
+  - *Generative*: Orbits, Plasma globe, Fractal tree, Water surface (a
+    shader), Constellation, Strange attractor (a shader), Bokeh, Cymatics (a
+    shader), Contour map (a shader), Torus knot, Sunflower.
+  - *Spectral*, a group of its own: Circular waveform, Bouncing balls,
+    Spectrum globe, Honeycomb equalizer, Pitch spiral, Spectral vinyl,
+    Radar, Pendulum wave, Spectrum rain.
+  Every one is driven by the music - beat, bands, stereo, loudness - within
+  the frame-cost limits, allocates no more in a frame than the others, and is
+  measured by the flash tests like the others; the shader faces are drawn
+  by the CPU too where there is no GPU.
+- **Graphics: Auto, Power saving, High performance** (Options): which
+  adapter draws the window. With an integrated and a dedicated GPU, Auto
+  takes the integrated one on a machine with a battery - a player sits on
+  one for hours; egui's own choice was the high-performance one - and the
+  dedicated one on a machine known to have none (a desktop's monitor is on
+  that card; a list of power supplies that is empty or cannot be read
+  says nothing: the integrated one);
+  Power saving and High performance say which outright. A software adapter
+  (llvmpipe, WARP) never while there is a real GPU. Options names the one
+  in use ("Vulkan – Intel(R) UHD Graphics 620") and says so where it is a
+  software one: the shader faces are then drawn by the CPU. Taken at the
+  next start, which the status line says when one is chosen.
+  `WGPU_ADAPTER_NAME` (a part of an adapter's name), `WGPU_POWER_PREF`
+  (`low`, `high`) and `WGPU_BACKEND` decide instead of the setting, and a
+  start whose graphics cannot be set up names them (it said
+  `Error: Wgpu(CreateSurfaceError(…))` and no more).
+- **Titles in Chinese, Japanese, Korean, Arabic, Hebrew, Thai and
+  Devanagari** are written with the system's fonts - they were rows of
+  boxes wherever eframe's own search found nothing, and that search ran on
+  the window's thread at the first such letter. The fonts are looked for
+  in the background (the system's own matching, then well-known files) and
+  `AXROSS_AMP_FONTS` names more files or folders - listed on that thread
+  too, each file's letters read once. A right-to-left title reads from the
+  right, its numbers and Latin words in place, a pair of brackets of one
+  direction (UAX #9's rule N0: "Habaytak (حبيتك) 1970" keeps its year
+  outside the brackets), brackets turned (it was laid word by word from
+  the left).
+- **No font file can end the program.** Every font - the bold, serif and
+  monospace faces of the start as well as one found for a script - is
+  gone through before egui is given it: every table within the file (half
+  a font, a copy that stopped, lists them all), `head` with a size of the
+  em that is one, each glyph's place within `glyf`, and every glyph drawn
+  once, into nothing, with a panic of the font's reader caught - on the
+  fonts' threads. Of 1,064 damaged files (a zeroed or 0xff block at every
+  offset, each table zeroed or garbage, eight cuts, of six fonts) none
+  panics as a face of the start or as a named font; 143 of 878 did
+  ("index out of bounds" in the reader, "Bad px_scale_factor: inf"). And
+  should a font panic in a frame all the same, the frame's panic is
+  caught: the fonts found for other scripts are let go, at a second time
+  the faces of the start, and the next frame is drawn with what is left.
+- **Bluetooth: a double click on a device connects it** - a paired one is
+  connected, one not paired yet is paired; nothing while it is busy or
+  connected, or with the adapter off - and the row says "Double-click to
+  connect." only where it would.
+- **The library's dependencies are set up for Android** (eframe there
+  without AccessKit, the clipboard and the desktop's window systems), to be
+  built through the app, axross-amp-android, a repository of its own: the
+  library alone does not build for Android (the activity is the app's to
+  choose), and this version has not been built there - the app pins an
+  earlier commit. Nothing changes for Linux, macOS and Windows: the same
+  lock file, the same features of every crate.
+
+### Changed
+- **The menu of the faces** (⚙, a right click on the picture) for 69 of
+  them: rows 24 points tall (16 - 18 before); three columns, two or one
+  where the window is narrower than three - at the least window, 420 x 420,
+  the third column lay past its edge in nine of the ten designs; the grid
+  scrolls both ways and to the row that has the focus; its last row wraps
+  (Brutalist's "Options" was off the window). The grid is as tall as the
+  window lets it be (at the default window ten rows were below the fold
+  with 190 points unused under the menu) and its scroll bar stays in
+  sight; the row that has the focus wears a ring; Left and Right go across
+  its columns (Left dropped the focus out of the grid).
+- **Every submenu of the menu opens beside its button or above or below
+  it, and scrolls** where the window is too low or too narrow for it: see
+  *Fixed*.
+- **Bouncing balls** (was Bouncing caps): a row of balls on pads, each
+  kicked as high as its band is loud, falling back, squashed as it lands,
+  with its trail and its reflection - it was the Spectrum's bars again, with
+  caps thrown to the picture's top whatever the bar's height.
+- **Water surface, Cymatics, Contour map**: the water with the light's net
+  on its floor, a sheen on its rings and deeper colour (gentler in the
+  starkest schemes and on light grounds, where the flash rule binds it) -
+  on a light ground the net is a net of ink and the rings' rims a little
+  darker (Paper was a pale sheet, all but blank: contrast 8.8 of 255, now
+  18; rings in ink as strong as the net read ten transitions a second);
+  the plate's sand in the colour of the band that sounds there, a new
+  figure sooner, the bands' light spilling round the plate, and the plate
+  jumps on the beat - its sand thrown off its lines and settling back (it
+  moved 2.5 times as much with a song as in silence; 4.7 times now). The
+  plate stays a square in the picture's middle: its figure is regular
+  lines, and those may cover two fifths of a picture at most - as wide as
+  the picture they covered 65 % of it. The map on a light ground a middle
+  tone tinted by its height, pale lowlands to dark peaks, each line a
+  shade darker than its land (lines in ink on a pale ground were a pattern
+  by BT.1702); black on white its low land is nearly the ground (a tenth
+  of the picture was paler than a middle grey; now near half).
+- **The Contour map slows in Calm and in Reduced motion**: its hills
+  followed the bands at once whatever the setting (0.99 and 0.82 of
+  Intense's motion; now 0.64 and 0.31 - each hill eased over a sixth and a
+  half of a second).
+- **The Circular waveform** on a dark ground finds its gain by the line it
+  draws, not by the samples: in a loud, dense passage the ring was nearly
+  a plain circle. It is a little larger there, and its line heavier the
+  louder it is. (On a light ground it is as it was: livelier, in black on
+  white at 240 x 135 it read six transitions a second.)
+- **The Radar** sends a ring out from its middle on the beat, and its beam
+  goes round a little faster the louder it is: it swept the same with
+  music and without.
+- **The Flow field in a small picture** draws every second of its hairs,
+  every third on a light ground: all of them, as close as they lie there,
+  were rows of lines, and the guard's pattern stage softened the face in
+  85 - 90 % of the frames in Paper at 240 x 135 (now in none).
+- **Synthwave and Kinetic typography on light grounds**: the sun swells
+  and the rows come half as fast with the bass, a word every 1.1 s (0.75):
+  with drum and bass the veil lay over Synthwave a sixth of the track in
+  Paper at 240 x 135, over the typography a sixth in a cream scheme.
+  Synthwave is as calm in a small picture on a dark ground, and the
+  Spirograph has no glow there: at 240 x 135 in Midnight the veil lay over
+  Synthwave a fifth of an ordinary song and over the Spirograph a fifth of
+  drum and bass (found by the same test, which holds Midnight too now).
+- **On light grounds**: the Spectrum globe has a body and inked marks, the
+  Radar a deeper face and inked echoes (pale on pale before); the
+  Constellation in a small picture shows fewer stars with a shorter reach
+  (a tangle at 240 x 135).
+- **The Honeycomb equalizer** eases its cells over a seventh of a second
+  and has larger cells in a small picture: it read 4 - 5 transitions a
+  second on ordinary music at 240 x 135 and leant on the guard's veil in
+  drum and bass.
+
+### Fixed
+- **A click on "Options ▸" in a low window changed the update mode**:
+  with its Graphics block Options was taller than a window under about
+  700 points; egui, finding no place beside the button, laid it over the
+  button, and the click that opened it went on to the entry under the
+  pointer. Its last entries lay off the window. Each of the menu's five
+  submenus is now as tall and as wide as there is room beside, above or
+  below its button, and scrolls (its bar in sight), in all ten designs
+  down to the least window; `tests/face_menu.rs` opens every one by a
+  click in every design at five window sizes and compares both settings
+  files before and after.
+- **A face chosen in ⚙'s menu was thrown away**, in all ten designs, by
+  the pointer and by the keys: the top row wrote the face it had before
+  the menu back over the choice. The menu from a right click worked; no
+  test chose a face through ⚙ (`tests/face_menu.rs` does, in every design).
+- **The flash guard's estimate held a dark wedge no face draws** on every
+  light ground: the slivers of a rounded ground's fan of triangles were
+  laid evenly along their length - half the ground at the corner across.
+  The veil, a blur of the estimate, showed it as a streak; a piece is laid
+  as wide as it is at each place now. With it, what brought the veil over
+  pictures that do not flash, on light grounds in small pictures: the
+  Circular waveform (a third of an ordinary song at 240 x 135), the stereo
+  scope's wide figure, Kinetic typography's and the Spirograph's light
+  added to a light ground. The veil staying off where nothing flashes is
+  tested for every face through four kinds of music - two songs, drum and
+  bass, speech - in Paper, in black on white and in Midnight at 240 x 135,
+  in Sakura at 200 x 112 and in a cream scheme at 300 x 170
+  (`tests/veil_light.rs`;
+  four classic faces in Classic with one signal before). One veil more
+  than is needed is left, and named there: the line in black on white
+  through drum and bass.
+- **The nine Spectral faces ignored Calm and Reduced motion**: they moved
+  as fast where the desktop asks for less motion as in Intense. What moves
+  by itself - a pendulum's swing, the rain's fall, the radar's sweep, a
+  throw, a turn - goes by the pictures' pace now (0.7 in Calm, 0.45 in
+  Reduced), and a line follows the sound more slowly there; the levels keep
+  the music's own time.
+- **A seek in a long Ogg that is sought by decoding** (pages on which no
+  packet ends: 0.16.4) decoded the link from 0:00 - a second and a half of
+  silence for a seek to 9:30 of ten minutes, 8.65 s to 57:00 of an hour,
+  each seek of a drag in turn. The page scan keeps a place to decode from
+  every four seconds; a seek reads from the last one a second before it
+  (0.04 s whatever the place), and of the seeks waiting only the last is
+  taken.
+- **The Strange attractor fell into a dozen blobs in a loud passage** and
+  all but vanished for seconds between phrases, with any music: its shape
+  was drifted from one set of numbers to the next, and most of what lies
+  between two strange attractors is a cycle of a few points. It draws
+  eight shapes, each proven strange by a test (Lyapunov exponent, and how
+  much of the plane the orbit covers), and goes from one to the next by
+  drawing both - the old one's points fewer, the new one's more, over four
+  seconds; the sound bends a shape only as far as it stays strange, and
+  the picture is scaled to the cells brighter than all but one in two
+  hundred. Through five kinds of music, 17 s each, the least it inks is
+  0.12 - 0.22 of the picture against a median of 0.30 (0.01 - 0.05 before).
+  A shape bent by the sound, or begun where the orbit happened to be, is
+  drawn only where it covers seven tenths of what the shape covers by
+  itself: the eighth, bent, was for seconds a thin drawing of a dozen
+  curves in techno and metal.
+- **The Plasma globe's filaments jumped** - up to 40 degrees, all of them -
+  whenever their number changed: each has its place now, and the last one
+  grows out and draws back.
+- **A shut menu's still picture** let clicks through to what lies under
+  it and showed the old choice: the second click of a slow double click on
+  a face's row went to the picture under it and stepped the face on, one
+  on a row lower down pressed Play or opened ⚙ again. The whole still
+  picture takes the pointer while it is seen (half a second from the
+  choice; every tap in that time) - a right click there opens the menu
+  again where it is, a dialog that comes up is not under it - and it shows
+  the face chosen. A button pressed on it in its last frames and let go
+  after it would be gone is still its click: the right button 0.40 s
+  after a choice opened nothing.
+- **A tap on "Theme" or "Colours" shut the whole menu** at the default
+  width: a click that arrives with the pointer - pressed in the frame the
+  submenu opens or the next. egui shuts every menu at a click that began
+  while a submenu was open, wherever it was; the submenus' clicks are told
+  by the player now: one beside the submenu and its menu shuts the menu
+  (and one within it where it did before: in ⚙'s), one on its button does
+  not.
+- **The submenus' scroll bar** is to be seen without the pointer on it:
+  five points wide, its handle in the text's colour (egui's was all but
+  unseen until the pointer came to it).
+- **A cut-short AIFF file was refused whole** ("the file is empty or cut
+  short") where a WAV file cut at the same place plays: it plays what is
+  there. **An Ogg file cut in the middle of a page** lost that page's
+  sound - 0.7 s of a 3 s file, all of a short one that is a single page:
+  the packets that are whole in it are played (Vorbis and Opus). **The
+  length shown for a file cut short** was its header's - 20 s shown, 10 s
+  played: a WAV or AIFF file shows what is there from the start, any
+  other once its end is read.
+- **A start whose graphics cannot be set up** names the variables that
+  choose another adapter or backend (see *Added*).
+- **The Bluetooth row said "Double-click to connect."** also while the
+  device was busy and with the adapter off, when a double click does
+  nothing.
+- **0.16.4's notes** said a face chosen in a menu or in the list waits its
+  turn; it does not, and never did - it changes at once. That entry is
+  corrected below.
+- **Tests**: `seek15`'s "half a second of playing" was by the clock - on a
+  busy machine little sound - and failed two times in eight under load; it
+  is by the sound taken now.
+- **The Pitch spiral**: its lowest name ("F#") was cut by the picture's
+  edge; its names laid out anew each frame were 40 allocations a frame.
+
+## 0.16.4 - 2026-11-23
+
+What independent review 17 found in 0.16.3.
+
+### Fixed
+- **An update's first start, watched in the process that opens the
+  window**: started from a terminal (which hands the player to a detached
+  copy of itself) or handing its files to a player already running, the
+  update was taken for one that did not start, the old program put back
+  and the new one refused for good - "did not start here before", daily.
+  The start is marked as watched only where the window opens.
+- **V held** stepped the face at the key's repeat - 15 faces a second, the
+  picture flashing 8 - 13 times a second in the default window. A held V
+  (Shift+V) steps once; the face - by V or a click on the picture - changes
+  at the window's shared turn, twice a second at most, in the picture's own
+  window and on another display alike (one chosen in a menu or in the list
+  changes at once: a click a choice).
+- **The Cover face's layout** (Modern leaves its card out for it) changed
+  outside that turn: tapped in and out it flashed 7 - 10 times a second.
+  It follows the face at the turn.
+- **Typing in the playlist's filter** resized the picture at each letter
+  (the list's matching rows gave it room): 7 - 10 transitions a second.
+  The picture keeps its size.
+- **N or P held** moved the playing row's highlight at the key's repeat
+  (12 by both meters at 640 x 480): twice a second at most now.
+- **Controls off the window**: Brutalist at 580 - 630 points wide (the
+  default window is 620) had Next, Clear and the playlist past its right
+  edge; Modern at 540 - 550 the volume and the list; Glass from 780 on laid
+  Next over the playlist's filter. Every design is checked at 620 x 860 and
+  every width from 400 to 900, 10 apart (`tests/designs.rs`,
+  `tests/display_fit.rs`).
+- **Ogg**: a file of more than 64 links (a concatenation of recordings) had
+  its links after the 8th timed by a page's capacity - 70 recordings of
+  459 s said 796 s; every link is counted now (Opus by its packets' TOC,
+  without decoding). An Ogg whose first page of sound completes no packet
+  (granule -1: packets longer than a page - Opus at 510 kb/s on small
+  pages) was taken for a recording joined 0.1 s in, and every seek in it
+  played from the start (symphonia's seek is led astray by such pages):
+  its length is right and it is sought by decoding from the link's start.
+- **Popups opened and shut at a click's pace** (review 16): a popup shut -
+  a menu, a list's choices - leaves what it showed a quarter second, then
+  fades out over another; ⚙'s menu or the picture's, opened and shut 5
+  times a second, read 10 transitions a second in Paper, now 0 - 1.
+- **A second player** (`--new-instance`) in Install mode, its program
+  updated by another, downloaded the release in full every day and failed
+  to install it; it now checks nothing more and says to restart.
+- **The flash guard's cost**: its estimate lays a rectangle whole and
+  passes over the pieces it leaves out of a very large mesh at once, and
+  its veil's colours are worked out once a cell, not once a corner.
+  Unoptimised, a spectrum frame 3.0 -> 1.6 ms, particles at 1920 x 1080
+  14.4 -> 12.1 ms (4.4 without the guard). A rectangle's cells are covered
+  exactly, not by four samples a row: the line's fill through drum and
+  bass, veiled 48 % of the time where nothing flashes, now 36 %.
+- **The frame-cost test** holds the 95th percentile of 40 frames to the
+  limit too, not only the median (a face slowed by 20 ms every sixth frame
+  passed by its median).
+- **The supply-chain gate's minimum age** is 14 days again (10 since
+  0.14.2); url 2.5.9 passes as the reviewed security fix it is.
+
 ## 0.16.3 - 2026-11-22
 
 - The frame-cost test measures by the machine it runs on - median CPU

@@ -40,7 +40,9 @@ fn window(dir: &Path, args: Vec<String>, size: egui::Vec2) -> Harness<'static, A
 
 fn hover(h: &mut Harness<'static, App>, at: Pos2) {
     h.event(Event::PointerMoved(at));
-    settle(h, 2);
+    // (a submenu the pointer opens finds its place - beside, above or below
+    // its button - in the frame after it is measured)
+    settle(h, 4);
 }
 
 #[test]

@@ -143,6 +143,7 @@ fn describe(event: &Event) -> String {
         }
         Event::Advanced { generation, .. } => format!("advanced {generation}"),
         Event::Ended { generation } => format!("ended {generation}"),
+        Event::Length { generation, secs } => format!("length {generation}: {secs:.1}"),
         Event::Failed {
             generation,
             message,

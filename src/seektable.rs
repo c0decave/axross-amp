@@ -30,6 +30,37 @@ pub struct Link {
     /// Where its own time begins in its granule positions (s): 0, or the
     /// station's count where a recording of it joined.
     pub base: f64,
+    /// Pages of its sound on which no packet ends (granule -1: a packet
+    /// longer than a page): symphonia's seek in it goes astray (review 17:
+    /// a seek to 1 s played from the start, said 0.11 s) - it is sought by
+    /// decoding - from the last of its [`Link::points`] before the place
+    /// sought, not from its start (review 18, M4: 9 s of silence for a seek
+    /// near the end of an hour).
+    pub gaps: bool,
+    /// Where its first page of sound is (bytes): what lies before it, from
+    /// `offset` on, are its header packets.
+    pub sound: u64,
+    /// Places to decode from, [`POINT_EVERY`] seconds apart (kept for a link
+    /// with `gaps` only): a page on which a packet ends, where it is (bytes)
+    /// and the reader's time from which its sound can be decoded (s, by the
+    /// granule positions).
+    pub points: Vec<(u64, f64)>,
+}
+
+/// The seconds between a link's [`Link::points`].
+pub const POINT_EVERY: f64 = 4.0;
+
+impl Link {
+    /// The pieces of the file to read to decode from `secs` of the reader's
+    /// time on (`lead` seconds before it at least: a decoder's run-up) -
+    /// its header pages, then its sound from the last point before that;
+    /// None where the link is read from its start (no point so early).
+    pub fn pieces_from(&self, secs: f64, lead: f64, len: u64) -> Option<Vec<(u64, u64)>> {
+        let k = self.points.partition_point(|p| p.1 <= secs - lead);
+        let (at, _) = *self.points.get(k.checked_sub(1)?)?;
+        (self.sound > self.offset && at >= self.sound && at < len)
+            .then(|| vec![(self.offset, self.sound - self.offset), (at, len - at)])
+    }
 }
 
 /// What an Ogg page's header says.
@@ -39,9 +70,12 @@ struct Page {
     serial: u32,
     /// The first bytes of its body (a first page's: its first packet's start).
     head: Vec<u8>,
+    /// Its lacing values, and (when asked for) its body.
+    table: Vec<u8>,
+    body: Vec<u8>,
 }
 
-fn read_page(r: &mut BufReader<File>) -> Option<Page> {
+fn read_page(r: &mut BufReader<File>, whole: bool) -> Option<Page> {
     let mut header = [0u8; 27];
     r.read_exact(&mut header).ok()?;
     if &header[..4] != b"OggS" || header[4] != 0 {
@@ -54,6 +88,18 @@ fn read_page(r: &mut BufReader<File>) -> Option<Page> {
     let flags = header[5];
     let mut head = Vec::new();
     let mut skip = body;
+    if whole && flags & 0x02 == 0 {
+        let mut all = vec![0u8; body as usize];
+        r.read_exact(&mut all).ok()?;
+        return Some(Page {
+            flags,
+            granule: i64::from_le_bytes(header[6..14].try_into().ok()?),
+            serial: u32::from_le_bytes(header[14..18].try_into().ok()?),
+            head,
+            table,
+            body: all,
+        });
+    }
     if flags & 0x02 != 0 {
         // (a first page: its first packet says which codec, at what rate)
         let want = body.min(64) as usize;
@@ -67,7 +113,29 @@ fn read_page(r: &mut BufReader<File>) -> Option<Page> {
         granule: i64::from_le_bytes(header[6..14].try_into().ok()?),
         serial: u32::from_le_bytes(header[14..18].try_into().ok()?),
         head,
+        table,
+        body: Vec::new(),
     })
+}
+
+/// The samples of an Opus packet, from its TOC byte (and its frame count).
+fn opus_samples(packet: &[u8]) -> u64 {
+    let Some(&toc) = packet.first() else {
+        return 0;
+    };
+    let config = toc >> 3;
+    // (2.5 ms: 120 samples at 48 kHz)
+    let frame = match config {
+        0..=11 => [480, 960, 1920, 2880][config as usize % 4],
+        12..=15 => [480, 960][config as usize % 2],
+        _ => [120, 240, 480, 960][config as usize % 4],
+    };
+    let frames = match toc & 3 {
+        0 => 1,
+        1 | 2 => 2,
+        _ => packet.get(1).map_or(0, |c| (c & 0x3f) as u64),
+    };
+    frame * frames
 }
 
 /// The rate a first packet's granule positions count in, the frames
@@ -98,6 +166,18 @@ fn codec_of(packet: &[u8]) -> Option<(u32, u64, u64, u64)> {
     None
 }
 
+/// The header packets a link's first packet says it has (Opus 2, Vorbis 3,
+/// FLAC 1 and those it counts).
+fn heads_of(packet: &[u8]) -> u32 {
+    if packet.starts_with(b"\x7fFLAC") && packet.len() >= 9 {
+        1 + u16::from_be_bytes([packet[7], packet[8]]) as u32
+    } else if packet.starts_with(b"\x01vorbis") {
+        3
+    } else {
+        2
+    }
+}
+
 /// The links of a chained Ogg file, or of a recording of an Ogg station
 /// (one link whose time does not begin at 0) - None otherwise (one link
 /// from 0, not Ogg, or a link whose length cannot be told).
@@ -119,12 +199,30 @@ pub fn ogg_links(path: &Path) -> Option<Vec<Link>> {
         first: [i64; 2],
         last: i64,
         ended: bool,
+        /// Its header packets still to end; whether its first page of sound
+        /// completes no packet (granule -1); the packet being read (its
+        /// samples when Opus: None for a header, a Vorbis or FLAC one) - a
+        /// recording's first, continued from before it began, is none.
+        heads_left: u32,
+        first_neg: Option<bool>,
+        open: Option<Option<u64>>,
+        /// Opus: the samples of its whole packets up to its first page of
+        /// sound that tells a granule position, and that position less them
+        /// (where its time begins); whether that is still being read.
+        sum: u64,
+        counted: Option<i64>,
+        counting: bool,
+        opus: bool,
+        gaps: bool,
+        sound: Option<u64>,
+        points: Vec<(u64, i64)>,
     }
     let mut links: Vec<Scan> = Vec::new();
     let mut in_first_pages = false;
     let mut at = 0u64;
     while at < len {
-        let Some(page) = read_page(&mut r) else {
+        let whole = links.last().is_some_and(|l| l.counting);
+        let Some(page) = read_page(&mut r, whole) else {
             break; // (a broken tail: what came before stands)
         };
         if page.flags & 0x02 != 0 {
@@ -139,6 +237,16 @@ pub fn ogg_links(path: &Path) -> Option<Vec<Link>> {
                     first: [-1; 2],
                     last: -1,
                     ended: false,
+                    heads_left: 0,
+                    first_neg: None,
+                    open: None,
+                    sum: 0,
+                    counted: None,
+                    counting: true,
+                    opus: false,
+                    gaps: false,
+                    sound: None,
+                    points: Vec::new(),
                 });
             }
             in_first_pages = true;
@@ -153,13 +261,80 @@ pub fn ogg_links(path: &Path) -> Option<Vec<Link>> {
                     link.page_most,
                     link.lost,
                 ) = (Some(page.serial), rate, preskip, most, lost);
+                // (its first page holds its first header packet only)
+                link.heads_left = heads_of(&page.head).saturating_sub(1);
+                link.opus = page.head.starts_with(b"OpusHead");
             }
         } else {
             in_first_pages = false;
             if let Some(link) = links.last_mut()
                 && link.serial == Some(page.serial)
+                && link.counting
+            {
+                let opus = link.opus;
+                if link.heads_left == 0 && link.first_neg.is_none() {
+                    link.first_neg = Some(page.granule < 0);
+                    link.sound = Some(at);
+                }
+                if page.flags & 0x01 == 0 {
+                    // (a packet left unended: none)
+                    link.open = None;
+                }
+                let mut begins = page.flags & 0x01 == 0;
+                let mut pos = 0usize;
+                for &lace in &page.table {
+                    if begins {
+                        let audio = link.heads_left == 0;
+                        let samples = page.body.get(pos..).map_or(0, opus_samples);
+                        link.open = Some((audio && opus).then_some(samples));
+                        begins = false;
+                    }
+                    pos += lace as usize;
+                    if lace < 255 {
+                        match link.open.take() {
+                            Some(Some(n)) => link.sum += n,
+                            Some(None) if link.heads_left > 0 => link.heads_left -= 1,
+                            _ => {}
+                        }
+                        begins = true;
+                    }
+                }
+                if link.first_neg.is_some() && page.granule >= 0 {
+                    link.counting = false;
+                    if opus {
+                        link.counted = Some(page.granule - link.sum as i64);
+                    }
+                }
+            }
+            if let Some(link) = links.last_mut()
+                && link.serial == Some(page.serial)
+                && page.granule < 0
+                && link.first_neg.is_some()
+            {
+                link.gaps = true;
+            }
+            if let Some(link) = links.last_mut()
+                && link.serial == Some(page.serial)
                 && page.granule >= 0
             {
+                // (a place to decode from: a page on which a packet ends,
+                // some seconds after the last one. What can be decoded
+                // from it on begins where it begins - or, where it begins
+                // in the middle of a packet, which a reader starting there
+                // drops, where that packet ends: its own granule position)
+                let from = if page.flags & 0x01 == 0 {
+                    link.last
+                } else {
+                    page.granule
+                };
+                if link.last > 0
+                    && link.sound.is_some_and(|s| at > s)
+                    && link.rate > 0
+                    && from - link.points.last().map_or(0, |p| p.1)
+                        >= (POINT_EVERY * link.rate as f64) as i64
+                {
+                    link.points.push((at, from));
+                }
                 // (the first two pages of sound: a header page says 0)
                 if page.granule == 0 {
                 } else if link.first[0] < 0 {
@@ -176,8 +351,7 @@ pub fn ogg_links(path: &Path) -> Option<Vec<Link>> {
     let mut out = Vec::with_capacity(links.len());
     let mut start = 0.0;
     let ended = links.last().is_some_and(|l| l.ended);
-    let many = links.len() > 64;
-    for (k, link) in links.into_iter().enumerate() {
+    for link in links {
         link.serial?;
         if link.last < 0 || link.rate == 0 {
             return None;
@@ -192,13 +366,19 @@ pub fn ogg_links(path: &Path) -> Option<Vec<Link>> {
         // one page of seconds are its own samples (review 15), and a
         // recording joined a few seconds into a song is one (review 16, M6:
         // a page's capacity - 30 s of Opus - was the bound, and such a
-        // recording was taken for a file of its own). (In a file of very
-        // many links, the first ones counted so, the others by the bound.)
+        // recording was taken for a file of its own). Opus's packets are
+        // counted here, from their TOC bytes: every link of a file of very
+        // many (beyond the 64th, review 17 found them bounded by a page's
+        // capacity - a recording of 70 songs said 210 s for 30) and one
+        // whose first page of sound ends no packet (granule -1: taken for a
+        // recording).
         let [g1, g2] = link.first;
-        let counted = if !many || k < 8 {
-            first_sample(path, link.offset)
-        } else {
-            None
+        let counted = match (link.counted, link.first_neg) {
+            (Some(ts), _) => Some(ts),
+            // (symphonia's reader takes the granule of a first page of sound
+            // where no packet ends, -1, for its end: review 17)
+            (None, Some(true)) => None,
+            _ => first_sample(path, link.offset),
         };
         let base = match counted {
             Some(ts) if ts > i64::from(link.rate / 100) => ts as u64,
@@ -223,13 +403,24 @@ pub fn ogg_links(path: &Path) -> Option<Vec<Link>> {
             start,
             secs,
             base: base as f64 / rate,
+            gaps: link.gaps,
+            sound: link.sound.unwrap_or(link.offset),
+            points: if link.gaps {
+                link.points
+                    .iter()
+                    .map(|&(at, granule)| (at, granule as f64 / rate))
+                    .collect()
+            } else {
+                Vec::new()
+            },
         });
         start += secs;
     }
     // (one link counted from 0, ended: symphonia's own length and seek are
     // right; without its end - a download cut short, a recording stopped -
     // symphonia knows no length, and no seek was offered: review 16, L9)
-    let plain = out.len() == 1 && out[0].base == 0.0 && ended;
+    // (one with pages where no packet ends: its seeks are this player's)
+    let plain = out.len() == 1 && out[0].base == 0.0 && ended && !out[0].gaps;
     (!out.is_empty() && !plain).then_some(out)
 }
 
@@ -358,6 +549,225 @@ pub fn ogg_whole_pages(path: &Path) -> Option<Vec<(u64, u64)>> {
         }
     }
     (!pieces.is_empty()).then_some(pieces)
+}
+
+/// How long an Opus packet sounds, in 48 kHz frames (RFC 6716, 3.1).
+fn opus_frames(packet: &[u8]) -> u64 {
+    let Some(&toc) = packet.first() else {
+        return 0;
+    };
+    let config = toc >> 3;
+    // (a frame's length in 2.5 ms units of 120 frames)
+    let one = match config {
+        0..=11 => [480, 960, 1920, 2880][(config % 4) as usize],
+        12..=15 => [480, 960][(config % 2) as usize],
+        _ => [120, 240, 480, 960][(config % 4) as usize],
+    };
+    let count = match toc & 3 {
+        0 => 1,
+        1 | 2 => 2,
+        _ => packet.get(1).map_or(0, |b| (b & 0x3f) as u64),
+    };
+    one * count
+}
+
+/// A Vorbis stream's two block sizes and which of them each of its modes
+/// uses, read from its first and third header packets. (The modes stand
+/// at the setup header's end - each a flag, two fields that are zero and a
+/// mapping, 41 bits - after everything that would have to be decoded to
+/// reach them from its start: found from the end.)
+fn vorbis_modes(id: &[u8], setup: &[u8]) -> Option<([u64; 2], Vec<bool>)> {
+    let sizes = *id.get(28)?;
+    let sizes = [1u64 << (sizes & 0x0f), 1u64 << (sizes >> 4)];
+    let bit = |at: usize| setup.get(at / 8).is_some_and(|b| b >> (at % 8) & 1 == 1);
+    let bits = |at: usize, n: usize| (0..n).fold(0u32, |v, k| v | (bit(at + k) as u32) << k);
+    // (the framing bit: the last one set)
+    let end = (0..setup.len() * 8).rev().find(|at| bit(*at))?;
+    let mode = |k: usize| end.checked_sub(41 * (k + 1));
+    let mut valid = 0;
+    while valid < 64 {
+        let Some(at) = mode(valid) else { break };
+        if bits(at + 1, 16) != 0 || bits(at + 17, 16) != 0 || bits(at + 33, 8) > 63 {
+            break;
+        }
+        valid += 1;
+    }
+    // (their number stands before them, less one, in six bits)
+    let count = (1..=valid).rev().find(|m| {
+        mode(*m - 1)
+            .and_then(|at| at.checked_sub(6))
+            .is_some_and(|at| bits(at, 6) as usize + 1 == *m)
+    })?;
+    let flags = (0..count)
+        .map(|i| mode(count - 1 - i).map(bit))
+        .collect::<Option<Vec<bool>>>()?;
+    Some((sizes, flags))
+}
+
+/// The page an Ogg file was cut in, made whole of the packets that are
+/// all there: where it began in the file, and the page - its checksum and
+/// the place its sound ends reckoned anew (Vorbis and Opus; one stream).
+/// A copy that stopped, a download that broke off: the sound of the last
+/// page, up to a second and more of it, is on the disk but in no whole
+/// page (review 19, L9). None where the file does not end in the middle
+/// of a page, or nothing whole is in what is there of it.
+pub fn ogg_cut_page(path: &Path) -> Option<(u64, Vec<u8>)> {
+    // (first, cheaply - this is asked of every Ogg file opened: does it
+    // end with a whole page? Its last 70,000 bytes hold one: a page is
+    // 65,307 at most)
+    {
+        let mut file = File::open(path).ok()?;
+        let mut magic = [0u8; 4];
+        file.read_exact(&mut magic).ok()?;
+        if &magic != b"OggS" {
+            return None;
+        }
+        let len = file.metadata().ok()?.len();
+        let from = len.saturating_sub(70_000);
+        file.seek(SeekFrom::Start(from)).ok()?;
+        let mut end = Vec::new();
+        file.read_to_end(&mut end).ok()?;
+        let ends_whole = (0..end.len().saturating_sub(26)).rev().any(|at| {
+            if &end[at..at + 4] != b"OggS" {
+                return false;
+            }
+            let segments = end[at + 26] as usize;
+            let Some(table) = end.get(at + 27..at + 27 + segments) else {
+                return false;
+            };
+            let page = at + 27 + segments + table.iter().map(|s| *s as usize).sum::<usize>();
+            page == end.len()
+                && ogg_crc(&end[at..])
+                    == u32::from_le_bytes([end[at + 22], end[at + 23], end[at + 24], end[at + 25]])
+        });
+        if ends_whole {
+            return None;
+        }
+    }
+    let data = std::fs::read(path).ok()?;
+    enum Codec {
+        Opus,
+        Vorbis,
+    }
+    let mut codec = None;
+    let mut serial = None;
+    // the packets so far: how many are whole, the first bytes of the one
+    // being read (the headers: all of them), whether it is read on
+    let (mut packets, mut current, mut open) = (0usize, Vec::<u8>::new(), false);
+    let (mut id, mut modes) = (Vec::new(), None);
+    let mut granule = 0u64;
+    let mut before: Option<u64> = None;
+    let mut at = 0usize;
+    // a packet whole: what it is, how long it sounds
+    let mut done = |packet: &[u8], packets: &mut usize| -> Option<u64> {
+        let index = *packets;
+        *packets += 1;
+        if index == 0 {
+            codec = if packet.starts_with(b"OpusHead") {
+                Some(Codec::Opus)
+            } else if packet.starts_with(b"\x01vorbis") {
+                id = packet.to_vec();
+                Some(Codec::Vorbis)
+            } else {
+                None
+            };
+        }
+        match codec.as_ref()? {
+            Codec::Opus if index < 2 => Some(0),
+            Codec::Opus => Some(opus_frames(packet)),
+            Codec::Vorbis if index < 2 => Some(0),
+            Codec::Vorbis if index == 2 => {
+                modes = Some(vorbis_modes(&id, packet)?);
+                Some(0)
+            }
+            Codec::Vorbis => {
+                let (sizes, flags) = modes.as_ref()?;
+                let first = *packet.first()?;
+                if first & 1 == 1 {
+                    return Some(0);
+                }
+                let bits = usize::BITS - (flags.len() - 1).leading_zeros();
+                let mode = (first >> 1) as usize & ((1usize << bits) - 1);
+                let size = sizes[*flags.get(mode)? as usize];
+                let sounds = before.map_or(0, |b| (b + size) / 4);
+                before = Some(size);
+                Some(sounds)
+            }
+        }
+    };
+    loop {
+        let header = data.get(at..at + 27)?;
+        if &header[..4] != b"OggS" {
+            return None;
+        }
+        let segments = header[26] as usize;
+        let table = data.get(at + 27..at + 27 + segments)?;
+        let body = at + 27 + segments;
+        let len: usize = table.iter().map(|s| *s as usize).sum();
+        let this = u32::from_le_bytes(header[14..18].try_into().ok()?);
+        if *serial.get_or_insert(this) != this {
+            return None;
+        }
+        let whole = body + len <= data.len();
+        if whole {
+            let stored = u32::from_le_bytes(header[22..26].try_into().ok()?);
+            if ogg_crc(&data[at..body + len]) != stored {
+                return None;
+            }
+        }
+        // (a page that does not go on with the packet before it: that one
+        // is lost)
+        if header[5] & 1 == 0 && open {
+            current.clear();
+            open = false;
+        }
+        let there = data.len() - body;
+        let (mut from, mut kept, mut sounds) = (0usize, None, 0u64);
+        for (k, lace) in table.iter().enumerate() {
+            let lace = *lace as usize;
+            if from + lace > there {
+                break;
+            }
+            // (the headers whole; of the sound its first bytes)
+            if packets < 3 || current.len() < 2 {
+                current.extend_from_slice(&data[body + from..body + from + lace]);
+            }
+            open = true;
+            from += lace;
+            if lace < 255 {
+                sounds += done(&current, &mut packets)?;
+                current.clear();
+                open = false;
+                kept = Some((k + 1, from));
+            }
+        }
+        if whole {
+            let said = u64::from_le_bytes(header[6..14].try_into().ok()?);
+            if said != u64::MAX {
+                granule = said;
+            }
+            at = body + len;
+            if at >= data.len() {
+                return None;
+            }
+            continue;
+        }
+        // the page it was cut in: its whole packets, as a page
+        let (segments, len) = kept?;
+        if packets <= 2 || sounds == 0 {
+            return None;
+        }
+        let mut page = header.to_vec();
+        page[5] &= !4;
+        page[6..14].copy_from_slice(&(granule + sounds).to_le_bytes());
+        page[22..26].fill(0);
+        page[26] = segments as u8;
+        page.extend_from_slice(&table[..segments]);
+        page.extend_from_slice(&data[body..body + len]);
+        let crc = ogg_crc(&page);
+        page[22..26].copy_from_slice(&crc.to_le_bytes());
+        return Some((at as u64, page));
+    }
 }
 
 /// The frames of an MP3 without a Xing, Info or VBRI header.
@@ -540,10 +950,15 @@ pub fn mp3_frames(path: &Path) -> Option<Mp3Frames> {
     })
 }
 
-/// Pieces of a file read as one (a damaged Ogg file's whole pages).
+/// Pieces of a file read as one (a damaged Ogg file's whole pages), and
+/// after them bytes that are in no file (the page it was cut in, made
+/// whole: [`ogg_cut_page`]).
 pub struct Pieces {
     file: File,
     pieces: Vec<(u64, u64)>,
+    /// The pieces' length together, the tail's after it.
+    of_file: u64,
+    tail: std::sync::Arc<Vec<u8>>,
     len: u64,
     at: u64,
 }
@@ -554,9 +969,22 @@ impl Pieces {
         Ok(Pieces {
             file: File::open(path)?,
             pieces,
+            of_file: len,
+            tail: Default::default(),
             len,
             at: 0,
         })
+    }
+
+    /// Where the last piece ends in the file.
+    pub fn end(&self) -> u64 {
+        self.pieces.last().map_or(0, |(start, len)| start + len)
+    }
+
+    pub fn with_tail(mut self, tail: std::sync::Arc<Vec<u8>>) -> Pieces {
+        self.len = self.of_file + tail.len() as u64;
+        self.tail = tail;
+        self
     }
 }
 
@@ -574,7 +1002,11 @@ impl Read for Pieces {
             }
             from += len;
         }
-        Ok(0)
+        let within = (self.at.saturating_sub(self.of_file) as usize).min(self.tail.len());
+        let n = buf.len().min(self.tail.len() - within);
+        buf[..n].copy_from_slice(&self.tail[within..within + n]);
+        self.at += n as u64;
+        Ok(n)
     }
 }
 
