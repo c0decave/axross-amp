@@ -20,12 +20,25 @@ fn amp(home: &Path) -> Command {
     c.env("HOME", home)
         .env("XDG_CACHE_HOME", home.join("cache"))
         .env("XDG_CONFIG_HOME", home.join("config"))
+        // (no session bus but one a test names: without the address the bus
+        // library falls back to $XDG_RUNTIME_DIR/bus - a real session bus on CI,
+        // where another test's player took the start over: no window, no pid)
+        .env("XDG_RUNTIME_DIR", runtime_dir(home))
         .env_remove("DBUS_SESSION_BUS_ADDRESS")
         .env_remove("AXROSS_AMP_DETACHED")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     c
+}
+
+/// A runtime folder of the test's own (0700, as the bus library wants it).
+fn runtime_dir(home: &Path) -> std::path::PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = home.join("run");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+    dir
 }
 
 fn alive(pid: u32) -> bool {
@@ -249,6 +262,10 @@ fn updated_command(home: &Path, program: &Path) -> Command {
         .env("XDG_CACHE_HOME", home.join("cache"))
         .env("XDG_CONFIG_HOME", home.join("config"))
         .env("AXROSS_AMP_NO_UPDATE_CHECK", "1")
+        // (no session bus but one a test names: without the address the bus
+        // library falls back to $XDG_RUNTIME_DIR/bus - a real session bus on CI,
+        // where another test's player took the start over: no window, no pid)
+        .env("XDG_RUNTIME_DIR", runtime_dir(home))
         .env_remove("DBUS_SESSION_BUS_ADDRESS")
         .env_remove("AXROSS_AMP_DETACHED")
         .stdin(Stdio::null())
