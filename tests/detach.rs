@@ -44,7 +44,10 @@ fn session(pid: u32) -> Option<u32> {
 }
 
 fn read_pid(path: &Path) -> Option<u32> {
-    for _ in 0..50 {
+    // (up to 20 s: a shared CI runner, busy with the suite beside it, may take
+    // seconds to start the background child - this waits for it, it does not
+    // time it)
+    for _ in 0..400 {
         if let Ok(text) = std::fs::read_to_string(path)
             && let Ok(pid) = text.trim().parse()
         {
