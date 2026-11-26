@@ -548,7 +548,7 @@ fn a_failed_file_is_said_and_a_folder_is_no_file() {
 #[test]
 fn a_lost_output_is_opened_again_and_a_failing_one_is_said() {
     let dir = folder("lost-output");
-    std::fs::write(dir.join("a.wav"), wav_bytes(RATE, 3.0, 330.0, None)).unwrap();
+    std::fs::write(dir.join("a.wav"), wav_bytes(RATE, 30.0, 330.0, None)).unwrap();
     let engine = Engine::start_headless(|| {});
     load(&engine, &dir.join("a.wav").to_string_lossy(), 1);
     let mut output = Output::new();
@@ -570,16 +570,106 @@ fn a_lost_output_is_opened_again_and_a_failing_one_is_said() {
         output.heard[heard..].iter().any(|s| *s != 0.0),
         "silent after"
     );
-    // it fails again and again: it gives up and says so
+    // it fails again and again (a Bluetooth headset or a car coming and
+    // going): let go, said - and tried again until it is back, the track
+    // going on where it was (it gave up for good: Android stability
+    // audit, H4)
     for _ in 0..3 {
         engine.shared.simulate_output_loss();
         output.play(&engine, 0.1, |_, e| events.push(describe(e)));
     }
     assert!(
-        events.last().unwrap().contains("keeps failing"),
+        events
+            .last()
+            .unwrap()
+            .contains("keeps failing - trying again"),
         "{events:?}"
     );
-    assert!(!engine.shared.playing.load(Ordering::Relaxed));
+    let at = engine.shared.position();
+    let said = events.len();
+    // (within the first retry's 5 s - by the clock)
+    let back = Instant::now();
+    let reopened = |events: &[String]| {
+        events[said..]
+            .iter()
+            .any(|e| e.starts_with("output") && !e.contains("no sound"))
+    };
+    while !reopened(&events) && back.elapsed() < Duration::from_secs(20) {
+        output.play(&engine, 0.1, |_, e| events.push(describe(e)));
+    }
+    assert!(reopened(&events), "not opened again: {:?}", &events[said..]);
+    assert!(
+        back.elapsed() < Duration::from_secs(12),
+        "{:?}",
+        back.elapsed()
+    );
+    output.play(&engine, 1.0, |_, e| events.push(describe(e)));
+    assert!(engine.shared.playing.load(Ordering::Relaxed), "plays on");
+    assert!(engine.shared.position() > at + 0.5, "the track goes on");
+}
+
+/// Paused for a while, the output stream is let go - no silence rendered,
+/// the device free - and opened again at Play: where the sound left off,
+/// nothing lost and nothing heard twice (Android stability audit, H3).
+#[test]
+fn paused_a_while_the_output_is_let_go_and_comes_back_where_it_was() {
+    let dir = folder("suspend-output");
+    let a = dir.join("a.wav");
+    let dc = vec![0.25f32; RATE as usize * 2 * 2];
+    std::fs::write(&a, wav_of(RATE, &dc)).unwrap();
+    let engine = Engine::start_headless(|| {});
+    load(&engine, &a.to_string_lossy(), 1);
+    let mut output = Output::new();
+    output.play(&engine, 0.8, |_, _| {});
+    engine.send(Command::Pause);
+    std::thread::sleep(Duration::from_millis(100));
+    let at = engine.shared.position();
+    assert!(!engine.shared.suspended.load(Ordering::Relaxed), "at once");
+    // (paused past the time: let go)
+    let end = Instant::now() + axross_amp::engine::SUSPEND_AFTER + Duration::from_secs(3);
+    while !engine.shared.suspended.load(Ordering::Relaxed) && Instant::now() < end {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(
+        engine.shared.suspended.load(Ordering::Relaxed),
+        "the output kept"
+    );
+    assert!(
+        (engine.shared.position() - at).abs() < 0.01,
+        "the position moved"
+    );
+    // Play: open again, from where it was
+    engine.send(Command::Play);
+    let end = Instant::now() + Duration::from_secs(3);
+    while engine.shared.suspended.load(Ordering::Relaxed) && Instant::now() < end {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(!engine.shared.suspended.load(Ordering::Relaxed));
+    assert!(
+        (engine.shared.position() - at).abs() < 0.01,
+        "{} after {at}",
+        engine.shared.position()
+    );
+    output.play(&engine, 2.0, |_, _| {});
+    // every frame of the track heard once: none lost, none twice
+    let loudest = output.heard.iter().fold(0.0f32, |m, s| m.max(*s));
+    let heard = output
+        .heard
+        .chunks(2)
+        .filter(|f| (f[0] - loudest).abs() < 0.002)
+        .count() as i64;
+    assert!(
+        (heard - 2 * RATE as i64).abs() <= 400,
+        "{heard} of {}",
+        2 * RATE
+    );
+    // playing, never let go
+    std::thread::sleep(axross_amp::engine::SUSPEND_AFTER + Duration::from_secs(1));
+    assert!(
+        !engine.shared.suspended.load(Ordering::Relaxed)
+            || !engine.shared.playing.load(Ordering::Relaxed),
+        "let go while it played"
+    );
 }
 
 /// A 16-bit stereo WAV of `samples` (interleaved, -1..1).

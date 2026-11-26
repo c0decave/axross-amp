@@ -68,8 +68,15 @@ pub static NO_OUTPUT: AtomicBool = AtomicBool::new(false);
 /// (more than it reads at a call).
 const CUT_MARGIN: u64 = 16_384;
 
-/// How often the output is tried again while there is none.
+/// How often the output is tried again while there is none: at first, and
+/// at most (each try that fails waits twice as long, up to this).
 const OUTPUT_RETRY: Duration = Duration::from_secs(5);
+const OUTPUT_RETRY_MOST: Duration = Duration::from_secs(30);
+/// Paused (or stopped, or nothing loaded) this long, the output stream is
+/// let go - no silence rendered 100 times a second, the device free, the
+/// machine let sleep - and opened again at Play, where the sound left off
+/// (Android stability audit, H3).
+pub const SUSPEND_AFTER: Duration = Duration::from_secs(5);
 /// Stereo frames of the most recent output the visualizations and the
 /// meters may read: 5.5 s at 48 kHz, 1.4 s at 192 kHz (2 MiB) - the time
 /// the meters' thread may go without a turn on a busy machine and still
@@ -425,6 +432,8 @@ pub struct Shared {
     pub tap: Tap,
     /// The output reported that it is gone (the decoder thread opens it anew).
     lost: AtomicBool,
+    /// The output stream let go while nothing plays ([`SUSPEND_AFTER`]).
+    pub suspended: AtomicBool,
     /// The sound in the ring ends there (a track's end, nothing after it):
     /// running dry is no stall to fade over.
     ending: AtomicBool,
@@ -490,6 +499,7 @@ impl Shared {
             device_rate: AtomicU32::new(48_000),
             tap: Tap::new(TAP_FRAMES),
             lost: AtomicBool::new(false),
+            suspended: AtomicBool::new(false),
             ending: AtomicBool::new(false),
             latency: AtomicU64::new(0),
             track_mark: AtomicU64::new(u64::MAX),
@@ -872,6 +882,9 @@ where
     let piece = (8192 / channels).max(1) * channels;
     let mut mixed = vec![0.0f32; piece];
     let lost = shared.clone();
+    // (the errors: when one was last said, how many since; this second's
+    // start and how many in it)
+    let mut errors: (Option<Instant>, u64, Instant, u32) = (None, 0, Instant::now(), 0);
     device
         .build_output_stream(
             config,
@@ -900,15 +913,39 @@ where
                 }
             },
             move |err| {
-                eprintln!("axross-amp: output: {err}");
+                // (said once, then at most every 10 s with how many more: an
+                // output failing at each write - ALSA's file plugin with its
+                // reader gone - wrote 20 GB of this line in three hours)
+                let now = Instant::now();
+                errors.1 += 1;
+                if errors
+                    .0
+                    .is_none_or(|said| now.duration_since(said) >= Duration::from_secs(10))
+                {
+                    if errors.1 > 1 {
+                        eprintln!("axross-amp: output: {err} ({} more since)", errors.1 - 1);
+                    } else {
+                        eprintln!("axross-amp: output: {err}");
+                    }
+                    errors = (Some(now), 0, now, 0);
+                }
+                // (failing on and on - 20 times within a second - it is no
+                // output: made anew as a lost one, then let go and tried
+                // again now and then)
+                if now.duration_since(errors.2) > Duration::from_secs(1) {
+                    (errors.2, errors.3) = (now, 0);
+                }
+                errors.3 += 1;
                 // a device that went away, a stream to be made anew: the
                 // decoder thread opens the output again
-                if matches!(
-                    err.kind(),
-                    cpal::ErrorKind::DeviceNotAvailable
-                        | cpal::ErrorKind::StreamInvalidated
-                        | cpal::ErrorKind::HostUnavailable
-                ) {
+                if errors.3 >= 20
+                    || matches!(
+                        err.kind(),
+                        cpal::ErrorKind::DeviceNotAvailable
+                            | cpal::ErrorKind::StreamInvalidated
+                            | cpal::ErrorKind::HostUnavailable
+                    )
+                {
                     lost.lost.store(true, Ordering::Relaxed);
                 }
             },
@@ -2884,9 +2921,15 @@ struct Player {
     mark_after: u64,
     /// Equalized and not yet taken by the ring (it was full).
     carry: Vec<f32>,
-    /// An output to play on (else nothing plays), and when it was last tried.
+    /// An output to play on (else nothing plays), when it was last tried,
+    /// and how long until the next try.
     output_ok: bool,
     output_tried: Instant,
+    retry_every: Duration,
+    /// Since when nothing plays (the stream let go after [`SUSPEND_AFTER`]),
+    /// and whether it is let go.
+    idle_since: Option<Instant>,
+    suspended: bool,
     chunk: Vec<f32>,
 }
 
@@ -2937,9 +2980,31 @@ impl Player {
         self.ahead = (self.out_rate as f32 * AHEAD_SECS) as usize;
     }
 
+    /// Nothing has played for [`SUSPEND_AFTER`]: the output stream let go
+    /// (Play opens it again, [`Player::may_play`]).
+    fn suspend_when_idle(&mut self) {
+        if self.shared.playing.load(Ordering::Relaxed) || !self.output_ok {
+            self.idle_since = None;
+            return;
+        }
+        if self.suspended {
+            return;
+        }
+        let since = *self.idle_since.get_or_insert_with(Instant::now);
+        if since.elapsed() >= SUSPEND_AFTER {
+            drop(self.stream.take());
+            self.suspended = true;
+            self.shared.suspended.store(true, Ordering::Relaxed);
+        }
+    }
+
     /// The output anew on `device`, the track going on where it was (at
     /// another rate: resampled anew from there).
     fn reopen(&mut self, device: Option<String>) {
+        // (open again: no longer let go; idle from now, if nothing plays)
+        self.suspended = false;
+        self.shared.suspended.store(false, Ordering::Relaxed);
+        self.idle_since = None;
         let playing = self.shared.playing.load(Ordering::Relaxed);
         let at = self.shared.position();
         drop(self.stream.take()); // (the old device lets go first)
@@ -2981,7 +3046,12 @@ impl Player {
     }
 
     /// The output failed (a device unplugged, the sound server gone):
-    /// opened again - up to three times in ten seconds, then it says so.
+    /// opened again at once - up to three times in ten seconds; after that
+    /// it is let go and tried again now and then (every 5 s, then less
+    /// often, up to every 30 s) until it is back, the track going on where
+    /// it was if it played. (It gave up for good: a Bluetooth headset or a
+    /// car that came and went four times in ten seconds left the player
+    /// silent until it was started again - Android stability audit, H4.)
     fn recover(&mut self) {
         if !self.shared.lost.swap(false, Ordering::Relaxed) {
             return;
@@ -2992,9 +3062,12 @@ impl Player {
         self.losses.push(now);
         if self.losses.len() > 3 {
             drop(self.stream.take());
-            self.shared.playing.store(false, Ordering::Relaxed);
+            self.losses.clear();
+            self.output_ok = false;
+            self.output_tried = now;
+            self.retry_every = OUTPUT_RETRY;
             return self.send(Event::Output(
-                "no sound: the output keeps failing - choose one in the Mixer tab".into(),
+                "no sound: the output keeps failing - trying again".into(),
             ));
         }
         let device = self.device.clone();
@@ -3097,8 +3170,13 @@ impl Player {
         self.prepared = None;
     }
 
-    /// Play only with an output to play on (tried again first).
+    /// Play only with an output to play on (tried again first; a stream let
+    /// go while paused opened again - where the sound left off).
     fn may_play(&mut self) -> bool {
+        if self.suspended {
+            let device = self.device.clone();
+            self.reopen(device);
+        }
         if !self.output_ok {
             let device = self.device.clone();
             self.reopen(device);
@@ -3815,6 +3893,9 @@ fn run(
         carry: Vec::new(),
         output_ok: false,
         output_tried: Instant::now(),
+        retry_every: OUTPUT_RETRY,
+        idle_since: None,
+        suspended: false,
         chunk: Vec::with_capacity(16_384),
     };
     player.connect(None);
@@ -3846,11 +3927,18 @@ fn run(
             return;
         }
         player.recover();
-        // no output: tried again now and then (a sound server that starts, a device plugged in)
-        if !player.output_ok && player.output_tried.elapsed() >= OUTPUT_RETRY {
+        // no output: tried again now and then (a sound server that starts, a
+        // device plugged in, a headset back) - less often while it fails
+        if !player.output_ok && player.output_tried.elapsed() >= player.retry_every {
             let device = player.device.clone();
             player.reopen(device);
+            player.retry_every = if player.output_ok {
+                OUTPUT_RETRY
+            } else {
+                (player.retry_every * 2).min(OUTPUT_RETRY_MOST)
+            };
         }
+        player.suspend_when_idle();
         player.check_boundary();
         busy = player.tick();
     }
