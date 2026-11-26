@@ -1599,6 +1599,46 @@ pub fn vfd_line(
     (rect, elided)
 }
 
+/// A line of words on the display (as [`vfd_line`]): where it does not fit,
+/// moved a cell at a time within `width`, on round after blank cells, its
+/// unlit segments with it, its whole in a tooltip (src/marquee.rs). Where
+/// it lies.
+#[allow(clippy::too_many_arguments)]
+pub fn vfd_moving(
+    ui: &egui::Ui,
+    p: &Painter,
+    id: egui::Id,
+    at: Pos2,
+    text: &str,
+    size: f32,
+    (lit, glass): (Color32, Color32),
+    width: f32,
+) -> Rect {
+    let under = text.chars().any(|c| c.is_ascii_digit()).then(|| {
+        let ghost: String = text
+            .chars()
+            .map(|c| if c.is_ascii_digit() { '8' } else { c })
+            .collect();
+        (ghost, crate::theme::mix(glass, lit, 0.1))
+    });
+    crate::marquee::paint(
+        ui,
+        p,
+        id,
+        at,
+        egui::Align2::LEFT_TOP,
+        &crate::marquee::Text {
+            text,
+            font: egui::FontId::monospace(size),
+            colour: lit,
+            under,
+        },
+        width,
+        crate::marquee::DISPLAY,
+    )
+    .rect
+}
+
 /// The width of `text` in the display's type at `size`.
 pub fn vfd_width(p: &Painter, text: &str, size: f32) -> f32 {
     p.layout_no_wrap(

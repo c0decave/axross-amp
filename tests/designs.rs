@@ -757,12 +757,13 @@ fn tab_follows_what_is_seen() {
     assert!(failures.is_empty(), "{failures:#?}");
 }
 
-/// The 90s desktop's scrolling title scrolls while it plays only: paused,
-/// it stands (the strip the same a second later).
+/// The 90s desktop's title, too long for its strip, moves on while paused
+/// (0.16.0's marquee stood cut then; src/marquee.rs) - and nothing else in
+/// the strip moves: what changes lies within the title's box.
 #[test]
-fn a_paused_90s_desktop_rests() {
+fn a_paused_90s_desktop_moves_its_title_only() {
     let home = Scratch::new("design-90s-idle");
-    // (a title long enough to scroll)
+    // (a title long enough to move)
     let long = home.join("A title far too long to fit in the little window of the strip.wav");
     write_chord(&long, 30);
     let mut h = window(
@@ -770,9 +771,13 @@ fn a_paused_90s_desktop_rests() {
         vec![long.to_string_lossy().into_owned()],
         egui::vec2(800.0, 600.0),
     );
+    axross_amp::marquee::record(&h.ctx, true);
     assert!(until(&mut h, 5.0, |a| a.is_loaded()));
     h.state_mut().set_design("desktop90");
     h.state_mut().set_mode("off");
+    h.state_mut().set_desktop_reduces_motion(false);
+    // (as on a GPU: a character at a time, some four a second)
+    h.state_mut().set_slow_renderer(false);
     settle(&mut h, 3);
     if h.state().playing() {
         h.key_press(egui::Key::Space);
@@ -786,25 +791,42 @@ fn a_paused_90s_desktop_rests() {
         h.run_steps(1);
     }
     assert!(!h.state().playing());
+    // (past its wait at the start: moving)
+    let moving = |h: &Harness<'static, App>| {
+        axross_amp::marquee::seen(&h.ctx)
+            .into_iter()
+            .find(|m| m.moving && m.text.contains("A title far too long"))
+    };
+    for _ in 0..100 {
+        if moving(&h).is_some() {
+            break;
+        }
+        h.run_steps(1);
+    }
+    let words = moving(&h).expect("the title moves, paused").rect;
     let strip = |h: &mut Harness<'static, App>| {
         let img = h.render().expect("renders");
         image::imageops::crop_imm(&img, 0, 80, 800, 120).to_image()
     };
     let before = strip(&mut h);
-    h.run_steps(30);
+    h.run_steps(10);
     let after = strip(&mut h);
     let moved: Vec<(u32, u32)> = before
         .enumerate_pixels()
         .filter(|(x, y, p)| after.get_pixel(*x, *y) != *p)
         .map(|(x, y, _)| (x, y))
         .collect();
-    let bbox = moved.iter().fold((u32::MAX, u32::MAX, 0, 0), |b, &(x, y)| {
-        (b.0.min(x), b.1.min(y), b.2.max(x), b.3.max(y))
-    });
+    assert!(!moved.is_empty(), "the paused title stood");
+    let inside = words.expand(2.0);
+    let outside: Vec<&(u32, u32)> = moved
+        .iter()
+        .filter(|(x, y)| !inside.contains(egui::pos2(*x as f32 + 0.5, *y as f32 + 80.5)))
+        .collect();
     assert!(
-        moved.is_empty(),
-        "the paused strip moved: {} pixels in {bbox:?}",
-        moved.len()
+        outside.is_empty(),
+        "the paused strip moved outside its title's box {words:?}: {} pixels, e.g. {:?}",
+        outside.len(),
+        outside.first()
     );
 }
 

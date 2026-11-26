@@ -272,6 +272,17 @@ fn order(levels: &[u8]) -> Vec<usize> {
     order
 }
 
+/// Whether `text` is a line read from the right: its first strong letter
+/// is of a script written right to left (a Hebrew title with a Latin word
+/// in it; not a Latin title with a Hebrew word). Where it begins, so where
+/// a text too long for its box starts and which way it moves.
+pub fn right_to_left(text: &str) -> bool {
+    text.chars()
+        .map(class)
+        .find(|c| matches!(c, Class::L | Class::R))
+        == Some(Class::R)
+}
+
 /// `text` as it is seen, character by character from the left (what a
 /// renderer that sets every character left to right would be given).
 pub fn visual(text: &str) -> Cow<'_, str> {
@@ -385,6 +396,21 @@ mod tests {
             ("אב (גד", "דג) בא"),
         ] {
             assert_eq!(visual(written), shown, "{written:?}");
+        }
+    }
+
+    #[test]
+    fn a_line_is_read_from_the_right_where_its_first_letter_is() {
+        for (text, rtl) in [
+            ("", false),
+            ("12 - 34", false),
+            ("Afterglow – Demo Band", false),
+            ("ab אבג cd", false),
+            ("שלום עולם", true),
+            ("12 אבג cd", true),
+            ("(أغنية) 2020 remix", true),
+        ] {
+            assert_eq!(right_to_left(text), rtl, "{text:?}");
         }
     }
 

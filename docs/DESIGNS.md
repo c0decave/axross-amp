@@ -14,7 +14,8 @@ and screwed: a display unit with a fluorescent readout and the picture as
 its scope, an amplifier with two VU meters, the volume knob and the
 switches, a transport with metal keys named under their symbols, a changer
 holding the playlist); *90s desktop* (a compact main strip - a title bar,
-the time in an LCD well, a small spectrum, a slowly scrolling title, tiny
+the time in an LCD well, a small spectrum, a title moving a character at
+a time where it does not fit, tiny
 bevelled keys - with the playlist as a panel of its own under it; in a wide
 window docked at the strip's right, the picture in a window under the
 strip; everything monospace); *Cassette deck* (the cassette with its label,
@@ -68,7 +69,7 @@ ruled page) in every theme over 24 cover hues, and on the glass haze and
 light (each of their colours taken toward the ground until every word and
 the accent reads as on the ground). What moves (the reels, the needles -
 which follow the sound with the picture off too, 15 frames a second - the
-counter, the marquee) was put through the flash meter with the picture off
+counter, the moving titles) was put through the flash meter with the picture off
 and the loudest test music, the window and its upper part each taken as
 the whole screen: 0 by every reading - transitions, the strict reading,
 the either-way area, red - and no stripes. A design's own drawing - its
@@ -77,6 +78,33 @@ tessellated - takes 0.003 to 0.06 ms a frame at 1920 x 1080
 (`tests/frame_cost.rs`; the limit 1 ms) and allocates nothing for its
 size: 0 to 32 small allocations a frame (egui's meshes and text), the same
 in a 420 x 420 and a 1400 x 900 window (`tests/frame_alloc.rs`).
+
+**What plays, too long for its box,** moves within it so all of it is read
+(src/marquee.rs) - the title, the artist, the album, the lines of both:
+where it fits it stands; where not, it waits 2 s at its start, moves at a
+calm pace (about 2.3 times its type's size in points a second, some 32 at
+14 points; a quarter faster in the intense motion), waits 1.5 s at its
+end and comes back to its start - by the clock, paused too; from its
+start for a new track; held while the pointer is on it, its whole in the
+tooltip; its whole given to a screen reader. Each design moves it its own
+way: Modern and Glass smoothly on round ("   •   " between its end and
+its start), the cut edges fading; Zen, Soft, the cassette's label, the
+collage's artist and the display view smoothly there and back, fading;
+Brutalist on round, cut hard; the Hi-fi rack's display a cell at a time
+on round after blank cells, its unlit segments with it; the 90s strip a
+cell at a time with "***" between; the Terminal a cell at a time there
+and back. The collage's title, cut from other pages word by word, is laid
+on pages turned one after another (each shown two seconds and as long as
+its letters take to read, faded into the next). A right-to-left title
+starts at the right and moves the way it is read. Reduced motion: nothing
+moves - cut to an ellipsis, its whole in the tooltip. A frame is drawn
+only while it moves (20 - 30 a second smoothly, about 4 by cells; none
+during its waits, none minimised); on a slow renderer (no GPU) every
+design moves it in jumps of at most a third of its box, a frame every few
+seconds. `tests/marquee.rs` holds every design to it at 620 x 860 and
+420 x 420 with a title of 86 letters (its first and last letters each
+seen whole over a round, its box running into nothing), and reads it with
+both flash meters: 0.
 
 ![The designs](designs.png)
 

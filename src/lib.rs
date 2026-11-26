@@ -20,6 +20,7 @@ pub mod fspath;
 pub mod graphics;
 pub mod icon;
 pub mod limiter;
+pub mod marquee;
 pub mod meters;
 pub mod mixer;
 pub mod mixer_ui;

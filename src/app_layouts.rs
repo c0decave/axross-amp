@@ -11,6 +11,7 @@
 
 use super::*;
 use crate::design::{self, KeyLook};
+use crate::marquee;
 use egui::{Rect, Shape, pos2};
 
 /// What the glass and the soft designs leave the playlist at least (its
@@ -415,9 +416,18 @@ impl App {
                 });
                 ui.add_space(12.0);
             }
-            fit_label(ui, RichText::new(&title).font(bold(22.0)).color(t.strong));
+            // (moved where they do not fit: on round, the edges fading)
+            marquee::label(
+                ui,
+                RichText::new(&title).font(bold(22.0)).color(t.strong),
+                marquee::ROUND,
+            );
             if !by.is_empty() {
-                fit_label(ui, RichText::new(&by).size(14.0).color(t.text));
+                marquee::label(
+                    ui,
+                    RichText::new(&by).size(14.0).color(t.text),
+                    marquee::ROUND,
+                );
             }
             fit_label(
                 ui,
@@ -455,9 +465,17 @@ impl App {
             let (rect, _) = ui.allocate_exact_size(vec2(side, side), Sense::hover());
             self.cover_in(ui, rect, 10);
             ui.vertical(|ui| {
-                fit_label(ui, RichText::new(&title).font(bold(18.0)).color(t.strong));
+                marquee::label(
+                    ui,
+                    RichText::new(&title).font(bold(18.0)).color(t.strong),
+                    marquee::ROUND,
+                );
                 if !by.is_empty() {
-                    fit_label(ui, RichText::new(&by).size(13.0).color(t.text));
+                    marquee::label(
+                        ui,
+                        RichText::new(&by).size(13.0).color(t.text),
+                        marquee::ROUND,
+                    );
                 }
             });
         });
@@ -557,11 +575,13 @@ impl App {
                     } else {
                         format!("{title} · {by}")
                     };
-                    fit_label(
+                    // (moved there and back where it does not fit)
+                    marquee::label(
                         ui,
                         RichText::new(words)
                             .font(bold(if close { 15.0 } else { 19.0 }))
                             .color(t.strong),
+                        marquee::THERE_AND_BACK,
                     );
                 });
                 self.position(ui);
@@ -661,9 +681,17 @@ impl App {
                 self.cover_in(ui, rect, 14);
                 ui.add_space(10.0);
                 let (title, by) = self.now_playing_text();
-                fit_label(ui, RichText::new(title).font(bold(26.0)).color(th().strong));
+                marquee::label(
+                    ui,
+                    RichText::new(title).font(bold(26.0)).color(th().strong),
+                    marquee::THERE_AND_BACK,
+                );
                 if !by.is_empty() {
-                    fit_label(ui, RichText::new(by).size(15.0).color(th().muted));
+                    marquee::label(
+                        ui,
+                        RichText::new(by).size(15.0).color(th().muted),
+                        marquee::THERE_AND_BACK,
+                    );
                 }
             });
             ui.add_space(8.0);
@@ -800,8 +828,10 @@ impl App {
         }
         let (time_rect, _) = design::vfd_line(&p, pos2(x, y), &times, big, colours, width);
         y = time_rect.bottom() + if compact { 1.0 } else { big * 0.2 };
-        // the words under it: as many lines as the glass holds, each cut to
-        // an ellipsis where it does not fit, its whole in a tooltip
+        // the words under it: as many lines as the glass holds, the name
+        // and the artist each moved a cell at a time where it does not fit,
+        // as such a display does (on round, after blank cells), its whole
+        // in a tooltip
         let lines: Vec<(&str, f32)> = if compact {
             vec![(title.as_str(), 11.0)]
         } else {
@@ -811,17 +841,33 @@ impl App {
                 (format.as_str(), 11.0),
             ]
         };
-        for (text, size) in lines {
+        for (k, (text, size)) in lines.into_iter().enumerate() {
             if text.is_empty() {
                 continue;
             }
             if y + size * 1.2 > bottom {
                 break;
             }
-            let (rect, elided) = design::vfd_line(&p, pos2(left, y), text, size, colours, width);
-            if elided {
-                tooltip_over(ui, rect, text);
-            }
+            // (the format, not a name: cut to an ellipsis as before)
+            let rect = if k == 2 {
+                let (rect, elided) =
+                    design::vfd_line(&p, pos2(left, y), text, size, colours, width);
+                if elided {
+                    tooltip_over(ui, rect, text);
+                }
+                rect
+            } else {
+                design::vfd_moving(
+                    ui,
+                    &p,
+                    ui.scope_id().with(("vfd-line", k)),
+                    pos2(left, y),
+                    text,
+                    size,
+                    colours,
+                    width,
+                )
+            };
             y = rect.bottom() + size * 0.25;
         }
         self.visual_in(ui, scope);
@@ -1083,18 +1129,25 @@ impl App {
             format!("{title} - {by}")
         };
         let line = format!("{line}   ({})", card_format(&self.info));
-        // (in one line, cut to an ellipsis where it does not fit, its whole
-        // in a tooltip - a marquee scrolled it, and paused it stood cut)
+        // (in one line; where it does not fit, moved a character at a time
+        // on round, "***" between, as the players of the time had it - by
+        // the clock: paused it goes on, 0.16.0's stood cut -, its whole in
+        // a tooltip)
         let said = ui.interact(words, ui.scope_id().with("marquee"), Sense::hover());
-        fit_text(
+        marquee::paint(
             ui,
-            ui.painter(),
+            &ui.painter().with_clip_rect(words.shrink(1.0)),
+            ui.scope_id().with("strip-words"),
             words.left_center() + vec2(4.0, 0.0),
             egui::Align2::LEFT_CENTER,
-            &line,
-            egui::FontId::monospace(12.0),
-            t.text,
+            &marquee::Text {
+                text: &line,
+                font: egui::FontId::monospace(12.0),
+                colour: t.text,
+                under: None,
+            },
             words.width() - 8.0,
+            marquee::STRIP,
         );
         said.widget_info(|| egui::WidgetInfo::labeled(egui::accesskit::Role::Label, true, &line));
         // the keys and the volume, in a row; the position under them
@@ -1221,7 +1274,8 @@ impl App {
         let c = design::cassette(space, played);
         design::cassette_shell(ui.painter(), &c, t, self.accent);
         // the label: what plays - two lines where both fit, else one; each
-        // cut to an ellipsis where it does not fit, its whole in a tooltip
+        // moved there and back where it does not fit, its whole in a
+        // tooltip
         let paper = design::cassette_paper(t);
         let ink = crate::theme::ink_on_in(t, paper);
         let (title, by) = self.now_playing_text();
@@ -1234,25 +1288,31 @@ impl App {
         let size = (lines_room.height() * 0.48).clamp(9.0, 26.0);
         let by_size = (size * 0.62).max(9.0);
         if !by.is_empty() && lines_room.height() >= (size + by_size) * 1.2 {
-            fit_text(
+            let line = |text, font| marquee::Text {
+                text,
+                font,
+                colour: ink,
+                under: None,
+            };
+            marquee::paint(
                 ui,
                 &clip,
+                ui.scope_id().with("label-title"),
                 lines_room.left_top(),
                 egui::Align2::LEFT_TOP,
-                &title,
-                bold(size),
-                ink,
+                &line(title.as_str(), bold(size)),
                 lines_room.width(),
+                marquee::THERE_AND_BACK,
             );
-            fit_text(
+            marquee::paint(
                 ui,
                 &clip,
+                ui.scope_id().with("label-by"),
                 lines_room.left_bottom(),
                 egui::Align2::LEFT_BOTTOM,
-                &by,
-                egui::FontId::proportional(by_size),
-                ink,
+                &line(by.as_str(), egui::FontId::proportional(by_size)),
                 lines_room.width(),
+                marquee::THERE_AND_BACK,
             );
         } else {
             let one = (lines_room.height() / 1.25).clamp(8.0, size);
@@ -1261,15 +1321,20 @@ impl App {
             } else {
                 format!("{title} · {by}")
             };
-            fit_text(
+            marquee::paint(
                 ui,
                 &clip,
+                ui.scope_id().with("label-one"),
                 lines_room.left_center(),
                 egui::Align2::LEFT_CENTER,
-                &line,
-                bold(one),
-                ink,
+                &marquee::Text {
+                    text: &line,
+                    font: bold(one),
+                    colour: ink,
+                    under: None,
+                },
                 lines_room.width(),
+                marquee::THERE_AND_BACK,
             );
         }
         let said = ui.interact(
@@ -1421,19 +1486,23 @@ impl App {
             )),
             |ui| {
                 ui.spacing_mut().item_spacing.y = 1.0;
-                fit_label(
+                // (moved a character at a time, there and back, where they
+                // do not fit)
+                marquee::label(
                     ui,
                     RichText::new(format!("> {title}"))
                         .monospace()
                         .strong()
                         .color(t.strong),
+                    marquee::TERMINAL,
                 );
                 if !compact {
-                    fit_label(
+                    marquee::label(
                         ui,
                         RichText::new(format!("  {by}"))
                             .monospace()
                             .color(self.accent),
+                        marquee::TERMINAL,
                     );
                     fit_label(
                         ui,
@@ -1582,18 +1651,21 @@ impl App {
         );
         child(ui, egui::UiBuilder::new().max_rect(words), |ui| {
             ui.spacing_mut().item_spacing.y = 0.0;
-            fit_label(
+            // (moved on round where they do not fit, cut hard)
+            marquee::label(
                 ui,
                 RichText::new(title.to_uppercase())
                     .font(bold(huge))
                     .color(t.strong),
+                marquee::HARD_ROUND,
             );
             if !compact {
-                fit_label(
+                marquee::label(
                     ui,
                     RichText::new(by.to_uppercase())
                         .font(bold(18.0))
                         .color(self.accent),
+                    marquee::HARD_ROUND,
                 );
                 ui.add_space(6.0);
                 let times = self.times();
@@ -1774,24 +1846,34 @@ impl App {
                 })
                 .collect()
         } else {
-            title
-                .split_whitespace()
-                .take(8)
-                .map(str::to_uppercase)
-                .collect()
+            title.split_whitespace().map(str::to_uppercase).collect()
         };
-        // (the scraps in lines over the artist's line, never into it: what
-        // does not fit is left out - a scrap wider than the head cut to an
-        // ellipsis - and the whole title is in a tooltip; a long scrap
+        // (the scraps in lines over the artist's line, never into it; a
+        // title of more than the head holds on pages, turned one after
+        // another - each shown a while, faded out and the next in, the
+        // first again after the last -, the whole title in a tooltip; a
+        // scrap wider than the head cut to an ellipsis; a long scrap
         // turned less, its corners within its line)
+        struct Scrap {
+            rect: Rect,
+            tilt: f32,
+            galley: std::sync::Arc<egui::Galley>,
+            fill: Color32,
+            ink: Color32,
+        }
         let by_h = 18.0;
         let floor = words_rect.bottom() - by_h - 4.0;
+        let top = words_rect.min + vec2(0.0, 4.0);
         let mut line_h: f32 = 0.0;
         let mut bottom = words_rect.top();
         let mut all_shown = true;
+        let mut pages: Vec<Vec<Scrap>> = vec![Vec::new()];
+        let mut letters = vec![0usize];
         for (i, piece) in pieces.iter().enumerate() {
             if piece == " " {
-                at.x += 14.0;
+                if pages.last().is_some_and(|p| !p.is_empty()) {
+                    at.x += 14.0;
+                }
                 continue;
             }
             let k = i.wrapping_mul(7).wrapping_add(3);
@@ -1800,7 +1882,7 @@ impl App {
             let mut font = fonts[(k / 2) % fonts.len()].clone();
             // (smaller in a low head: the scraps lay over the artist's line)
             font.size *= [1.0, 0.82, 1.12, 0.9, 1.05][k % 5] * if low { 0.72 } else { 1.0 };
-            let galley = one_line(&clip, piece, font, ink, words_rect.width() - 20.0);
+            let galley = one_line(&clip, piece, font.clone(), ink, words_rect.width() - 20.0);
             all_shown &= !galley.elided;
             let size = galley.size() + vec2(8.0, 4.0);
             if at.x + size.x > words_rect.right() - 4.0 && at.x > words_rect.left() {
@@ -1809,42 +1891,145 @@ impl App {
             }
             let tilt = [-0.07, 0.05, -0.03, 0.08, 0.0, -0.05][k % 6] * (60.0 / size.x).min(1.0);
             let lift = [0.0, 3.0, -2.0, 1.0][k % 4];
-            let rect = Rect::from_min_size(at + vec2(0.0, lift), size);
             let reach = size.x * 0.5 * tilt.abs() + 2.0;
+            let mut rect = Rect::from_min_size(at + vec2(0.0, lift), size);
+            if rect.bottom() + reach > floor && pages.last().is_some_and(|p| !p.is_empty()) {
+                // (the page is full: the next from the top)
+                pages.push(Vec::new());
+                letters.push(0);
+                at = top;
+                line_h = 0.0;
+                rect = Rect::from_min_size(at + vec2(0.0, lift), size);
+            }
+            let (mut galley, mut rect, mut reach, mut size) = (galley, rect, reach, size);
             if rect.bottom() + reach > floor {
-                all_shown = false;
-                break;
+                // (taller than a page holds - a low head: smaller, to fit)
+                let room = floor - rect.top() - reach - 1.0 - (size.y - galley.size().y);
+                let scale = (0.95 * room / galley.size().y).clamp(0.3, 1.0);
+                let mut font = font.clone();
+                font.size *= scale;
+                galley = one_line(&clip, piece, font, ink, words_rect.width() - 20.0);
+                size = galley.size() + vec2(8.0, 4.0);
+                rect = Rect::from_min_size(rect.min, size);
+                reach = size.x * 0.5 * tilt.abs() + 2.0;
+                if rect.bottom() + reach > floor {
+                    all_shown = false;
+                    continue;
+                }
             }
             line_h = line_h.max(size.y);
             bottom = bottom.max(rect.bottom() + reach);
+            if let (Some(page), Some(n)) = (pages.last_mut(), letters.last_mut()) {
+                page.push(Scrap {
+                    rect,
+                    tilt,
+                    galley,
+                    fill,
+                    ink,
+                });
+                *n += piece.chars().count();
+            }
+            at.x += size.x + 6.0;
+        }
+        // (a page left empty - a scrap that fitted nowhere - is none)
+        if pages.len() > 1 && pages.last().is_some_and(|p| p.is_empty()) {
+            pages.pop();
+            letters.pop();
+        }
+        let scraps_rect = Rect::from_min_max(words_rect.min, pos2(words_rect.right(), bottom));
+        // the page shown: each a while - two seconds and as long as its
+        // letters take to read -, faded out and the next in over 0.4 s; the
+        // pointer over them holds the page; reduced motion: the first
+        // (src/marquee.rs)
+        let motion = marquee::motion(ui.ctx());
+        let (mut shown, mut alpha) = (0, 1.0f32);
+        if pages.len() > 1 && motion != marquee::Motion::Reduced {
+            let pace = if motion == marquee::Motion::Intense {
+                0.8
+            } else {
+                1.0
+            };
+            let times: Vec<f32> = letters
+                .iter()
+                .map(|n| (2.0 + *n as f32 * 0.07) * pace)
+                .collect();
+            let round: f32 = times.iter().sum();
+            let held = ui.rect_contains_pointer(scraps_rect);
+            let clock = marquee::clock(ui.ctx(), ui.scope_id().with("collage-pages"), &title, held);
+            let mut t = clock.rem_euclid(round);
+            for (k, &d) in times.iter().enumerate() {
+                if t < d || k + 1 == times.len() {
+                    shown = k;
+                    let fade = 0.4f32;
+                    // (the first page comes in at once: a new title is not
+                    // faded in)
+                    let into = if clock < d { fade } else { t };
+                    // (a slow renderer: turned at once, no frames to fade)
+                    alpha = if marquee::slow(ui.ctx()) {
+                        1.0
+                    } else {
+                        (into / fade).min((d - t) / fade).clamp(0.0, 1.0)
+                    };
+                    if !held {
+                        let next = if marquee::slow(ui.ctx()) {
+                            d - t
+                        } else if alpha < 1.0 {
+                            1.0 / 30.0
+                        } else {
+                            (d - t - fade).max(1.0 / 30.0)
+                        };
+                        marquee::wake(ui.ctx(), next);
+                    }
+                    break;
+                }
+                t -= d;
+            }
+        }
+        if pages.len() > 1 {
+            marquee::note(
+                ui.ctx(),
+                &title,
+                scraps_rect,
+                shown as f32,
+                motion != marquee::Motion::Reduced,
+            );
+        }
+        for s in pages.get(shown).into_iter().flatten() {
             clip.add(Shape::convex_polygon(
-                design::turned(rect, tilt),
-                fill,
+                design::turned(s.rect, s.tilt),
+                s.fill.gamma_multiply(alpha),
                 Stroke::NONE,
             ));
-            let c = rect.center();
-            let half = galley.size() / 2.0;
-            let (sn, cs) = tilt.sin_cos();
+            let c = s.rect.center();
+            let half = s.galley.size() / 2.0;
+            let (sn, cs) = s.tilt.sin_cos();
             let offset = vec2(half.x * cs - half.y * sn, half.x * sn + half.y * cs);
-            clip.add(egui::epaint::TextShape::new(c - offset, galley, ink).with_angle(tilt));
-            at.x += size.x + 6.0;
+            clip.add(
+                egui::epaint::TextShape::new(c - offset, s.galley.clone(), s.ink)
+                    .with_angle(s.tilt)
+                    .with_opacity_factor(alpha),
+            );
         }
         let by_at = pos2(
             words_rect.left(),
             (bottom + 4.0).min(words_rect.bottom() - by_h),
         );
-        fit_text(
+        marquee::paint(
             ui,
             &clip,
+            ui.scope_id().with("collage-by"),
             by_at,
             egui::Align2::LEFT_TOP,
-            &by,
-            egui::FontId::monospace(13.0),
-            t.text,
+            &marquee::Text {
+                text: &by,
+                font: egui::FontId::monospace(13.0),
+                colour: t.text,
+                under: None,
+            },
             words_rect.width() - 4.0,
+            marquee::THERE_AND_BACK,
         );
-        if !all_shown {
-            let scraps_rect = Rect::from_min_max(words_rect.min, pos2(words_rect.right(), bottom));
+        if !all_shown || pages.len() > 1 {
             tooltip_over(ui, scraps_rect, &title);
         }
         let said = ui.interact(head, ui.scope_id().with("collage-head"), Sense::hover());

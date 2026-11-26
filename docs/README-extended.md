@@ -152,7 +152,11 @@ them) are on a page of their own: [Known limitations](LIMITATIONS.md).
   the whole window comes from the cover, kept readable), the picture large - as large
   as a short playlist leaves room for - and below it the playlist (two lines a track,
   the playing one with its cover and bars that move with the sound) or the equalizer
-  (a dB scale, each band filled from its 0 dB line). The card's cover is 120 to 200
+  (a dB scale, each band filled from its 0 dB line). A title, an artist or an album
+  too long for its line moves within it so all of it is read - waiting at its start
+  and its end, by the clock (paused too), held under the pointer, its whole in the
+  tooltip; each design its own way, and nothing moves in reduced motion ([Designs](DESIGNS.md)).
+  The card's cover is 120 to 200
   px as the window allows (wider than 900 points, a hero of up to 320 px on a
   soft shadow, what comes next beside it); the cover (kept up to 1024 px) is made the size it is
   shown at, in pixels, on a thread of its own by a Lanczos filter and cropped to a

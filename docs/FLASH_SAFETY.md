@@ -148,6 +148,11 @@ What axross-amp does about it:
   choices - leaves what it showed a quarter second where it was, then
   fades out over another: opened and shut 5 times a second they read 10
   transitions a second in Paper, now 0 - 1 (reviews 16 and 17).
+  A title too long for its box moves within it - by the clock, a few
+  characters a second, never flashing; on the dark fluorescent display, a
+  bright title moving read 0 by both meters at 420 x 420 and 640 x 480,
+  smoothly, by cells and in a slow renderer's jumps (`tests/marquee.rs`);
+  reduced motion stops it.
   `tests/window_flash.rs` and `tests/held_keys_flash.rs` read the window by
   both meters, the keys held too: within six transitions in any second, at
   most one of saturated red.

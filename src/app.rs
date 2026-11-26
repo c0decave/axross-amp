@@ -3123,7 +3123,8 @@ impl App {
 
     /// The track's title and artist over the display view's picture, for
     /// four seconds after it changes, fading in and out over one (calm:
-    /// words, small, no flash).
+    /// words, small, no flash); wider than the screen, moved there and back
+    /// within it, and shown until it has been read whole.
     fn track_words(&mut self, ui: &mut Ui, rect: egui::Rect) {
         let now = ui.input(|i| i.time);
         let words = self
@@ -3139,16 +3140,40 @@ impl App {
             e.told_at = now;
         }
         let age = (now - e.told_at) as f32;
-        if words.is_empty() || age > 5.0 {
+        let font = egui::FontId::proportional((rect.height() / 30.0).clamp(16.0, 48.0));
+        let room = (rect.width() - 64.0).max(40.0);
+        // (shown five seconds; a name wider than the screen until it has
+        // gone to its end and waited there, a second more to fade out)
+        let wide = ui
+            .painter()
+            .layout_no_wrap(words.clone(), font.clone(), Color32::WHITE)
+            .size()
+            .x;
+        let shown = match crate::marquee::timing(font.size, crate::marquee::motion(ui.ctx()), 0.0) {
+            Some(m) if wide > room => {
+                let over = crate::marquee::reach(wide, room, &m);
+                (m.hold_start + over / m.speed + m.hold_end + 1.0).max(5.0)
+            }
+            _ => 5.0,
+        };
+        if words.is_empty() || age > shown {
             return;
         }
-        let k = (age.min(5.0 - age)).clamp(0.0, 1.0);
-        ui.painter().text(
+        let k = (age.min(shown - age)).clamp(0.0, 1.0);
+        crate::marquee::paint(
+            ui,
+            ui.painter(),
+            egui::Id::NULL.with("amp-display-words"),
             rect.left_bottom() + vec2(32.0, -32.0),
             egui::Align2::LEFT_BOTTOM,
-            words,
-            egui::FontId::proportional((rect.height() / 30.0).clamp(16.0, 48.0)),
-            Color32::from_white_alpha((200.0 * k) as u8),
+            &crate::marquee::Text {
+                text: &words,
+                font,
+                colour: Color32::from_white_alpha((200.0 * k) as u8),
+                under: None,
+            },
+            room,
+            crate::marquee::THERE_AND_BACK,
         );
         ui.ctx().request_repaint_after(Duration::from_millis(50));
     }
@@ -4723,26 +4748,44 @@ impl App {
                         } else {
                             title
                         };
-                        fit_label(ui, RichText::new(title).font(title_font).color(th().strong));
+                        // (each line moved where it does not fit: Glass's
+                        // and Modern's on round, Zen's and Soft's there and
+                        // back, the terminal's a cell at a time)
+                        let look = card_look(d);
+                        crate::marquee::label(
+                            ui,
+                            RichText::new(title).font(title_font).color(th().strong),
+                            look,
+                        );
                         if !by.is_empty() {
-                            fit_label(ui, {
-                                // (the collage: cut from another page -
-                                // typewriter, slanted)
-                                let by = RichText::new(by.clone()).size(14.0).color(self.accent);
-                                if collage {
-                                    by.monospace().italics()
-                                } else {
-                                    by
-                                }
-                            });
+                            crate::marquee::label(
+                                ui,
+                                {
+                                    // (the collage: cut from another page -
+                                    // typewriter, slanted)
+                                    let by =
+                                        RichText::new(by.clone()).size(14.0).color(self.accent);
+                                    if collage {
+                                        by.monospace().italics()
+                                    } else {
+                                        by
+                                    }
+                                },
+                                look,
+                            );
                         }
                         // (the album, unless the line above names it)
                         if !self.info.album.is_empty() && !by.contains(&self.info.album) {
-                            fit_label(ui, {
-                                let album =
-                                    RichText::new(&self.info.album).size(13.5).color(th().muted);
-                                if collage { album.italics() } else { album }
-                            });
+                            crate::marquee::label(
+                                ui,
+                                {
+                                    let album = RichText::new(&self.info.album)
+                                        .size(13.5)
+                                        .color(th().muted);
+                                    if collage { album.italics() } else { album }
+                                },
+                                look,
+                            );
                         }
                         if self.info.rate > 0 {
                             ui.label(
@@ -4959,7 +5002,8 @@ impl App {
             } else {
                 format!("{title} – {by}")
             };
-            fit_label(ui, RichText::new(line).size(16.0).strong());
+            let look = card_look(crate::design::current());
+            crate::marquee::label(ui, RichText::new(line).size(16.0).strong(), look);
         });
         ui.add_space(4.0);
     }
@@ -6437,6 +6481,48 @@ impl App {
         };
     }
 
+    /// How much the words of what plays may move: the desktop's reduced
+    /// motion over the setting.
+    fn marquee_motion(&self) -> crate::marquee::Motion {
+        if self.desktop_reduces_motion() {
+            crate::marquee::Motion::Reduced
+        } else if self.amp.motion == "intense" {
+            crate::marquee::Motion::Intense
+        } else {
+            crate::marquee::Motion::Calm
+        }
+    }
+
+    /// Which track plays (its place and its file): another, and the words
+    /// moved start from their start.
+    fn track_mark(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        self.playlist.current.hash(&mut h);
+        if let Some(t) = self
+            .playlist
+            .current
+            .and_then(|i| self.playlist.tracks.get(i))
+        {
+            t.path.hash(&mut h);
+        }
+        h.finish()
+    }
+
+    /// The renderer taken as slow or not, whatever was measured (tests).
+    #[doc(hidden)]
+    pub fn set_slow_renderer(&mut self, on: bool) {
+        self.slow = on;
+    }
+
+    /// The desktop's word on motion, as if it had said it (tests).
+    #[doc(hidden)]
+    pub fn set_desktop_reduces_motion(&mut self, on: bool) {
+        if let Ok(mut r) = self.reduced_motion.lock() {
+            *r = Some(on);
+        }
+    }
+
     /// Whether the desktop asks for less motion (GNOME's animations off).
     fn desktop_reduces_motion(&self) -> bool {
         self.reduced_motion
@@ -6682,6 +6768,9 @@ impl App {
     fn frame(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
         self.update_theme(&ui.ctx().clone());
         let ctx = ui.ctx().clone();
+        // (what plays, moved where it does not fit: how much may move, and
+        // which track - a new one starts its words from their start)
+        crate::marquee::begin_frame(&ctx, self.marquee_motion(), self.track_mark(), self.slow);
         // the cover made at the sizes it is shown: what is done comes in
         self.sizer.poll(&ctx);
         if self.sizer.waiting() {
@@ -7070,6 +7159,18 @@ fn album_head(
         rect.bottom() - 0.5,
         egui::Stroke::new(1.0, viz::mix(th().surface, accent, 0.25)),
     );
+}
+
+/// How a design's card moves a line of what plays that does not fit.
+pub(crate) fn card_look(d: &crate::design::Design) -> crate::marquee::Look {
+    match d.key {
+        "zen" | "soft" | "cassette" | "collage" => crate::marquee::THERE_AND_BACK,
+        "terminal" => crate::marquee::TERMINAL,
+        "desktop90" => crate::marquee::STRIP,
+        "rack" => crate::marquee::DISPLAY,
+        "brutalist" => crate::marquee::HARD_ROUND,
+        _ => crate::marquee::ROUND,
+    }
 }
 
 /// The playlist's folding header (opened from a menu and Ctrl+F too).
@@ -7472,7 +7573,10 @@ fn desktop_reduced_motion() -> Arc<Mutex<Option<bool>>> {
         .spawn(move || {
             let answer = reduced_motion_asked();
             if let Ok(mut f) = found.lock() {
-                *f = answer;
+                // (unless said already - the tests)
+                if f.is_none() {
+                    *f = answer;
+                }
             }
         });
     out

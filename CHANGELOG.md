@@ -4,6 +4,64 @@ axross-amp is axross's Media Player as a program of its own, in Rust. The
 versions before 0.14.0 were not published; they are listed so the history
 reads whole.
 
+## Unreleased
+
+### Changed
+- **A title too long for its box moves, so all of it is read** (a user's:
+  "'Back To The 80's' _ Best of Synthwave And Retro Electro Music Mix for
+  2 Hours _ Vol. 5"). Since 0.16.1 it was cut to an ellipsis, its whole in
+  a tooltip only - the 90s desktop's marquee had stood cut while paused.
+  Now what plays - the title, the artist, the album, the lines of both,
+  the "title - artist (format)" line - in every design and in its low and
+  narrow forms, the large picture's line, and the name over the display
+  view's picture: where it fits it stands as before; where it does not,
+  it waits 2 s at its start, moves at a calm pace (about 2.3 times its
+  type's size in points a second - some 32 at 14 points; a quarter faster
+  in the intense motion) to its end, waits 1.5 s showing it, and comes
+  back to its start. By the clock, not the sound: paused or stopped it
+  goes on. A new track starts it from its start; the pointer over it holds
+  it (its whole is in the tooltip as before); a screen reader is given its
+  whole. Cut by its box, never over what is beside it. Each design its own
+  way: Modern and Glass smoothly, on round ("   •   " between its end and
+  its start again), its cut edges fading out; Zen, Soft, the cassette's
+  label, the collage's artist and the display view smoothly there and
+  back, fading; Brutalist on round, cut hard; the Hi-fi rack's fluorescent
+  display a character cell at a time, on round after blank cells, its
+  unlit segments with it; the 90s strip a cell at a time with "***"
+  between, as the players of the time had it; the Terminal a cell at a
+  time, there and back. The collage's title, cut from other pages word by
+  word, is no longer left at its eighth word: its scraps are laid on
+  pages, each shown a while and faded into the next. A right-to-left title
+  starts at the right and moves the way it is read. Where the desktop asks
+  for reduced motion nothing moves: cut to an ellipsis, its whole in the
+  tooltip, as before. The playlist's rows and "Up next" keep their
+  ellipsis and tooltip (a list moving in every row is noise).
+- It costs little: a frame is drawn only while it moves - during its
+  waits the window sleeps until the wait ends; moving smoothly 20 to 30
+  frames a second (as often as it moves a pixel), by cells about 4 (once
+  a cell); a minimised window draws nothing. A frame of the window costs
+  0.5 - 1 ms of CPU laid out and tessellated (620 x 860: Modern 0.9, the
+  rack 1.0, the 90s strip 0.5), so some 2 % of a core moving smoothly, 0.4
+  % by cells, beside the GPU's own. On a slow renderer (no GPU: Mesa's
+  llvmpipe draws a frame in 50 - 100 ms of CPU) every design moves it in
+  jumps of at most a third of its box, there and back, at the same pace
+  on average - a frame every few seconds -, and the collage's pages turn
+  without fading: stopped, with the picture off, measured in a real
+  window there over 30 s, 0.4 % of a core with a short title and 3.9 %
+  (Modern), 7.5 % (the rack), 2.1 % (the 90s strip) with the user's;
+  cell by cell it had been 16 - 37 %. The text is laid out once for each
+  change of it (egui's cache; a frame looks it up).
+- Tested (`tests/marquee.rs`): the user's title in all ten designs at
+  620 x 860 and 420 x 420 - over a round its first letter and its last
+  are each seen whole in its box, which runs into no other text; it moves
+  while paused, starts again with a new track, holds under the pointer,
+  moves to the right read from the right, stands where it fits (and asks
+  for no frame), is cut and stands in reduced motion, wakes no minimised
+  window; the bright title on the dark display and the 90s strip, at 420 x
+  420 and 640 x 480 - and Modern's smooth fading and a slow renderer's
+  jumps - read by both flash meters: 0 transitions by every reading. `tests/display_fit.rs` holds the moving boxes to the window and
+  to the texts beside them.
+
 ## 0.17.0 - 2026-11-24
 
 Twenty new faces, and what independent reviews 18, 19 and 20 found in them

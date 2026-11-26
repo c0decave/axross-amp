@@ -78,9 +78,19 @@ Back to the [README](../README.md) - everything in detail: the [extended README]
   once per script). Emoji are egui's own, in one colour. A right-to-left
   name reads from the right, its numbers and Latin words in place (the
   Unicode algorithm with its rule for pairs of brackets, without explicit
-  embeddings); one too long for its room
-  is cut at the end of what is shown, which for such a name is its
-  beginning - the whole name is in the tooltip.
+  embeddings); one too long for its room starts at the right and moves
+  the way it is read (where the desktop asks for reduced motion it is cut
+  at the end of what is shown, which for such a name is its beginning -
+  the whole name is in the tooltip).
+- A title too long for its box moves within it (src/marquee.rs); where
+  the desktop asks for reduced motion it stands, cut to an ellipsis, its
+  whole in the tooltip only - pointing at it does not move it either (it
+  would be motion started by the pointer, which reduced motion asks to
+  spare). The playlist's rows and "Up next" are always cut so. On a slow
+  renderer (no GPU: the CPU draws every frame, 50 - 100 ms of it at 620 x
+  860) it moves in jumps of at most a third of its box, there and back, at
+  the same pace on average - a frame every few seconds, not smoothly -,
+  and the collage's pages turn without fading.
 - The flash guard dims the line face in very fast music more often than
   needed (it over-estimates the moving fill); nothing flashes, the picture is
   just darker at times.

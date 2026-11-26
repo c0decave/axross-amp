@@ -4,8 +4,10 @@
 //! the first track of one and the 999th of 999, names of two letters, of a
 //! hundred and fifty, in CJK, right to left, emoji and one word of 300
 //! letters, tracks of 0:59, 59:59 and 10:00:00. No such text is cut by its
-//! box; only the name may end in an ellipsis, and then its whole is in a
-//! tooltip. And no two texts anywhere in the window run into each other.
+//! box, but a name too long for it, moved within it (src/marquee.rs: the
+//! box itself in the window) - or, in reduced motion, ended in an ellipsis;
+//! either way its whole is in a tooltip. And no two texts anywhere in the
+//! window run into each other.
 //! (0.16.0: in the Hi-fi rack's display the length and the name were cut
 //! from track 2 on; in Modern a long title ran into the texts beside it.)
 
@@ -27,14 +29,16 @@ fn window(dir: &std::path::Path, size: egui::Vec2) -> Harness<'static, App> {
         desktop_bus: None,
         headless_audio: true,
     };
-    Harness::builder()
+    let h = Harness::builder()
         .with_size(size)
         .with_step_dt(0.05)
         // (no CJK or Arabic font is bundled: their letters are drawn as
         // boxes - they take room all the same)
         .allow_missing_glyphs()
         .wgpu()
-        .build_eframe(move |cc| App::with_setup(cc, Vec::new(), setup.clone()))
+        .build_eframe(move |cc| App::with_setup(cc, Vec::new(), setup.clone()));
+    axross_amp::marquee::record(&h.ctx, true);
+    h
 }
 
 /// A text the frame painted: what it says, where its glyphs lie, what
@@ -301,10 +305,34 @@ fn check(
     if shown.iter().all(|p| !p.text.contains(&total)) {
         failures.push(format!("{case}: the length is shown nowhere"));
     }
+    // (a name moved within its box: drawn in it, cut by it - the box is
+    // held to the window, and the name to no other text)
+    let moving = axross_amp::marquee::seen(&h.ctx);
+    let moved = |p: &Painted| {
+        moving.iter().any(|m| {
+            !m.elided
+                && m.rect.expand(3.0).contains_rect(p.clip)
+                && p.bounds.y_range().intersects(m.rect.y_range())
+        })
+    };
+    for m in &moving {
+        if !screen.expand(1.0).contains_rect(m.rect) {
+            failures.push(format!(
+                "{case}: \"{}\" moves in a box out of the window: {:?}",
+                short(&m.text),
+                m.rect
+            ));
+        }
+    }
     let mut elided = Vec::new();
+    for m in moving.iter().filter(|m| !m.elided) {
+        if !elided.iter().any(|(_, t): &(Pos2, String)| *t == m.text) {
+            elided.push((m.rect.center(), m.text.clone()));
+        }
+    }
     for p in &shown {
         let inside = p.clip.intersect(screen).expand(1.0);
-        let cut = !inside.contains_rect(p.bounds);
+        let cut = !inside.contains_rect(p.bounds) && !moved(p);
         if p.elided {
             // (a name may end in an ellipsis - the time, never)
             if p.text.contains(&pos) || p.text.contains(&total) {
