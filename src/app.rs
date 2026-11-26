@@ -4145,6 +4145,14 @@ impl App {
                     .small()
                     .color(th().muted),
             );
+            // (two GPUs: what was asked for at the start - PRIME render
+            // offload, or why not: src/offload.rs)
+            if let Some(Some(note)) = crate::offload::NOTE.get() {
+                ui.add(
+                    egui::Label::new(RichText::new(format!("{note}.")).small().color(th().muted))
+                        .wrap(),
+                );
+            }
             if a.software() {
                 ui.label(
                     RichText::new("A software adapter: the shader faces are drawn by the CPU.")

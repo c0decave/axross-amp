@@ -16,7 +16,7 @@
 use axross_amp::app;
 
 const USAGE: &str = "axross-amp [--foreground] [--new-instance] [FILE|FOLDER|PLAYLIST|URL ...]
-       axross-amp --help | --version
+       axross-amp --help | --version | --adapters
 
 Play local audio (MP3, FLAC, Ogg Vorbis, Opus, AAC / M4A, ALAC, WAV, AIFF, CAF),
 folders and M3U / PLS playlists, and internet radio by its http(s) URL.
@@ -30,9 +30,15 @@ back; it writes to ~/.cache/axross-amp/axross-amp.log (macOS:
 seconds is said there and then (exit status 1); one still starting after
 two seconds goes on in the background and says so (exit status 0).
 --foreground (-F) keeps it in the terminal. --version says which version
-it is, --help (-h) this. (--self-test and --after-update are the updater's:
-a new release run once before it is put in place, and started by Restart
-now.)
+it is, --help (-h) this, --adapters every graphics adapter found and the
+one the window would draw with. (--self-test and --after-update are the
+updater's: a new release run once before it is put in place, and started
+by Restart now.)
+
+On a Linux laptop with two GPUs, Options -> Graphics -> High performance
+(or Auto on a machine without a battery) asks for the dedicated one
+through PRIME render offload; a window it cannot give is made again on
+the integrated one.
 
 Keys: Space play / pause, Left / Right seek 5 s (Shift: 30 s), Ctrl+Left /
 Right previous / next, Up / Down or + / - volume, Home the track's start,
@@ -76,6 +82,23 @@ fn main() -> eframe::Result {
         );
         return Ok(());
     }
+    // the settings: the window's size, the graphics adapter
+    let settings = axross_amp::state::read_amp(
+        &axross_amp::state::config_dir().join(axross_amp::state::AMP_FILE),
+    );
+    // (a laptop with two GPUs: the dedicated one asked for through PRIME
+    // render offload where the setting wants it - here, before any thread
+    // of this program exists and before the graphics: src/offload.rs)
+    let offloaded = axross_amp::offload::prefer_dedicated(&settings.graphics);
+    // (started again without it: its window failed on the dedicated GPU)
+    let again = std::env::var_os(axross_amp::offload::NO_OFFLOAD).is_some();
+    if args.iter().any(|a| a == "--adapters") {
+        print!(
+            "{}",
+            axross_amp::graphics::adapters_report(&settings.graphics)
+        );
+        return Ok(());
+    }
     let new_instance = args.iter().any(|a| a == "--new-instance");
     // (started by the updater's Restart now: the player's name on the bus
     // is taken when the program it replaces lets go of it)
@@ -95,7 +118,9 @@ fn main() -> eframe::Result {
     #[cfg(target_os = "linux")]
     {
         use axross_amp::mpris::{Claim, Mpris};
-        let claim = if after_update {
+        // (started again in its own place, without the offload: the name
+        // taken when the process it was lets go of it)
+        let claim = if after_update || again {
             Mpris::claim_after(None)
         } else {
             Mpris::claim(None, (!new_instance).then_some(&files[..]))
@@ -126,7 +151,9 @@ fn main() -> eframe::Result {
     // same program, after it - or a file handed to the player running
     // took a good update for one that never started, put the old program
     // back and refused the new one for good: review 17, H1)
-    {
+    // (not when started again without the offload: the start it replaced
+    // was the first one, and it is still watched - its window comes now)
+    if !again {
         use axross_amp::update::{FirstStart, Install, Version, first_start};
         let install = Install::current();
         if install.can_update()
@@ -155,8 +182,26 @@ fn main() -> eframe::Result {
         .ok()
         .and_then(|v| v.parse::<u64>().ok())
     {
+        // (a window that cannot be made on the dedicated GPU: as eframe's
+        // error would be)
+        if offloaded && std::env::var_os("AXROSS_AMP_FAKE_OFFLOAD_FAILS").is_some() {
+            again_without_offload();
+        }
         if let Some(path) = std::env::var_os("AXROSS_AMP_FAKE_PIDFILE") {
             let _ = std::fs::write(path, std::process::id().to_string());
+        }
+        // (the offload's variables as the window would have them)
+        if let Some(path) = std::env::var_os("AXROSS_AMP_FAKE_ENVFILE") {
+            let said: String = axross_amp::offload::VARIABLES
+                .iter()
+                .chain([
+                    &axross_amp::offload::MARK,
+                    &axross_amp::offload::NO_OFFLOAD,
+                    &"AXROSS_AMP_DETACHED",
+                ])
+                .filter_map(|n| std::env::var(n).ok().map(|v| format!("{n}={v}\n")))
+                .collect();
+            let _ = std::fs::write(path, said);
         }
         axross_amp::detach::signal_ready();
         // (its window up: a first start watched went well)
@@ -175,9 +220,6 @@ fn main() -> eframe::Result {
         std::process::exit(1);
     }
     // the window as large as it was left
-    let settings = axross_amp::state::read_amp(
-        &axross_amp::state::config_dir().join(axross_amp::state::AMP_FILE),
-    );
     let size = settings.window.unwrap_or([620.0, 860.0]);
     let mut options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
@@ -211,6 +253,14 @@ fn main() -> eframe::Result {
             Ok(Box::new(app))
         }),
     );
+    // (the dedicated GPU asked for, and no window came of it: once more in
+    // this process's place without asking - never no window at all)
+    if started.is_err() && offloaded {
+        if let Err(error) = &started {
+            eprintln!("axross-amp: {error}");
+        }
+        again_without_offload();
+    }
     // (no adapter, no surface, no device: Options cannot be reached, so
     // what can be tried from outside is said - not a line of nested Debug)
     if let Err(error @ eframe::Error::Wgpu(_)) = &started {
@@ -221,6 +271,28 @@ fn main() -> eframe::Result {
         std::process::exit(1);
     }
     started
+}
+
+/// The window could not be made on the dedicated GPU: the program started
+/// again in this process's place (the same process on Unix: a detached
+/// child stays one, its pipe to the terminal's start open) without the
+/// offload (src/offload.rs).
+fn again_without_offload() -> ! {
+    eprintln!(
+        "axross-amp: the window could not be made on the dedicated GPU; again on the integrated one"
+    );
+    let exe = std::env::current_exe().unwrap_or_else(|_| "axross-amp".into());
+    let args: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
+    let mut command = axross_amp::offload::again_without(&exe, &args);
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        let e = command.exec();
+        eprintln!("axross-amp: {}: {e}", exe.display());
+        std::process::exit(1);
+    }
+    #[cfg(not(unix))]
+    std::process::exit(command.status().ok().and_then(|s| s.code()).unwrap_or(1));
 }
 
 /// The first library the window needs (winit loads them as it starts, by

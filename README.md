@@ -111,6 +111,25 @@ be set up names these variables:
 | `WGPU_POWER_PREF` | `low` (the integrated GPU) or `high` (the dedicated one) |
 | `AMP_GPU_SHADERS` | `1` / `0`: the shader faces by the GPU's shaders or drawn by the CPU, whatever was measured at the start |
 
+**A laptop with two GPUs (Linux: Optimus, PRIME).** The integrated GPU draws
+the desktop and an OpenGL program sees only it - with no Vulkan loader
+installed (wgpu then draws with OpenGL), *High performance* had no
+dedicated adapter to choose. Where the setting wants the dedicated GPU (High
+performance, or Auto on a machine without a battery), the player reads
+`/sys/class/drm` (each GPU's vendor, which one drew the boot screen, its
+driver; an AMD APU and an AMD card told apart by their memory) and asks for
+it the way its driver wants, before any graphics start: NVIDIA's own driver
+with `__NV_PRIME_RENDER_OFFLOAD=1`, `__GLX_VENDOR_LIBRARY_NAME=nvidia`,
+`__VK_LAYER_NV_optimus=NVIDIA_only` (and NVIDIA's EGL vendor file), a Mesa
+driver (nouveau, amdgpu, radeon) with `DRI_PRIME=1`. Variables you set
+yourself are left as they are. A window the dedicated GPU cannot give is
+made again at once on the integrated one (from a terminal, by the copy in
+the background too). Options › Graphics says what was done, and
+`axross-amp --adapters` lists every adapter by API, the one the window would
+draw with and the note - to paste into a bug report. Installing the Vulkan
+loader (Debian and Ubuntu: `libvulkan1`, Fedora: `vulkan-loader`, Arch:
+`vulkan-icd-loader`) lets wgpu see both GPUs by Vulkan.
+
 **Titles in other scripts.** Chinese, Japanese, Korean, Arabic, Hebrew, Thai
 and Devanagari are written with the system's fonts (found in the background,
 each file checked before it is used); right-to-left titles read from the

@@ -272,6 +272,101 @@ pub fn selector(preference: Preference) -> eframe::egui_wgpu::NativeAdapterSelec
     })
 }
 
+/// A future's answer, waited for on this thread (wgpu's adapter listing
+/// is async; no executor is needed for it - it is ready at once or soon).
+fn block_on<F: std::future::Future>(future: F) -> F::Output {
+    struct Wake(std::thread::Thread);
+    impl std::task::Wake for Wake {
+        fn wake(self: std::sync::Arc<Self>) {
+            self.0.unpark();
+        }
+    }
+    let waker = std::task::Waker::from(std::sync::Arc::new(Wake(std::thread::current())));
+    let mut cx = std::task::Context::from_waker(&waker);
+    let mut future = std::pin::pin!(future);
+    loop {
+        if let std::task::Poll::Ready(v) = future.as_mut().poll(&mut cx) {
+            return v;
+        }
+        std::thread::park();
+    }
+}
+
+/// Every adapter wgpu finds among `backends`, described.
+fn adapters_of(backends: wgpu::Backends) -> Vec<wgpu::AdapterInfo> {
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+        backends,
+        ..wgpu::InstanceDescriptor::new_without_display_handle()
+    });
+    block_on(instance.enumerate_adapters(backends))
+        .iter()
+        .map(|a| a.get_info())
+        .collect()
+}
+
+/// One line of an adapter: the API, the name, the kind, the driver.
+fn adapter_line(i: &wgpu::AdapterInfo) -> String {
+    let driver = [i.driver.trim(), i.driver_info.trim()]
+        .into_iter()
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+    format!(
+        "{} ({:?}{}{})",
+        Adapter::of(i, true).label(),
+        i.device_type,
+        if driver.is_empty() { "" } else { ", driver " },
+        driver
+    )
+}
+
+/// `--adapters`: every adapter wgpu finds, API by API, the one the window
+/// would draw with (by the setting `graphics`, the machine and the
+/// environment - the offload asked for at the start included), and what
+/// was done about two GPUs - to paste into a bug report.
+pub fn adapters_report(graphics: &str) -> String {
+    let mut s = String::new();
+    for (name, b) in [
+        ("Vulkan", wgpu::Backends::VULKAN),
+        ("Metal", wgpu::Backends::METAL),
+        ("DirectX 12", wgpu::Backends::DX12),
+        ("OpenGL", wgpu::Backends::GL),
+    ] {
+        let found = adapters_of(b);
+        s.push_str(&format!(
+            "{name}:{}\n",
+            if found.is_empty() { " none found" } else { "" }
+        ));
+        for i in &found {
+            s.push_str(&format!("  {}\n", adapter_line(i)));
+        }
+    }
+    // (as the window asks: the backends WGPU_BACKEND allows)
+    let backends = wgpu::Backends::from_env().unwrap_or(wgpu::Backends::all());
+    let all = adapters_of(backends);
+    let described: Vec<Adapter> = all.iter().map(|i| Adapter::of(i, true)).collect();
+    let preference = Preference::from_key(graphics).with_env();
+    let settled = preference.settled(has_battery());
+    let named = std::env::var("WGPU_ADAPTER_NAME").ok();
+    match choose(&described, settled, named.as_deref()) {
+        Some(at) => s.push_str(&format!(
+            "chosen ({}{}): {}\n",
+            preference.name(),
+            if preference == Preference::Auto {
+                format!(", here {}", settled.name())
+            } else {
+                String::new()
+            },
+            adapter_line(&all[at])
+        )),
+        None => s.push_str("chosen: none - no adapter can draw\n"),
+    }
+    if let Some(Some(note)) = crate::offload::NOTE.get() {
+        s.push_str(&format!("two GPUs: {note}\n"));
+    }
+    s
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

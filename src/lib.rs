@@ -28,6 +28,7 @@ pub mod mp4edit;
 #[cfg(target_os = "linux")]
 pub mod mpris;
 pub mod net;
+pub mod offload;
 pub mod playlist;
 pub mod ring;
 pub mod saver;

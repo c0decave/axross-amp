@@ -223,6 +223,9 @@ them) are on a page of their own: [Known limitations](LIMITATIONS.md).
   *High performance* say which outright. A software adapter (llvmpipe, WARP) only
   where there is no GPU; Options names the adapter in use. `WGPU_BACKEND`,
   `WGPU_ADAPTER_NAME` and `WGPU_POWER_PREF` decide instead ([README](../README.md#quick-start)).
+  On a Linux laptop with two GPUs the dedicated one is asked for through PRIME render
+  offload where the setting wants it (src/offload.rs), a window it cannot give made
+  again on the integrated one; `axross-amp --adapters` lists what was found.
 - **Shares its state with axross**: the playlist, the track and its position, the
   volume, the visualization (`~/.config/axross/media_player.json`) and axross's one
   equalizer (`~/.config/axross/audio.json`) - the player inside axross and this

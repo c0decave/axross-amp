@@ -62,6 +62,33 @@ reads whole.
   jumps - read by both flash meters: 0 transitions by every reading. `tests/display_fit.rs` holds the moving boxes to the window and
   to the texts beside them.
 
+### Fixed
+- **The dedicated GPU of a Linux laptop with two (Optimus, PRIME) is
+  used when the setting wants it** - High performance, or Auto on a
+  machine without a battery. With an integrated GPU drawing the desktop
+  and no Vulkan loader installed (wgpu then draws with OpenGL, which sees
+  only the integrated GPU), High performance had nothing to choose: the
+  owner's Iris Xe and NVIDIA laptop drew with the Iris. The machine is
+  read from `/sys/class/drm` (each GPU's vendor, which drew the boot
+  screen, its driver; an AMD APU beside an AMD card told by its memory),
+  and the dedicated GPU asked for the way its driver wants, at the very
+  start, before any thread or graphics: NVIDIA's own driver by PRIME
+  render offload (`__NV_PRIME_RENDER_OFFLOAD=1`,
+  `__GLX_VENDOR_LIBRARY_NAME=nvidia`, `__VK_LAYER_NV_optimus=NVIDIA_only`,
+  NVIDIA's EGL vendor file), a Mesa driver (nouveau, amdgpu, radeon) by
+  `DRI_PRIME=1`; a discrete card that draws the screen already, one GPU or
+  a virtual machine's: nothing. Variables the user set stand. A window the
+  dedicated GPU cannot give is made again at once, in the same process's
+  place, on the integrated one - from a terminal by the copy in the
+  background too, which knows the variables as the program's by a mark of
+  its own (as in axross-files-matrix, its review 6's M3); an update's
+  first start stays watched across it. Options › Graphics says what was
+  done; `axross-amp --adapters` lists every adapter by API, the one the
+  window would draw with and that note. Tested on fixture trees - Intel +
+  NVIDIA's driver (the owner's), Intel + nouveau, AMD + AMD, one GPU, a
+  virtual machine -, the variables it sets, the start again without them,
+  and the copy in the background keeping it (`tests/detach.rs`).
+
 ## 0.17.0 - 2026-11-24
 
 Twenty new faces, and what independent reviews 18, 19 and 20 found in them

@@ -367,3 +367,141 @@ fn a_start_handing_its_files_over_leaves_the_first_start_watch() {
     let _ = daemon.kill();
     let _ = daemon.wait();
 }
+
+/// A laptop's /sys and /proc as the owner's (Intel Iris Xe draws the screen,
+/// NVIDIA with its own driver beside it), and the Graphics setting.
+fn hybrid(home: &Path, graphics: &str) -> std::path::PathBuf {
+    let root = home.join("root");
+    for (card, vendor, boot) in [("card0", "0x8086", "1"), ("card1", "0x10de", "0")] {
+        let dev = root.join("sys/class/drm").join(card).join("device");
+        std::fs::create_dir_all(&dev).unwrap();
+        std::fs::write(dev.join("vendor"), format!("{vendor}\n")).unwrap();
+        std::fs::write(dev.join("boot_vga"), format!("{boot}\n")).unwrap();
+    }
+    std::fs::create_dir_all(root.join("proc/driver/nvidia")).unwrap();
+    std::fs::write(root.join("proc/driver/nvidia/version"), "NVRM 550").unwrap();
+    let config = home.join(".config/axross");
+    std::fs::create_dir_all(&config).unwrap();
+    std::fs::write(
+        config.join("axross-amp.json"),
+        format!(r#"{{"graphics": "{graphics}"}}"#),
+    )
+    .unwrap();
+    root
+}
+
+/// The offload's variables the stand-in window was started with.
+fn window_env(path: &Path) -> String {
+    for _ in 0..400 {
+        if let Ok(text) = std::fs::read_to_string(path)
+            && !text.is_empty()
+        {
+            return text;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    String::new()
+}
+
+/// High performance on the owner's laptop: PRIME render offload asked for
+/// in the window's environment; Power saving: nothing.
+#[test]
+fn high_performance_asks_for_the_dedicated_gpu_through_prime_offload() {
+    for (graphics, offloaded) in [("high", true), ("low", false)] {
+        let home = Scratch::new(&format!("offload-{graphics}"));
+        let root = hybrid(&home, graphics);
+        let envfile = home.join("env");
+        let out = amp(&home)
+            .args(["--new-instance"])
+            .env("AXROSS_AMP_FAKE_ROOT", &root)
+            .env("AXROSS_AMP_FAKE_WINDOW", "1")
+            .env("AXROSS_AMP_FAKE_ENVFILE", &envfile)
+            .env_remove("WGPU_POWER_PREF")
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{out:?}");
+        let env = window_env(&envfile);
+        assert_eq!(
+            env.contains("__NV_PRIME_RENDER_OFFLOAD=1\n")
+                && env.contains("__GLX_VENDOR_LIBRARY_NAME=nvidia\n")
+                && env.contains("__VK_LAYER_NV_optimus=NVIDIA_only\n")
+                && env.contains("AXROSS_AMP_OFFLOAD=1\n"),
+            offloaded,
+            "{graphics}: {env:?}"
+        );
+        if !offloaded {
+            assert!(!env.contains("__NV_PRIME"), "{env:?}");
+        }
+    }
+}
+
+/// A window the dedicated GPU cannot give: made again, in the same
+/// process's place, without the offload - never no window at all.
+#[test]
+fn a_window_the_dedicated_gpu_cannot_give_is_made_on_the_integrated_one() {
+    let home = Scratch::new("offload-again");
+    let root = hybrid(&home, "high");
+    let envfile = home.join("env");
+    let pidfile = home.join("pid");
+    let child = amp(&home)
+        .args(["--new-instance", "-F"])
+        .env("AXROSS_AMP_FAKE_ROOT", &root)
+        .env("AXROSS_AMP_FAKE_WINDOW", "1")
+        .env("AXROSS_AMP_FAKE_OFFLOAD_FAILS", "1")
+        .env("AXROSS_AMP_FAKE_ENVFILE", &envfile)
+        .env("AXROSS_AMP_FAKE_PIDFILE", &pidfile)
+        .spawn()
+        .unwrap();
+    let first = child.id();
+    let out = child.wait_with_output().unwrap();
+    assert!(out.status.success(), "{out:?}");
+    let said = String::from_utf8_lossy(&out.stderr);
+    assert!(said.contains("again on the integrated one"), "{said}");
+    let env = window_env(&envfile);
+    assert!(
+        env.contains("AXROSS_AMP_NO_OFFLOAD=1\n")
+            && !env.contains("__NV_PRIME")
+            && !env.contains("AXROSS_AMP_OFFLOAD="),
+        "{env:?}"
+    );
+    // (in its place: the same process)
+    assert_eq!(read_pid(&pidfile), Some(first));
+}
+
+/// From a terminal: the copy in the background inherits the variables,
+/// knows them as the program's (review 6's M3 in axross-files-matrix) - and
+/// so it, too, starts again on the integrated GPU when the dedicated one
+/// gives no window; the terminal's start hears of its window all the same.
+#[test]
+fn the_copy_in_the_background_keeps_its_way_back_to_the_integrated_gpu() {
+    let home = Scratch::new("offload-bg");
+    let root = hybrid(&home, "high");
+    let envfile = home.join("env");
+    let pidfile = home.join("pid");
+    let out = amp(&home)
+        .args(["--new-instance"])
+        .env("AXROSS_AMP_ASSUME_TTY", "1")
+        .env("AXROSS_AMP_FAKE_ROOT", &root)
+        .env("AXROSS_AMP_FAKE_WINDOW", "4")
+        .env("AXROSS_AMP_FAKE_OFFLOAD_FAILS", "1")
+        .env("AXROSS_AMP_FAKE_ENVFILE", &envfile)
+        .env("AXROSS_AMP_FAKE_PIDFILE", &pidfile)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    let pid = read_pid(&pidfile).expect("no player started");
+    let env = window_env(&envfile);
+    assert!(
+        env.contains("AXROSS_AMP_DETACHED=1\n")
+            && env.contains("AXROSS_AMP_NO_OFFLOAD=1\n")
+            && !env.contains("__NV_PRIME")
+            && !env.contains("AXROSS_AMP_OFFLOAD="),
+        "{env:?}"
+    );
+    let log =
+        std::fs::read_to_string(home.join("cache/axross-amp/axross-amp.log")).unwrap_or_default();
+    assert!(log.contains("again on the integrated one"), "{log}");
+    unsafe {
+        libc::kill(pid as i32, libc::SIGTERM);
+    }
+}
