@@ -290,6 +290,7 @@ fn the_player_writes_a_title_no_font_of_its_own_can() {
         desktop: false,
         desktop_bus: None,
         headless_audio: true,
+        stand_in_covers: false,
     };
     let args = vec![track.to_string_lossy().into_owned()];
     let mut h = Harness::builder()

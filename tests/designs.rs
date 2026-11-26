@@ -29,6 +29,7 @@ fn window(dir: &Path, args: Vec<String>, size: egui::Vec2) -> Harness<'static, A
         desktop: false,
         desktop_bus: None,
         headless_audio: true,
+        stand_in_covers: false,
     };
     Harness::builder()
         .with_size(size)
@@ -772,6 +773,10 @@ fn a_paused_90s_desktop_moves_its_title_only() {
         egui::vec2(800.0, 600.0),
     );
     axross_amp::marquee::record(&h.ctx, true);
+    // (no cover made for the track: its coming, and the accent it brings,
+    // would change the strip beside the title)
+    let ctx = h.ctx.clone();
+    h.state_mut().set_generated_covers(&ctx, false);
     assert!(until(&mut h, 5.0, |a| a.is_loaded()));
     h.state_mut().set_design("desktop90");
     h.state_mut().set_mode("off");

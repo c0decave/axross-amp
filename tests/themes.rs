@@ -30,6 +30,7 @@ fn window(dir: &Path, args: Vec<String>, size: egui::Vec2) -> Harness<'static, A
         desktop: false,
         desktop_bus: None,
         headless_audio: true,
+        stand_in_covers: false,
     };
     Harness::builder()
         .with_size(size)

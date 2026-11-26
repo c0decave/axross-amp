@@ -19,6 +19,7 @@ fn window(dir: &Path, args: Vec<String>) -> Harness<'static, App> {
         desktop: false,
         desktop_bus: None,
         headless_audio: true,
+        stand_in_covers: false,
     };
     Harness::builder()
         .with_size(egui::vec2(620.0, 860.0))
@@ -284,6 +285,7 @@ fn a_picture_of_the_row_of_buttons() {
         desktop: false,
         desktop_bus: None,
         headless_audio: true,
+        stand_in_covers: false,
     };
     let args = two_tracks(&home);
     let mut h = Harness::builder()

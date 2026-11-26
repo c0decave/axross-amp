@@ -92,6 +92,7 @@ fn the_window_shows_the_track_and_every_visualization() {
         desktop: false,
         desktop_bus: None,
         headless_audio: true,
+        stand_in_covers: false,
     };
     let arg = sound.to_string_lossy().into_owned();
     // (a frame of the window for each 10 ms of sound play_for takes: the
@@ -184,6 +185,7 @@ fn the_readme_picture() {
         desktop: false,
         desktop_bus: None,
         headless_audio: true,
+        stand_in_covers: false,
     };
     let args = vec![track.to_string_lossy().into_owned()];
     // (the shaders on wgpu even where it is a software rasterizer: the

@@ -22,6 +22,7 @@ fn window(dir: &std::path::Path, args: Vec<String>, size: egui::Vec2) -> Harness
         desktop: false,
         desktop_bus: None,
         headless_audio: true,
+        stand_in_covers: false,
     };
     Harness::builder()
         .with_size(size)

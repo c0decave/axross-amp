@@ -166,7 +166,11 @@ them) are on a page of their own: [Known limitations](LIMITATIONS.md).
   cover too, when it has some (or a scheme of axross's, below): not its colours
   mixed (that made browns and olive greys) but a ramp designed in OKLCH round its
   main hue - and its second, where it has one - lightness rising evenly, a floor of
-  chroma; the pictures are dithered (no bands in slow gradients). Nothing to play: a drop zone with
+  chroma; the pictures are dithered (no bands in slow gradients). A track without a cover
+  is shown one of 100 made for it in code (src/covers.rs; eleven families - gradient
+  meshes, synthwave, Bauhaus, watercolour, waves, night skies, mosaics, op-art, botanical,
+  records, landscapes): the same for a track every time, one for an album; Options ›
+  *Covers for tracks without one* turns them off. Nothing to play: a drop zone with
   Open files, Open folder, Add a URL and the keys. Paused, the picture stands still;
   changing faces fades one into the next.
 - **Visualizations**, 69 of them in four groups - *Classic* (all eighteen of

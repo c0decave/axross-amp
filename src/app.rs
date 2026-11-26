@@ -432,6 +432,13 @@ pub struct App {
     scanner: Scanner,
     /// Albums' covers: asked for (none yet, or none at all), and the reader.
     album_covers: std::collections::HashMap<String, Option<TextureHandle>>,
+    /// Covers made for tracks that bring none (src/covers.rs), the seed of
+    /// the one awaited for the track playing, whether the cover shown is
+    /// one of them.
+    stand_ins: crate::covers::Covers,
+    stand_in_for: Option<u64>,
+    cover_is_stand_in: bool,
+    stand_ins_allowed: bool,
     album_covers_for: u64,
     album_loader: AlbumCovers,
     /// The playlist's filter, and the rows it lets through (for its
@@ -657,28 +664,47 @@ fn with_albums(tracks: &[Track], rows: &[usize]) -> Vec<Entry> {
 /// A thread that reads albums' covers (from a track of each), made small:
 /// (key, path) in, (key, picture or none) out.
 struct AlbumCovers {
-    tx: crossbeam_channel::Sender<(String, String)>,
+    /// (key, a track's path, the seed of a cover made where it has none)
+    tx: crossbeam_channel::Sender<(String, String, Option<u64>)>,
     rx: crossbeam_channel::Receiver<(String, Option<egui::ColorImage>)>,
 }
 
 impl AlbumCovers {
     fn start(wake: impl Fn() + Send + 'static) -> AlbumCovers {
-        let (tx, asks) = crossbeam_channel::unbounded::<(String, String)>();
+        let (tx, asks) = crossbeam_channel::unbounded::<(String, String, Option<u64>)>();
         let (out, rx) = crossbeam_channel::unbounded();
         let _ = std::thread::Builder::new()
             .name("amp-album-covers".into())
             .spawn(move || {
-                while let Ok((key, path)) = asks.recv() {
-                    let image = crate::engine::probe(&path).ok().and_then(|info| {
-                        let art = info.art?;
-                        let rgba =
-                            image::RgbaImage::from_raw(art.width, art.height, art.rgba.clone())?;
-                        let small = image::imageops::thumbnail(&rgba, 64, 64);
-                        Some(egui::ColorImage::from_rgba_unmultiplied(
+                while let Ok((key, path, stand_in)) = asks.recv() {
+                    let made = |rgba: &image::RgbaImage| {
+                        let small = image::imageops::thumbnail(rgba, 64, 64);
+                        egui::ColorImage::from_rgba_unmultiplied(
                             [small.width() as usize, small.height() as usize],
                             small.as_raw(),
-                        ))
-                    });
+                        )
+                    };
+                    let image = crate::engine::probe(&path)
+                        .ok()
+                        .and_then(|info| {
+                            let art = info.art?;
+                            let rgba = image::RgbaImage::from_raw(
+                                art.width,
+                                art.height,
+                                art.rgba.clone(),
+                            )?;
+                            Some(made(&rgba))
+                        })
+                        // (none: the one made for the album, as its tracks get)
+                        .or_else(|| {
+                            stand_in.map(|seed| {
+                                made(&crate::covers::render(
+                                    crate::covers::preset_of(seed),
+                                    seed,
+                                    128,
+                                ))
+                            })
+                        });
                     if out.send((key, image)).is_err() {
                         return;
                     }
@@ -705,6 +731,11 @@ pub struct Setup {
     /// No sound device: the sound is taken by whoever calls
     /// [`crate::engine::Shared::render`] (tests).
     pub headless_audio: bool,
+    /// Covers made for tracks without one, where the setting has them (the
+    /// player: yes; tests: only where they are what is tested - each one's
+    /// coming is a change of the window, and the window's changes wait
+    /// their turn).
+    pub stand_in_covers: bool,
 }
 
 impl Default for Setup {
@@ -714,6 +745,7 @@ impl Default for Setup {
             desktop: true,
             desktop_bus: None,
             headless_audio: false,
+            stand_in_covers: true,
         }
     }
 }
@@ -955,6 +987,17 @@ impl App {
                 Scanner::start(move || ctx.request_repaint())
             },
             album_covers: std::collections::HashMap::new(),
+            stand_ins: {
+                let ctx = cc.egui_ctx.clone();
+                // (on disk where it is the desktop's player: not the tests')
+                crate::covers::Covers::start(
+                    setup.desktop.then(crate::covers::cache_dir),
+                    move || ctx.request_repaint(),
+                )
+            },
+            stand_in_for: None,
+            cover_is_stand_in: false,
+            stand_ins_allowed: setup.stand_in_covers,
             album_covers_for: u64::MAX,
             album_loader: {
                 let ctx = cc.egui_ctx.clone();
@@ -1160,6 +1203,25 @@ impl App {
     #[doc(hidden)]
     pub fn has_cover(&self) -> bool {
         self.cover.is_some()
+    }
+
+    /// The cover shown (or coming), and whether it is one made for the
+    /// track (tests).
+    #[doc(hidden)]
+    pub fn cover_art(&self) -> (Option<Arc<crate::engine::Art>>, bool) {
+        let art = match &self.art_pending {
+            Some(pending) => pending.clone(),
+            None => self.cover_art.clone(),
+        };
+        (art, self.cover_is_stand_in)
+    }
+
+    /// Covers for tracks without one: made, or none (the setting; tests).
+    #[doc(hidden)]
+    pub fn set_generated_covers(&mut self, ctx: &egui::Context, on: bool) {
+        self.amp.generated_covers = on;
+        self.stand_ins_allowed = on;
+        self.stand_ins_changed(ctx);
     }
 
     /// Whether the track asked for last has been opened.
@@ -1534,14 +1596,19 @@ impl App {
             }
             self.playlist.version += 1;
         }
-        self.offer_art(ctx, info.art.clone());
-        self.art_url.clear();
-        #[cfg(target_os = "linux")]
-        if self.mpris.is_some() {
-            // (written by the writer thread: its file:// URL comes back)
-            self.saver.save(crate::saver::Job::Cover(
-                info.art.as_ref().map(|a| a.png.clone()),
-            ));
+        // (no cover of its own: one made for it - at once where it is
+        // kept, else when it is made; meanwhile what showed stays)
+        let art = match info.art.clone() {
+            Some(art) => {
+                self.stand_in_for = None;
+                self.cover_is_stand_in = false;
+                Some(art)
+            }
+            None => self.stand_in(),
+        };
+        if info.art.is_some() || self.stand_in_for.is_none() || art.is_some() {
+            self.cover_is_stand_in = info.art.is_none() && art.is_some();
+            self.show_cover(ctx, art);
         }
         self.info = info;
         // what was said about opening it is over (a note about a track
@@ -1556,6 +1623,76 @@ impl App {
         // (a seek asked while it opened: now)
         if let Some(secs) = self.seek_pending.take() {
             self.seek(secs);
+        }
+    }
+
+    /// `art` shown as the track's cover, and given to the desktop.
+    fn show_cover(&mut self, ctx: &egui::Context, art: Option<Arc<crate::engine::Art>>) {
+        self.offer_art(ctx, art.clone());
+        self.art_url.clear();
+        #[cfg(target_os = "linux")]
+        if self.mpris.is_some() {
+            // (written by the writer thread: its file:// URL comes back)
+            self.saver.save(crate::saver::Job::Cover(
+                art.as_ref().map(|a| a.png.clone()),
+            ));
+        }
+    }
+
+    /// The cover made for the track playing, which brings none: where the
+    /// setting has them; kept already, or asked for (then None, and
+    /// [`App::stand_in_for`] says which is awaited).
+    fn stand_in(&mut self) -> Option<Arc<crate::engine::Art>> {
+        self.stand_in_for = None;
+        if !self.amp.generated_covers || !self.stand_ins_allowed {
+            return None;
+        }
+        let track = self
+            .playlist
+            .current
+            .and_then(|i| self.playlist.tracks.get(i))?;
+        let album = if track.album.is_empty() {
+            self.info.album.as_str()
+        } else {
+            track.album.as_str()
+        };
+        let seed = crate::covers::seed(&track.path, album);
+        let art = self.stand_ins.get(seed);
+        if art.is_none() {
+            self.stand_in_for = Some(seed);
+        }
+        art
+    }
+
+    /// A cover made since: shown, where it is the one awaited.
+    fn take_stand_ins(&mut self, ctx: &egui::Context) {
+        while let Some((seed, art)) = self.stand_ins.poll() {
+            if self.stand_in_for == Some(seed) {
+                self.stand_in_for = None;
+                self.cover_is_stand_in = true;
+                self.show_cover(ctx, Some(art));
+            }
+        }
+    }
+
+    /// The setting changed: the track playing's cover made, or let go.
+    fn stand_ins_changed(&mut self, ctx: &egui::Context) {
+        // (the album heads' too)
+        self.album_covers.clear();
+        if self.amp.generated_covers {
+            if self.cover_art.is_none() && self.info.art.is_none() && self.loaded.is_some() {
+                let art = self.stand_in();
+                if art.is_some() {
+                    self.cover_is_stand_in = true;
+                    self.show_cover(ctx, art);
+                }
+            }
+        } else {
+            self.stand_in_for = None;
+            if self.cover_is_stand_in {
+                self.cover_is_stand_in = false;
+                self.show_cover(ctx, None);
+            }
         }
     }
 
@@ -4063,6 +4200,18 @@ impl App {
             self.amp_dirty = true;
         }
         ui.separator();
+        ui.label(RichText::new("Covers for tracks without one").strong());
+        let before = self.amp.generated_covers;
+        ui.radio_value(&mut self.amp.generated_covers, true, "Generated")
+            .on_hover_text(
+                "One of 100 pictures made for it - the same for a track every time, one for an album",
+            );
+        ui.radio_value(&mut self.amp.generated_covers, false, "None (as before)");
+        if self.amp.generated_covers != before {
+            self.amp_dirty = true;
+            self.stand_ins_changed(&ui.ctx().clone());
+        }
+        ui.separator();
         self.graphics_menu(ui);
         ui.separator();
         if self.updater.menu(ui, &mut self.amp.update_mode) {
@@ -6019,7 +6168,11 @@ impl App {
                                 self.album_covers.insert(head.key.clone(), None);
                                 let path = self.playlist.tracks[head.first].path.clone();
                                 if !playlist::is_stream(&path) {
-                                    let _ = self.album_loader.tx.send((head.key.clone(), path));
+                                    let seed = (self.amp.generated_covers
+                                        && self.stand_ins_allowed)
+                                        .then(|| crate::covers::seed(&path, &head.album));
+                                    let _ =
+                                        self.album_loader.tx.send((head.key.clone(), path, seed));
                                 }
                             }
                             let cover = self.album_covers.get(&head.key).cloned().flatten();
@@ -6683,6 +6836,7 @@ impl eframe::App for App {
             ctx.set_font_providers(vec![self.font_fallback.clone()]);
         }
         self.handle_events(ctx);
+        self.take_stand_ins(ctx);
         self.show_art(ctx);
         self.poll_adding();
         self.poll_scanner();

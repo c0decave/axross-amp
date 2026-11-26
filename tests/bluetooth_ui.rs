@@ -115,6 +115,7 @@ fn the_bluetooth_tab_pairs_connects_and_makes_a_headset_the_output() {
                     desktop: false,
                     desktop_bus: None,
                     headless_audio: true,
+                    stand_in_covers: false,
                 },
             )
         });

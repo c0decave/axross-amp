@@ -6,6 +6,37 @@ reads whole.
 
 ## Unreleased
 
+### Added
+- **A cover for every track: 100 pictures made for tracks without one**
+  (a user's wish: the empty box was what most of a collection without
+  embedded art showed). Made in code (src/covers.rs) - no image files, no
+  new crates -, in eleven families: gradient meshes, synthwave suns over a
+  grid, Bauhaus compositions, watercolour and ink blots, layered waves,
+  night skies (a planet and a nebula, the Milky Way, an aurora), mosaics,
+  calm op-art, botanical silhouettes, records and their labels, ridged
+  landscapes; each preset its family's parameters and one of twenty
+  palettes, full-bleed and mid-toned for light and dark themes alike. A
+  track always gets the same one: seeded (FNV-1a, the same on every
+  machine) from its album in its folder - one album, one cover, as the
+  playlist's album heads group it, compilations too - else from its file.
+  It shows wherever a cover shows: the card and every design's cover
+  slot, the cassette, the collage, the Cover face, the large picture, the
+  playlist's album heads, and the desktop's (MPRIS) art. Made once a
+  track on a thread of its own, at 256 and 1024 px, kept in memory (four)
+  and on disk (`~/.cache/axross-amp/covers`, the newest 64); a frame
+  allocates nothing more for it. A change goes through the window's own
+  cover change - its turn every half second at most, its crossfade - and
+  no preset has the saturated red the red guard slows for. Options ›
+  *Covers for tracks without one*: Generated (the default) or None (as
+  before). Tested: the same track the same picture in two windows, an
+  album one, others another; 100 presets pairwise unlike (16 x 16 means,
+  the nearest two 0.061 apart, none under 0.06), none flat, none red;
+  the frames' allocations with a made cover against an own one (20 040 to
+  20 370 over 30 frames); tracks without covers switched every half
+  second in Modern and as the Cover face read by both flash meters
+  (`tests/covers.rs`, `tests/covers_alloc.rs`, `tests/window_flash.rs`).
+  `COVERS_SHEET=1 cargo test --test covers` draws all 100.
+
 ### Changed
 - **A title too long for its box moves, so all of it is read** (a user's:
   "'Back To The 80's' _ Best of Synthwave And Retro Electro Music Mix for
@@ -63,6 +94,26 @@ reads whole.
   to the texts beside them.
 
 ### Fixed
+- **Sound comes back after the output failed four times in ten seconds**
+  (a Bluetooth headset or a car connecting and disconnecting): the player
+  gave up for good - "choose one in the Mixer tab" - and stayed silent
+  until it was started again. Now it lets the output go, says it is trying
+  again, and tries every 5 s, then less often (up to every 30 s), until
+  the device is back; a track that played goes on where it was (Android
+  stability audit, H4; `tests/engine.rs`).
+- **An output that fails at every write is no longer logged at every
+  write**: said once, then at most every 10 s with how many more; failing
+  20 times within a second it is taken for lost - made anew, then let go
+  and tried again as above. (A sound file with its reader gone - ALSA's
+  file plugin - wrote 20 GB of the one line into the log in three hours.)
+- **Paused for five seconds, the output is let go**; Play opens it again
+  where the sound left off - nothing lost, nothing heard twice (tested
+  frame by frame). Before, the stream ran all the time - also paused,
+  stopped or with nothing loaded - rendering silence a hundred times a
+  second: a sound server's stream kept, the device held, a laptop (or
+  phone) kept awake (Android stability audit, H3). While it is let go the
+  player has no stream in the sound server's mixer (the system's mixer
+  shows none for it).
 - **The dedicated GPU of a Linux laptop with two (Optimus, PRIME) is
   used when the setting wants it** - High performance, or Auto on a
   machine without a battery. With an integrated GPU drawing the desktop

@@ -45,6 +45,7 @@ fn app_on(dir: &std::path::Path, bus: &str, args: Vec<String>) -> Harness<'stati
         desktop: true,
         desktop_bus: Some(bus.to_owned()),
         headless_audio: true,
+        stand_in_covers: false,
     };
     Harness::builder()
         .with_size(egui::vec2(620.0, 860.0))

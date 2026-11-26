@@ -34,6 +34,7 @@ fn window(dir: &std::path::Path, args: Vec<String>) -> Harness<'static, App> {
         desktop: false,
         desktop_bus: None,
         headless_audio: true,
+        stand_in_covers: false,
     };
     Harness::builder()
         .with_size(SIZE)
@@ -272,6 +273,57 @@ fn red_and_dark_covers_in_quick_turn_flash_no_red() {
         let most = meters.most();
         let line = format!("{design} {theme} {a:?}/{b:?}: {}", most.said);
         println!("{line}");
+        if most.red > 1 || most.light > 6 {
+            failures.push(line);
+        }
+    }
+    assert!(failures.is_empty(), "{failures:#?}");
+}
+
+/// Tracks without covers in quick turn - a new one every half second, the
+/// most often a cover may change - each shown the cover made for it, in
+/// Modern's card and as the picture itself (the Cover face, the window's
+/// largest area): within the rule by both meters, no red flash.
+#[test]
+fn covers_made_for_tracks_in_quick_turn_keep_within_the_rule() {
+    let mut failures = Vec::new();
+    for mode in ["off", "cover"] {
+        let home = Scratch::new("wf-made-covers");
+        let mut h = window(home.path(), Vec::new());
+        let ctx = h.ctx.clone();
+        h.state_mut().set_generated_covers(&ctx, true);
+        h.state_mut().set_design("modern");
+        h.state_mut().set_mode(mode);
+        settle(&mut h, 20);
+        let tracks: Vec<axross_amp::state::Track> = (0..12)
+            .map(|i| axross_amp::state::Track {
+                path: format!("/m/album{i}/01.flac"),
+                title: format!("T{i}"),
+                album: format!("Album {i}"),
+                ..Default::default()
+            })
+            .collect();
+        let mut meters = Meters::new();
+        for f in 0..(60 * 6) {
+            if f % 30 == 0 {
+                let k = (f / 30) % tracks.len();
+                h.state_mut().pose(tracks.clone(), k, 200.0, 1.0);
+                let info = axross_amp::engine::TrackInfo {
+                    album: tracks[k].album.clone(),
+                    title: tracks[k].title.clone(),
+                    ..Default::default()
+                };
+                h.state_mut().show_info(&ctx, info);
+            }
+            h.run_steps(1);
+            // (the maker's thread given its time, as a real frame's would)
+            std::thread::sleep(std::time::Duration::from_millis(8));
+            meters.push(&h.render().unwrap());
+        }
+        let most = meters.most();
+        let line = format!("made covers, mode {mode}: {}", most.said);
+        println!("{line}");
+        assert!(h.state().has_cover(), "{mode}: no cover shown");
         if most.red > 1 || most.light > 6 {
             failures.push(line);
         }

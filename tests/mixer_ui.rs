@@ -51,6 +51,7 @@ fn the_mixer_tab_shows_the_sound_server_and_acts() {
                     desktop: false,
                     desktop_bus: None,
                     headless_audio: true,
+                    stand_in_covers: false,
                 },
             )
         });

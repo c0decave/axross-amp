@@ -79,6 +79,7 @@ fn the_desktops_light_or_dark_is_followed() {
         desktop: true,
         desktop_bus: Some(bus.1.clone()),
         headless_audio: true,
+        stand_in_covers: false,
     };
     let mut h = Harness::builder()
         .with_size(egui::vec2(620.0, 860.0))
@@ -155,6 +156,7 @@ fn the_desktop_is_asked_on_one_connection_and_only_when_followed() {
         desktop: true,
         desktop_bus: Some(bus.1.clone()),
         headless_audio: true,
+        stand_in_covers: false,
     };
     let mut h = Harness::builder()
         .with_size(egui::vec2(620.0, 860.0))

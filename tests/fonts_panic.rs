@@ -72,6 +72,7 @@ fn player(dir: &Path, track: &Path, frames: usize) -> Harness<'static, App> {
         desktop: false,
         desktop_bus: None,
         headless_audio: true,
+        stand_in_covers: false,
     };
     let args = vec![track.to_string_lossy().into_owned()];
     let mut h = Harness::builder()

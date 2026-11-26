@@ -24,6 +24,7 @@ fn window(dir: &Path, args: Vec<String>) -> Harness<'static, App> {
         desktop: false,
         desktop_bus: None,
         headless_audio: true,
+        stand_in_covers: false,
     };
     Harness::builder()
         .with_size(egui::vec2(620.0, 860.0))
@@ -547,6 +548,7 @@ fn the_guard_is_given_the_display_in_points() {
         desktop: false,
         desktop_bus: None,
         headless_audio: true,
+        stand_in_covers: false,
     };
     let mut h = Harness::builder()
         .with_size(egui::vec2(620.0, 860.0))

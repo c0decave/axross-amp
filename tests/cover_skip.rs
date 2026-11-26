@@ -77,6 +77,7 @@ fn skip(dir: &Path, tracks: &[PathBuf], design: &str, every: usize) -> Skipped {
         desktop: false,
         desktop_bus: None,
         headless_audio: true,
+        stand_in_covers: false,
     };
     let mut h = Harness::builder()
         .with_size(egui::vec2(1000.0, 700.0))

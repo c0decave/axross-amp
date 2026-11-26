@@ -28,6 +28,7 @@ fn window(dir: &std::path::Path, size: egui::Vec2) -> Harness<'static, App> {
         desktop: false,
         desktop_bus: None,
         headless_audio: true,
+        stand_in_covers: false,
     };
     let h = Harness::builder()
         .with_size(size)
@@ -167,7 +168,9 @@ fn fit_at(sizes: &[(f32, f32)], full: bool, failures: &mut Vec<String>) {
     let only = std::env::var("FIT_ONLY").ok();
     for &(w, hgt) in sizes {
         let size = egui::vec2(w, hgt);
-        let home = Scratch::new("display-fit");
+        // (a folder of its own: the two tests run side by side in one process,
+        // and one's folder taken away took the other's settings with it)
+        let home = Scratch::new(&format!("display-fit-{full}-{w}x{hgt}"));
         let mut h = window(home.path(), size);
         h.state_mut().set_mode("off");
         let screen = Rect::from_min_size(Pos2::ZERO, size);

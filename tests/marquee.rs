@@ -42,6 +42,7 @@ fn window(dir: &std::path::Path, size: egui::Vec2, dt: f32, gpu: bool) -> Harnes
         desktop: false,
         desktop_bus: None,
         headless_audio: true,
+        stand_in_covers: false,
     };
     // (no Hebrew font is bundled: its letters drawn as boxes)
     let b = Harness::builder()
@@ -312,6 +313,7 @@ fn it_moves_on_while_paused() {
         desktop: false,
         desktop_bus: None,
         headless_audio: true,
+        stand_in_covers: false,
     };
     let args = vec![file.to_string_lossy().into_owned()];
     let mut h = Harness::builder()

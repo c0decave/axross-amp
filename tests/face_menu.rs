@@ -621,6 +621,7 @@ fn pictures_of_the_menu() {
                 desktop: false,
                 desktop_bus: None,
                 headless_audio: true,
+                stand_in_covers: false,
             };
             let args = vec![a.to_string_lossy().into_owned()];
             let mut h = Harness::builder()

@@ -9,6 +9,7 @@ pub mod bluetooth;
 #[cfg(target_os = "linux")]
 pub mod bluetooth_ui;
 pub mod cover;
+pub mod covers;
 pub mod design;
 pub mod desktop_theme;
 pub mod detach;

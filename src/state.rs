@@ -207,6 +207,10 @@ pub struct AmpSettings {
     /// Which graphics adapter draws the window (`graphics::Preference`'s
     /// key: "auto", "low", "high"); taken at the start.
     pub graphics: String,
+    /// A track without a cover is shown one made for it (src/covers.rs);
+    /// false: the empty box with its note, as before 0.17.1 (`"covers"`:
+    /// "generated" / "none").
+    pub generated_covers: bool,
 }
 
 /// The loudness targets offered: LUFS and what aims at it.
@@ -245,6 +249,7 @@ impl Default for AmpSettings {
             update_mode: crate::update::UpdateMode::Notify,
             face: String::new(),
             graphics: "auto".into(),
+            generated_covers: true,
         }
     }
 }
@@ -359,6 +364,9 @@ pub fn read_amp(path: &Path) -> AmpSettings {
     if let Some(g) = text(&map, "graphics") {
         settings.graphics = crate::graphics::Preference::from_key(&g).key().into();
     }
+    if let Some(c) = text(&map, "covers") {
+        settings.generated_covers = c != "none";
+    }
     // (the mode; a player of 0.15 - "update_check" alone, which it always
     // wrote - keeps its choice: off, nothing to the network, unless ticked,
     // then said. Taken for no choice, every 0.15 user was asking GitHub
@@ -429,6 +437,14 @@ pub fn write_amp(path: &Path, settings: &AmpSettings) -> std::io::Result<()> {
     }
     map.insert("design".into(), json!(settings.design));
     map.insert("graphics".into(), json!(settings.graphics));
+    map.insert(
+        "covers".into(),
+        json!(if settings.generated_covers {
+            "generated"
+        } else {
+            "none"
+        }),
+    );
     map.insert("update_mode".into(), json!(settings.update_mode.key()));
     // (for a player of 0.15: whether it checks at its start)
     map.insert(
@@ -1377,6 +1393,7 @@ mod tests {
             update_mode: crate::update::UpdateMode::Install,
             face: "galaxy".into(),
             graphics: "high".into(),
+            generated_covers: false,
         };
         write_amp(&path, &settings).unwrap();
         let back = read_amp(&path);
@@ -1393,6 +1410,7 @@ mod tests {
             ("high", "auto")
         );
         assert_eq!(back.motion, "intense");
+        assert!(!back.generated_covers && fresh.generated_covers);
         assert_eq!(
             (
                 back.theme.as_str(),

@@ -31,6 +31,7 @@ impl Hidden {
                 desktop: false,
                 desktop_bus: None,
                 headless_audio: true,
+                stand_in_covers: false,
             },
         );
         Hidden {
