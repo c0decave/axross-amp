@@ -79,6 +79,7 @@ const MAX_NOTES: usize = 20_000;
 const CHUNK: usize = 64 * 1024;
 /// Set to 1 / true / yes / on: no check at the start, whatever the setting.
 pub const NO_CHECK_ENV: &str = "AXROSS_AMP_NO_UPDATE_CHECK";
+#[cfg(not(target_os = "android"))]
 const USER_AGENT: &str = concat!("axross-amp/", env!("CARGO_PKG_VERSION"));
 
 /// The public halves (raw 32 bytes) of the keys a `SHA256SUMS` may be
@@ -563,10 +564,12 @@ pub fn fetch_bytes(fetch: &dyn Fetch, url: &str, max: u64) -> Result<Vec<u8>, St
 
 /// The network, through ureq: no redirect followed by it, https only,
 /// time-outs on connect, answer and every read; the environment's proxy.
+#[cfg(not(target_os = "android"))]
 pub struct Web {
     agent: ureq::Agent,
 }
 
+#[cfg(not(target_os = "android"))]
 impl Default for Web {
     fn default() -> Self {
         let config = ureq::Agent::config_builder()
@@ -584,6 +587,7 @@ impl Default for Web {
     }
 }
 
+#[cfg(not(target_os = "android"))]
 impl Fetch for Web {
     fn get(&self, url: &str) -> Result<Reply, String> {
         let mut request = self.agent.get(url);
@@ -609,6 +613,20 @@ impl Fetch for Web {
             length,
             body: Box::new(response.into_body().into_reader()),
         })
+    }
+}
+
+/// This build has no network (Android: the app asks for no network
+/// permission and updates come from its store or its releases' APK): every
+/// request fails.
+#[cfg(target_os = "android")]
+#[derive(Default)]
+pub struct Web;
+
+#[cfg(target_os = "android")]
+impl Fetch for Web {
+    fn get(&self, _url: &str) -> Result<Reply, String> {
+        Err("no network in this build".into())
     }
 }
 
