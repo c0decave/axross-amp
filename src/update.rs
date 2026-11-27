@@ -563,10 +563,12 @@ pub fn fetch_bytes(fetch: &dyn Fetch, url: &str, max: u64) -> Result<Vec<u8>, St
 
 /// The network, through ureq: no redirect followed by it, https only,
 /// time-outs on connect, answer and every read; the environment's proxy.
+#[cfg(not(target_os = "android"))]
 pub struct Web {
     agent: ureq::Agent,
 }
 
+#[cfg(not(target_os = "android"))]
 impl Default for Web {
     fn default() -> Self {
         let config = ureq::Agent::config_builder()
@@ -584,6 +586,7 @@ impl Default for Web {
     }
 }
 
+#[cfg(not(target_os = "android"))]
 impl Fetch for Web {
     fn get(&self, url: &str) -> Result<Reply, String> {
         let mut request = self.agent.get(url);
@@ -609,6 +612,20 @@ impl Fetch for Web {
             length,
             body: Box::new(response.into_body().into_reader()),
         })
+    }
+}
+
+/// This build has no network (Android: the app asks for no network
+/// permission and updates come from its store or its releases' APK): every
+/// request fails.
+#[cfg(target_os = "android")]
+#[derive(Default)]
+pub struct Web;
+
+#[cfg(target_os = "android")]
+impl Fetch for Web {
+    fn get(&self, _url: &str) -> Result<Reply, String> {
+        Err("no network in this build".into())
     }
 }
 

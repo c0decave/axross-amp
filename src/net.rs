@@ -192,8 +192,10 @@ pub fn clean(text: &str) -> String {
 }
 
 /// Flags that stop a connection: the whole stream's, and its body's.
+#[cfg(not(target_os = "android"))]
 type Stops = [Arc<AtomicBool>; 2];
 
+#[cfg(not(target_os = "android"))]
 fn stopped(stops: &Stops) -> bool {
     stops.iter().any(|s| s.load(Ordering::Relaxed))
 }
@@ -201,6 +203,7 @@ fn stopped(stops: &Stops) -> bool {
 /// The agent for one connection: a server that sends nothing for [`STALL`]
 /// fails the read; a stop flag set ends a read within a quarter second and
 /// the connection with it (its socket closed - a stream let go is let go).
+#[cfg(not(target_os = "android"))]
 fn agent(stops: Stops) -> ureq::Agent {
     use ureq::unversioned::transport::{Connector, DefaultConnector};
     let config = ureq::Agent::config_builder()
@@ -218,9 +221,12 @@ fn agent(stops: Stops) -> ureq::Agent {
     )
 }
 
+#[cfg(not(target_os = "android"))]
 use ureq::unversioned::transport::time::Duration as Wait;
+#[cfg(not(target_os = "android"))]
 use ureq::unversioned::transport::{Buffers, ConnectionDetails, NextTimeout, Transport};
 
+#[cfg(not(target_os = "android"))]
 fn exact(wait: Wait) -> Duration {
     match wait {
         Wait::Exact(d) => d,
@@ -229,11 +235,13 @@ fn exact(wait: Wait) -> Duration {
 }
 
 /// Wraps a connection so that its reads look at the stop flags.
+#[cfg(not(target_os = "android"))]
 #[derive(Debug)]
 struct Stoppable {
     stops: Stops,
 }
 
+#[cfg(not(target_os = "android"))]
 impl ureq::unversioned::transport::Connector<Box<dyn Transport>> for Stoppable {
     type Out = StoppableTransport;
 
@@ -249,12 +257,14 @@ impl ureq::unversioned::transport::Connector<Box<dyn Transport>> for Stoppable {
     }
 }
 
+#[cfg(not(target_os = "android"))]
 #[derive(Debug)]
 struct StoppableTransport {
     inner: Box<dyn Transport>,
     stops: Stops,
 }
 
+#[cfg(not(target_os = "android"))]
 impl Transport for StoppableTransport {
     fn buffers(&mut self) -> &mut dyn Buffers {
         self.inner.buffers()
@@ -299,11 +309,13 @@ impl Transport for StoppableTransport {
 
 /// A socket read in quarter seconds (the old SHOUTcast path): stopped by
 /// the flags, failed after [`STALL`] without a byte.
+#[cfg(not(target_os = "android"))]
 struct StopRead {
     socket: std::net::TcpStream,
     stops: Stops,
 }
 
+#[cfg(not(target_os = "android"))]
 impl Read for StopRead {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         let started = Instant::now();
@@ -327,11 +339,13 @@ impl Read for StopRead {
 }
 
 /// An answer's head and a reader of its body.
+#[cfg(not(target_os = "android"))]
 struct Response {
     headers: Vec<(String, String)>,
     body: Box<dyn Read + Send>,
 }
 
+#[cfg(not(target_os = "android"))]
 impl Response {
     fn header(&self, name: &str) -> Option<String> {
         self.headers
@@ -341,6 +355,7 @@ impl Response {
     }
 }
 
+#[cfg(not(target_os = "android"))]
 fn request(url: &str, stops: &Stops) -> Result<Response, String> {
     match agent(stops.clone())
         .get(url)
@@ -368,6 +383,7 @@ fn request(url: &str, stops: &Stops) -> Result<Response, String> {
 }
 
 /// HTTP/1.0 by hand for a server that answers `ICY 200 OK`.
+#[cfg(not(target_os = "android"))]
 fn icy_request(url: &str, stops: &Stops) -> Result<Response, String> {
     let rest = &url["http://".len()..];
     let (authority, path) = match rest.find('/') {
@@ -437,6 +453,7 @@ fn icy_request(url: &str, stops: &Stops) -> Result<Response, String> {
 }
 
 /// The http(s) entries of a playlist's text.
+#[cfg(not(target_os = "android"))]
 fn playlist_entries(text: &str, pls: bool) -> Vec<String> {
     let mut out = Vec::new();
     for line in text.lines().take(10_000) {
@@ -464,6 +481,7 @@ fn playlist_entries(text: &str, pls: bool) -> Vec<String> {
 /// Connect to `url`: the answer and its body, read on a thread of its own.
 /// `on_title` hears each new ICY title as the decoder reaches it; `cancel`
 /// stops everything (the network thread also stops when the [`Body`] goes).
+#[cfg(not(target_os = "android"))]
 pub fn open(
     url: &str,
     cancel: Arc<AtomicBool>,
@@ -566,6 +584,7 @@ pub fn open(
 
 /// Read the body into `tx` (the ICY metadata taken out), until it ends,
 /// fails, or nobody reads any more.
+#[cfg(not(target_os = "android"))]
 fn pump(
     mut reader: Box<dyn Read + Send>,
     metaint: Option<usize>,
@@ -628,6 +647,18 @@ fn pump(
             }
         }
     }
+}
+
+/// This build has no network (Android: the app plays the phone's own files
+/// and asks for no network permission): no internet radio, no file from a
+/// web server.
+#[cfg(target_os = "android")]
+pub fn open(
+    _url: &str,
+    _cancel: Arc<AtomicBool>,
+    _on_title: Box<dyn FnMut(String) + Send + Sync>,
+) -> Result<(Answer, Body), String> {
+    Err("no network in this build: only the device's own files play".into())
 }
 
 #[cfg(test)]

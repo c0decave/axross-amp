@@ -27,7 +27,6 @@ serde_json = "1.0.154"
 skrifa = { version = "0.44.0", default-features = false, features = ["std"] }
 symphonia = { version = "0.6.1", features = ["all"] }
 symphonia-adapter-libopus = "0.3.0"
-ureq = { version = "3.5.1", default-features = false, features = ["rustls"] }
 
 [dev-dependencies]
 egui_kittest = { version = "0.37.0", features = ["wgpu", "snapshot", "eframe"] }
@@ -42,6 +41,10 @@ strip = true
 # links and the desktop's window systems; the Android app (axross-amp-android)
 # adds the activity feature it uses.
 [target.'cfg(not(target_os = "android"))'.dependencies]
+# The network: internet radio, files on web servers (src/net.rs), the
+# update (src/update.rs). Not on Android: the app there asks for no network
+# permission and has no network code in it at all.
+ureq = { version = "3.5.1", default-features = false, features = ["rustls"] }
 # (already in the lock through eframe, which installs it on the window's
 # thread: the system's fonts for scripts egui's own cannot write - asked on
 # a thread of their own here; src/fonts.rs)
