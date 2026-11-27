@@ -79,6 +79,7 @@ const MAX_NOTES: usize = 20_000;
 const CHUNK: usize = 64 * 1024;
 /// Set to 1 / true / yes / on: no check at the start, whatever the setting.
 pub const NO_CHECK_ENV: &str = "AXROSS_AMP_NO_UPDATE_CHECK";
+#[cfg(not(target_os = "android"))]
 const USER_AGENT: &str = concat!("axross-amp/", env!("CARGO_PKG_VERSION"));
 
 /// The public halves (raw 32 bytes) of the keys a `SHA256SUMS` may be
