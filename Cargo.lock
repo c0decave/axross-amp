@@ -445,6 +445,7 @@ checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
 name = "axross-amp"
 version = "0.17.1"
 dependencies = [
+ "cc",
  "cpal",
  "crossbeam-channel",
  "dirs",

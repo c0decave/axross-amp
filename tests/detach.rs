@@ -472,6 +472,41 @@ fn a_window_the_dedicated_gpu_cannot_give_is_made_on_the_integrated_one() {
     assert_eq!(read_pid(&pidfile), Some(first));
 }
 
+/// On the dedicated GPU, a panic before the window's first frame is shown
+/// starts it again on the integrated one; a panic after it is a panic, as
+/// any other - not put on the GPU, the program not started again (review 2
+/// of 0.17.1, L-N5).
+#[test]
+fn only_a_panic_before_the_first_frame_is_put_on_the_dedicated_gpu() {
+    for when in ["first", "later"] {
+        let home = Scratch::new(&format!("offload-panic-{when}"));
+        let root = hybrid(&home, "high");
+        let envfile = home.join("env");
+        let out = amp(&home)
+            .args(["--new-instance", "-F"])
+            .env("AXROSS_AMP_FAKE_ROOT", &root)
+            .env("AXROSS_AMP_FAKE_WINDOW", "1")
+            .env("AXROSS_AMP_FAKE_PANIC", when)
+            .env("AXROSS_AMP_FAKE_ENVFILE", &envfile)
+            .output()
+            .unwrap();
+        let said = String::from_utf8_lossy(&out.stderr);
+        if when == "first" {
+            assert!(out.status.success(), "{when}: {out:?}");
+            assert!(said.contains("again on the integrated one"), "{said}");
+            assert!(window_env(&envfile).contains("again=1\n"), "{said}");
+        } else {
+            assert!(!out.status.success(), "{when}: {out:?}");
+            assert!(
+                said.contains("the tests' panic in the window (later)"),
+                "{said}"
+            );
+            assert!(!said.contains("again on the integrated one"), "{said}");
+            assert!(!envfile.exists(), "started again: {said}");
+        }
+    }
+}
+
 /// From a terminal: the copy in the background inherits the variables,
 /// knows them as the program's (review 6's M3 in axross-files-matrix) - and
 /// so it, too, starts again on the integrated GPU when the dedicated one

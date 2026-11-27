@@ -1,6 +1,19 @@
 //! axross-amp as a library: the parts of the player (the binary is
 //! `src/main.rs`; tests drive the window through [`app::App`]).
 
+/// A line on stderr (the log, in the background): lost, never a panic,
+/// when it cannot be written - a full disk under the log, a closed
+/// terminal or pipe. (`eprintln!` panics then; in alsa-lib's handler, a C
+/// callback, that aborted the player at alsa-lib's first line - review 2
+/// of 0.17.1, N1.)
+#[macro_export]
+macro_rules! say {
+    ($($arg:tt)*) => {{
+        use ::std::io::Write as _;
+        let _ = ::std::writeln!(::std::io::stderr().lock(), $($arg)*);
+    }};
+}
+
 pub mod analyzer;
 pub mod app;
 pub mod bidi;

@@ -577,7 +577,7 @@ impl Shared {
         self.lost.store(true, Ordering::Relaxed);
     }
 
-    /// An error the output reported: said through the program's one limiter
+    /// An error the output reported: said through the program's limiter
     /// ([`say_limited`]: across streams - a stream made anew said its first
     /// error again, 93 lines a minute); a device gone, a stream to be made
     /// anew - or 20 errors of a kind it does not recover from by itself
@@ -586,7 +586,10 @@ impl Shared {
     /// counted (an overloaded machine's underruns let the output go, 5 s of
     /// silence and "keeps failing" - review of 0.17.1, M1).
     pub fn output_error(&self, text: &str, kind: cpal::ErrorKind) {
-        say_limited(&format!("axross-amp: output: {text}"));
+        say_limited(
+            &format!("output {kind:?}"),
+            &format!("axross-amp: output: {text}"),
+        );
         use cpal::ErrorKind as K;
         match kind {
             K::DeviceNotAvailable | K::StreamInvalidated | K::HostUnavailable => {
@@ -926,86 +929,115 @@ fn open_output(
     Err(last)
 }
 
-/// The program's one limiter of what the output says (its errors, and
-/// alsa-lib's own lines): a line said, then at most one every 10 s, with
-/// how many more there were. Kept for the whole program - across streams
-/// made anew, and for alsa-lib, which prints a line for every failed write
-/// (38 000 a minute with an output writing to a full disk - review of
-/// 0.17.1, H1).
-static SAID: Mutex<(Option<Instant>, u64)> = Mutex::new((None, 0));
+/// The program's limiter of what the output says (its errors, and
+/// alsa-lib's own lines): a line of a kind said, then at most one of that
+/// kind every 10 s, with how many more there were. Kept for the whole
+/// program - across streams made anew, and for alsa-lib, which prints a
+/// line for every failed write (38 000 a minute with an output writing to
+/// a full disk - review of 0.17.1, H1). A kind of its own for each message
+/// (the place in alsa-lib it comes from; the kind of the output's error):
+/// with one for all, alsa-lib's flood took the 10 s and the output's own
+/// "device not available" was never said (review 2 of 0.17.1, L-N4). (Up
+/// to [`KINDS`]; any more share one.)
+static SAID: Mutex<Vec<(String, Option<Instant>, u64)>> = Mutex::new(Vec::new());
+const KINDS: usize = 32;
 /// Lines said by [`say_limited`] (tests).
 #[doc(hidden)]
 pub static LINES_SAID: AtomicU64 = AtomicU64::new(0);
 
-/// `line` said on stderr (the log, in the background) - or counted, when
-/// one was said less than 10 s ago.
-pub fn say_limited(line: &str) {
+/// `line`, of the kind `kind`, said on stderr (the log, in the background),
+/// or counted when one of its kind was said less than 10 s ago. A log that
+/// cannot be written loses the line, nothing else ([`crate::say!`]).
+pub fn say_limited(kind: &str, line: &str) {
     let Ok(mut said) = SAID.lock() else {
         return;
     };
+    let k = match said.iter().position(|(k, _, _)| k == kind) {
+        Some(k) => k,
+        None if said.len() < KINDS => {
+            said.push((kind.to_owned(), None, 0));
+            said.len() - 1
+        }
+        None => match said.iter().position(|(k, _, _)| k.is_empty()) {
+            Some(k) => k,
+            None => {
+                said.push((String::new(), None, 0));
+                said.len() - 1
+            }
+        },
+    };
+    let (_, at, more) = &mut said[k];
     let now = Instant::now();
-    said.1 += 1;
-    if said
-        .0
-        .is_none_or(|at| now.duration_since(at) >= Duration::from_secs(10))
-    {
-        let more = said.1 - 1;
-        *said = (Some(now), 0);
+    *more += 1;
+    if at.is_none_or(|at| now.duration_since(at) >= Duration::from_secs(10)) {
+        let before = *more - 1;
+        *at = Some(now);
+        *more = 0;
+        drop(said);
         LINES_SAID.fetch_add(1, Ordering::Relaxed);
-        if more > 0 {
-            eprintln!("{line} ({more} more like it since)");
+        if before > 0 {
+            crate::say!("{line} ({before} more like it since)");
         } else {
-            eprintln!("{line}");
+            crate::say!("{line}");
         }
     }
 }
 
 /// alsa-lib's own messages through [`say_limited`] (it printed each one on
-/// stderr itself). Its handler is variadic in C; this one takes the fixed
-/// arguments only (the format's arguments, passed after them in registers
-/// or on the stack, are left alone: the format is said as it is).
+/// stderr itself): formatted with their arguments by a handler in C
+/// (src/alsa_errors.c - alsa-lib's is variadic), then said here.
 #[cfg(target_os = "linux")]
 fn quiet_alsa_lib() {
     use std::ffi::{CStr, c_char, c_int};
-    type Handler = unsafe extern "C" fn(*const c_char, c_int, *const c_char, c_int, *const c_char);
+    type Said = unsafe extern "C" fn(*const c_char, c_int, *const c_char, c_int, *const c_char);
     unsafe extern "C" {
-        fn snd_lib_error_set_handler(handler: Option<Handler>) -> c_int;
+        fn amp_alsa_errors_to(said: Said) -> c_int;
     }
-    unsafe extern "C" fn handler(
+    unsafe extern "C" fn said(
         file: *const c_char,
         line: c_int,
         function: *const c_char,
         err: c_int,
-        fmt: *const c_char,
+        text: *const c_char,
     ) {
-        let text = |p: *const c_char| {
-            if p.is_null() {
-                String::new()
+        // (nothing unwinds into alsa-lib: a panic out of a C callback
+        // aborts the player - a log on a full disk did, at alsa-lib's first
+        // line: review 2 of 0.17.1, N1)
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let string = |p: *const c_char| {
+                if p.is_null() {
+                    String::new()
+                } else {
+                    // SAFETY: alsa-lib passes NUL-terminated strings of its
+                    // own, and the C handler its formatted line
+                    unsafe { CStr::from_ptr(p) }.to_string_lossy().into_owned()
+                }
+            };
+            let errno = if err != 0 {
+                format!(
+                    " ({})",
+                    std::io::Error::from_raw_os_error(err.saturating_abs())
+                )
             } else {
-                // SAFETY: alsa-lib passes NUL-terminated strings of its own
-                unsafe { CStr::from_ptr(p) }.to_string_lossy().into_owned()
-            }
-        };
-        let errno = if err != 0 {
-            format!(" ({})", std::io::Error::from_raw_os_error(err.abs()))
-        } else {
-            String::new()
-        };
-        say_limited(&format!(
-            "ALSA lib {}:{line}:({}) {}{errno}",
-            text(file),
-            text(function),
-            text(fmt)
-        ));
+                String::new()
+            };
+            let file = string(file);
+            say_limited(
+                &format!("alsa {file}:{line}"),
+                &format!(
+                    "ALSA lib {file}:{line}:({}) {}{errno}",
+                    string(function),
+                    string(text)
+                ),
+            );
+        }));
     }
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
-        // SAFETY: a function with alsa-lib's fixed arguments, called by it
-        // with them (and the format's, which it does not read: a variadic
-        // call reaches a function of the fixed ones alike on the ABIs Linux
-        // runs on); set once, before any stream is opened
+        // SAFETY: `said` has the arguments the C handler calls it with; set
+        // once, before any stream is opened
         unsafe {
-            snd_lib_error_set_handler(Some(handler));
+            amp_alsa_errors_to(said);
         }
     });
 }
@@ -1032,29 +1064,43 @@ where
                 if let Some(h) = hook {
                     h(true);
                 }
-                // what is written now is heard this much later, the buffer's
-                // length on top: the position and the pictures wait for it
-                let ts = info.timestamp();
-                let ahead = ts.playback.duration_since(ts.callback).as_secs_f64();
-                let rate = shared.device_rate.load(Ordering::Relaxed) as f64;
-                // (ten seconds at most: a timestamp gone wild)
-                let latency =
-                    ((ahead * rate) as u64).min(rate as u64 * 10) + (data.len() / channels) as u64;
-                for chunk in data.chunks_mut(piece) {
-                    let mixed = &mut mixed[..chunk.len()];
-                    shared.render_at(mixed, channels, &mut state, latency);
-                    for (out, v) in chunk.iter_mut().zip(mixed.iter()) {
-                        *out = T::from_sample(*v);
+                // (nothing unwinds into the sound system: CoreAudio calls
+                // this from C - a panic out of a C callback is the end of
+                // the process, as alsa-lib's handler showed - review 2 of
+                // 0.17.1, N1; a panic: silence, and the output made anew)
+                let rendered = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    // what is written now is heard this much later, the
+                    // buffer's length on top: the position and the pictures
+                    // wait for it
+                    let ts = info.timestamp();
+                    let ahead = ts.playback.duration_since(ts.callback).as_secs_f64();
+                    let rate = shared.device_rate.load(Ordering::Relaxed) as f64;
+                    // (ten seconds at most: a timestamp gone wild)
+                    let latency = ((ahead * rate) as u64).min(rate as u64 * 10)
+                        + (data.len() / channels) as u64;
+                    for chunk in data.chunks_mut(piece) {
+                        let mixed = &mut mixed[..chunk.len()];
+                        shared.render_at(mixed, channels, &mut state, latency);
+                        for (out, v) in chunk.iter_mut().zip(mixed.iter()) {
+                            *out = T::from_sample(*v);
+                        }
                     }
+                }));
+                if rendered.is_err() {
+                    data.fill(T::EQUILIBRIUM);
+                    shared.lost.store(true, Ordering::Relaxed);
                 }
                 if let Some(h) = hook {
                     h(false);
                 }
             },
             move |err| {
-                // (said through the one limiter of the program; a stream
-                // failing on and on taken for lost - Shared::output_error)
-                lost.output_error(&err.to_string(), err.kind());
+                // (said through the program's limiter; a stream failing on
+                // and on taken for lost - Shared::output_error; nothing
+                // unwinds into the sound system's C, as above)
+                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    lost.output_error(&err.to_string(), err.kind());
+                }));
             },
             None,
         )
@@ -2277,7 +2323,7 @@ impl Decoding {
                 Err(e) if self.seekable && self.sounded => {
                     self.damaged += 1;
                     if self.damaged > 16 {
-                        eprintln!("axross-amp: {e} - the track ends there");
+                        crate::say!("axross-amp: {e} - the track ends there");
                         return Ok(false);
                     }
                     continue;
@@ -2375,7 +2421,7 @@ impl Decoding {
                 }
                 Err(SymError::DecodeError(_)) => continue, // (a damaged packet: the next one)
                 Err(e) if self.seekable && self.sounded => {
-                    eprintln!("axross-amp: {e} - the track ends there");
+                    crate::say!("axross-amp: {e} - the track ends there");
                     return Ok(false);
                 }
                 Err(e) => return Err(e.to_string()),
@@ -3035,10 +3081,12 @@ struct Player {
     retry_every: Duration,
     /// Let go after it failed again and again: tried once a round (a try
     /// that fails is let go at once), until a stream has played
-    /// [`output_retry_most`] without an error (from when, and the errors
-    /// counted then).
+    /// [`output_retry_most`] without an error: how long it has played so
+    /// (only while it plays - paused, nothing is written that could fail),
+    /// the errors counted when it began, and when it was last looked at.
     retrying: bool,
-    healthy_from: Option<(Instant, u64)>,
+    healthy: Option<(Duration, u64)>,
+    healthy_looked: Instant,
     /// Since when nothing plays (the stream let go after [`SUSPEND_AFTER`]),
     /// and whether it is let go.
     idle_since: Option<Instant>,
@@ -3156,6 +3204,18 @@ impl Player {
         self.shared
             .playing
             .store(playing && self.current.is_some(), Ordering::Relaxed);
+        // (opened while let go - by the retry, by Play, by a device chosen:
+        // from now it may show it is well again; the retry's opens alone
+        // started the clock, so after the user's the player stayed let go
+        // for good and a single loss hours later was 5-30 s of silence and
+        // "keeps failing" - review 2 of 0.17.1, N2)
+        if self.retrying && self.output_ok && self.healthy.is_none() {
+            self.healthy = Some((
+                Duration::ZERO,
+                self.shared.errors_counted.load(Ordering::Relaxed),
+            ));
+            self.healthy_looked = Instant::now();
+        }
     }
 
     /// The output failed (a device unplugged, the sound server gone):
@@ -3198,7 +3258,7 @@ impl Player {
         self.output_ok = false;
         self.output_tried = now;
         self.retrying = true;
-        self.healthy_from = None;
+        self.healthy = None;
         self.send(Event::Output(format!(
             "no sound: the output keeps failing - trying again in {} s",
             self.retry_every.as_secs().max(1)
@@ -3214,28 +3274,32 @@ impl Player {
             // (longer each time - until a stream has played a while: one
             // that opens and fails at its first write is no success)
             self.retry_every = (self.retry_every * 2).min(output_retry_most());
-            if self.output_ok {
-                self.healthy_from = Some((
-                    Instant::now(),
-                    self.shared.errors_counted.load(Ordering::Relaxed),
-                ));
-            }
         }
+        let now = Instant::now();
         if self.output_ok
-            && let Some((from, errors)) = self.healthy_from
+            && let Some((played, errors)) = self.healthy
         {
-            if self.shared.errors_counted.load(Ordering::Relaxed) != errors {
-                self.healthy_from = Some((
-                    Instant::now(),
-                    self.shared.errors_counted.load(Ordering::Relaxed),
-                ));
-            } else if from.elapsed() >= output_retry_most() {
+            let counted = self.shared.errors_counted.load(Ordering::Relaxed);
+            // (only time played counts: paused, or let go for being idle,
+            // nothing is written that could fail)
+            let playing = self.shared.playing.load(Ordering::Relaxed) && !self.suspended;
+            let played = if playing {
+                played + now.duration_since(self.healthy_looked)
+            } else {
+                played
+            };
+            if counted != errors {
+                self.healthy = Some((Duration::ZERO, counted));
+            } else if played >= output_retry_most() {
                 self.retrying = false;
                 self.retry_every = output_retry();
                 self.losses.clear();
-                self.healthy_from = None;
+                self.healthy = None;
+            } else {
+                self.healthy = Some((played, errors));
             }
         }
+        self.healthy_looked = now;
     }
 
     /// Take back a queued track already decoded after the current one (a
@@ -4059,7 +4123,8 @@ fn run(
         output_tried: Instant::now(),
         retry_every: output_retry(),
         retrying: false,
-        healthy_from: None,
+        healthy: None,
+        healthy_looked: Instant::now(),
         idle_since: None,
         suspended: false,
         chunk: Vec::with_capacity(16_384),

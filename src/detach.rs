@@ -101,7 +101,7 @@ pub fn spawn(args: &[std::ffi::OsString]) -> Start {
         .append(true)
         .open(&log);
     let Ok(out) = out else {
-        eprintln!(
+        crate::say!(
             "axross-amp: cannot write its log {} - started in the foreground",
             log.display()
         );
@@ -147,7 +147,7 @@ pub fn spawn(args: &[std::ffi::OsString]) -> Start {
     let mut child = match child {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("axross-amp: could not start in the background ({e}) - started here");
+            crate::say!("axross-amp: could not start in the background ({e}) - started here");
             return Start::Run;
         }
     };
@@ -165,16 +165,16 @@ pub fn spawn(args: &[std::ffi::OsString]) -> Start {
             let _ = child.wait();
             let text = std::fs::read_to_string(&log).unwrap_or_default();
             let tail: Vec<&str> = text.lines().rev().take(12).collect();
-            eprintln!("axross-amp could not start:");
+            crate::say!("axross-amp could not start:");
             for line in tail.into_iter().rev() {
-                eprintln!("  {line}");
+                crate::say!("  {line}");
             }
-            eprintln!("(the log: {}; --foreground runs it here)", log.display());
+            crate::say!("(the log: {}; --foreground runs it here)", log.display());
             Start::Exit(1)
         }
         // (still starting: it goes on; where it writes is said)
         Err(_) => {
-            eprintln!(
+            crate::say!(
                 "axross-amp is starting in the background (its log: {})",
                 log.display()
             );

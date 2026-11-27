@@ -73,7 +73,7 @@ fn main() -> eframe::Result {
     if args.iter().any(|a| a == "--self-test") {
         #[cfg(target_os = "linux")]
         if let Some(missing) = window_library_missing() {
-            eprintln!("axross-amp: the window cannot be opened: {missing}");
+            axross_amp::say!("axross-amp: the window cannot be opened: {missing}");
             std::process::exit(1);
         }
         println!(
@@ -161,7 +161,7 @@ fn main() -> eframe::Result {
         if install.can_update()
             && let FirstStart::RolledBack(old) = first_start(&install.target, Version::current())
         {
-            eprintln!(
+            axross_amp::say!(
                 "axross-amp: {} did not start here; the program it replaced is back",
                 Version::current()
             );
@@ -171,7 +171,7 @@ fn main() -> eframe::Result {
             {
                 use std::os::unix::process::CommandExt;
                 let e = command.exec();
-                eprintln!("axross-amp: {}: {e}", old.display());
+                axross_amp::say!("axross-amp: {}: {e}", old.display());
                 std::process::exit(1);
             }
             #[cfg(not(unix))]
@@ -188,6 +188,17 @@ fn main() -> eframe::Result {
         // error would be)
         if offloaded && std::env::var_os("AXROSS_AMP_FAKE_OFFLOAD_FAILS").is_some() {
             again_without_offload();
+        }
+        // (a panic in the window on the dedicated GPU: before its first
+        // frame - "first" - or after it - "later")
+        if offloaded && let Ok(when) = std::env::var("AXROSS_AMP_FAKE_PANIC") {
+            caught(offloaded, || {
+                if when == "later" {
+                    axross_amp::offload::frame_begun();
+                    axross_amp::offload::frame_begun();
+                }
+                panic!("the tests' panic in the window ({when})");
+            });
         }
         if let Some(path) = std::env::var_os("AXROSS_AMP_FAKE_PIDFILE") {
             let _ = std::fs::write(path, std::process::id().to_string());
@@ -219,7 +230,7 @@ fn main() -> eframe::Result {
     // with the package that has it - winit panicked on libxkbcommon-x11)
     #[cfg(target_os = "linux")]
     if let Some(missing) = window_library_missing() {
-        eprintln!("axross-amp: the window cannot be opened: {missing}");
+        axross_amp::say!("axross-amp: the window cannot be opened: {missing}");
         std::process::exit(1);
     }
     // the window as large as it was left
@@ -258,32 +269,19 @@ fn main() -> eframe::Result {
             }),
         )
     };
-    // (the dedicated GPU asked for: a panic in its driver's way - wgpu's
-    // validation, a device lost - is caught too, and the window made again
-    // without it - review of 0.17.1, L7)
-    let started = if offloaded {
-        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(run)) {
-            Ok(started) => started,
-            Err(_) => {
-                eprintln!("axross-amp: the window panicked on the dedicated GPU");
-                again_without_offload();
-            }
-        }
-    } else {
-        run()
-    };
+    let started = caught(offloaded, run);
     // (the dedicated GPU asked for, and its graphics could not be set up:
     // once more in this process's place without asking - never no window
     // at all; not for an error of another kind - no display - which no
     // other GPU makes good)
     if offloaded && let Err(error @ eframe::Error::Wgpu(_)) = &started {
-        eprintln!("axross-amp: {error}");
+        axross_amp::say!("axross-amp: {error}");
         again_without_offload();
     }
     // (no adapter, no surface, no device: Options cannot be reached, so
     // what can be tried from outside is said - not a line of nested Debug)
     if let Err(error @ eframe::Error::Wgpu(_)) = &started {
-        eprintln!(
+        axross_amp::say!(
             "{}",
             axross_amp::graphics::start_failed(&format!("{error:?}"))
         );
@@ -292,12 +290,31 @@ fn main() -> eframe::Result {
     started
 }
 
+/// The window, `run`: on the dedicated GPU (`offloaded`), a panic before its
+/// first frame is shown - in its driver's way: wgpu's validation, a device
+/// lost - starts the program again without it (review of 0.17.1, L7). Not
+/// one after it: that is the program's, a panic as any other (review 2 of
+/// 0.17.1, L-N5).
+fn caught<R>(offloaded: bool, run: impl FnOnce() -> R) -> R {
+    if !offloaded {
+        return run();
+    }
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(run)) {
+        Ok(started) => started,
+        Err(panic) if axross_amp::offload::window_shown() => std::panic::resume_unwind(panic),
+        Err(_) => {
+            axross_amp::say!("axross-amp: the window panicked on the dedicated GPU");
+            again_without_offload();
+        }
+    }
+}
+
 /// The window could not be made on the dedicated GPU: the program started
 /// again in this process's place (the same process on Unix: a detached
 /// child stays one, its pipe to the terminal's start open) without the
 /// offload (src/offload.rs).
 fn again_without_offload() -> ! {
-    eprintln!(
+    axross_amp::say!(
         "axross-amp: the window could not be made on the dedicated GPU; again on the integrated one"
     );
     let exe = std::env::current_exe().unwrap_or_else(|_| "axross-amp".into());
@@ -307,7 +324,7 @@ fn again_without_offload() -> ! {
     {
         use std::os::unix::process::CommandExt;
         let e = command.exec();
-        eprintln!("axross-amp: {}: {e}", exe.display());
+        axross_amp::say!("axross-amp: {}: {e}", exe.display());
         std::process::exit(1);
     }
     #[cfg(not(unix))]

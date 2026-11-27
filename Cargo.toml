@@ -9,6 +9,10 @@ categories = ["multimedia::audio"]
 readme = "README.md"
 edition = "2024"
 
+[build-dependencies]
+# (alsa-lib's error lines formatted in C: build.rs, src/alsa_errors.c)
+cc = "1.11"
+
 [dependencies]
 cpal = { version = "0.18.2", features = ["pulseaudio"] }
 crossbeam-channel = "0.5.17"

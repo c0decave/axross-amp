@@ -336,7 +336,7 @@ impl Updater {
         self.stage = match done {
             Done::NotNow(why) => {
                 self.last_check = Some((std::time::SystemTime::now(), true));
-                eprintln!("axross-amp: the update check waits ({why})");
+                crate::say!("axross-amp: the update check waits ({why})");
                 Stage::Idle
             }
             // (Off chosen while it was asked: nothing more)
@@ -377,7 +377,7 @@ impl Updater {
             Done::Checked(Ok(release)) => Stage::UpToDate(release.version),
             Done::Checked(Err(e)) if quiet => {
                 self.last_check = Some((std::time::SystemTime::now(), true));
-                eprintln!("axross-amp: the update check failed: {e}");
+                crate::say!("axross-amp: the update check failed: {e}");
                 Stage::Idle
             }
             Done::Checked(Err(e)) => Stage::Failed(e),
@@ -394,7 +394,7 @@ impl Updater {
                 Stage::Ready(installed)
             }
             Done::Downloaded(Err(e)) if quiet => {
-                eprintln!("axross-amp: the update was not installed: {e}");
+                crate::say!("axross-amp: the update was not installed: {e}");
                 self.notice = Some(format!("The update was not installed: {e}"));
                 Stage::Failed(e)
             }

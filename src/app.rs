@@ -807,7 +807,7 @@ impl App {
             .as_ref()
             .map(|rs| crate::graphics::Adapter::of(&rs.adapter.get_info(), true));
         if let Some(a) = &adapter {
-            eprintln!("axross-amp: drawn by {}", a.label());
+            crate::say!("axross-amp: drawn by {}", a.label());
         }
         if let Some(render_state) = cc.wgpu_render_state.as_ref() {
             viz::gpu::install(render_state);
@@ -826,7 +826,7 @@ impl App {
                 // (about 400 x 225: a large window costs no more)
                 viz_state.gpu.max_pixels = 90_000.0;
             }
-            eprintln!(
+            crate::say!(
                 "axross-amp: shader faces on the {} ({:.2e} ms a pixel on the GPU, {:.2e} on the CPU){}",
                 if gpu { "GPU" } else { "CPU" },
                 choice.gpu_ms_per_pixel,
@@ -6890,6 +6890,7 @@ impl eframe::App for App {
     }
 
     fn ui(&mut self, ui: &mut Ui, frame: &mut eframe::Frame) {
+        crate::offload::frame_begun();
         // a font that panics as a text is laid out or drawn - a damaged
         // file no check foresaw - does not end the program: the fonts of
         // the system are let go (those found for other scripts first, then
@@ -6930,12 +6931,12 @@ impl App {
         let times = self.fonts_let_go.map_or(0, |(_, n)| n);
         let found = self.font_fallback.drop_all();
         let let_go = if found > 0 {
-            eprintln!(
+            crate::say!(
                 "axross-amp: a font panicked while a text was drawn - the {found} found for other scripts are not used any more"
             );
             true
         } else if crate::fonts::only_built_in() {
-            eprintln!(
+            crate::say!(
                 "axross-amp: a font panicked while a text was drawn - the system's bold and serif faces are not used any more"
             );
             true

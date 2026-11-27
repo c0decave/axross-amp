@@ -137,3 +137,110 @@ fn a_failing_output_is_tried_once_a_round_each_round_longer() {
         "well again: made good at once: {seen:?}"
     );
 }
+
+/// A player playing a long track, its output let go after four losses in
+/// a row (the last event said: "keeps failing").
+fn let_go(name: &str) -> (Engine, scratch::Scratch) {
+    OUTPUT_RETRY_MS.store(BASE, Ordering::Relaxed);
+    let dir = scratch::Scratch::new(name);
+    let wav = dir.join("long.wav");
+    long_wav(&wav, 120);
+    let engine = Engine::start_headless(|| {});
+    engine.send(Command::Load {
+        path: wav.to_string_lossy().into_owned(),
+        start_ms: 0,
+        play: true,
+        generation: 1,
+    });
+    std::thread::sleep(Duration::from_millis(300));
+    while engine.events.try_recv().is_ok() {}
+    for _ in 0..3 {
+        engine.shared.simulate_output_loss();
+        let seen = events_until(&engine, 2.0, |_| true);
+        assert!(
+            seen.iter().any(|(_, o)| !o.starts_with("no sound")),
+            "made good at once: {seen:?}"
+        );
+    }
+    engine.shared.simulate_output_loss();
+    let seen = events_until(&engine, 2.0, |_| true);
+    assert!(seen[0].1.contains("keeps failing"), "{seen:?}");
+    (engine, dir)
+}
+
+/// The output let go, brought back by the user before the retry's round
+/// (`back`), then played (or, `pause`, paused) ten times the first wait:
+/// what one loss then gives.
+fn one_loss_after(name: &str, back: impl FnOnce(&Engine), pause: bool) -> Vec<(Duration, String)> {
+    let (engine, _dir) = let_go(name);
+    back(&engine);
+    let seen = events_until(&engine, 2.0, |_| true);
+    assert!(
+        !seen[0].1.starts_with("no sound") && seen[0].0 < Duration::from_millis(BASE / 2),
+        "brought back by the user, before the retry's round: {seen:?}"
+    );
+    if pause {
+        engine.send(Command::Pause);
+    }
+    // ten times the first wait: well past the six it takes when it plays
+    std::thread::sleep(Duration::from_millis(10 * BASE));
+    if pause {
+        engine.send(Command::Play);
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    while engine.events.try_recv().is_ok() {}
+    engine.shared.simulate_output_loss();
+    events_until(&engine, 2.0, |_| true)
+}
+
+/// Brought back by a device chosen (the Mixer), it is well again once it
+/// has played a while, as after the retry's own try: the next single loss
+/// is made good at once - it was let go at once, with 5-30 s of silence
+/// and "keeps failing" (review 2 of 0.17.1, N2).
+#[test]
+fn brought_back_by_a_device_chosen_it_is_well_again_after_a_while() {
+    let seen = one_loss_after(
+        "output-retry-device",
+        |e| e.send(Command::Output(None)),
+        false,
+    );
+    assert!(
+        !seen[0].1.starts_with("no sound") && seen[0].0 < Duration::from_millis(150),
+        "well again: made good at once: {seen:?}"
+    );
+}
+
+/// Brought back by Play, likewise.
+#[test]
+fn brought_back_by_play_it_is_well_again_after_a_while() {
+    let seen = one_loss_after(
+        "output-retry-play",
+        |e| {
+            e.send(Command::Pause);
+            e.send(Command::Play);
+        },
+        false,
+    );
+    assert!(
+        !seen[0].1.starts_with("no sound") && seen[0].0 < Duration::from_millis(150),
+        "well again: made good at once: {seen:?}"
+    );
+}
+
+/// Time paused is no proof: brought back, then paused that long, a loss
+/// is let go at once still.
+#[test]
+fn time_paused_does_not_make_it_well_again() {
+    let seen = one_loss_after(
+        "output-retry-paused",
+        |e| {
+            e.send(Command::Pause);
+            e.send(Command::Play);
+        },
+        true,
+    );
+    assert!(
+        seen[0].1.contains("keeps failing") && seen[0].0 < Duration::from_millis(150),
+        "paused is not played: let go at once: {seen:?}"
+    );
+}

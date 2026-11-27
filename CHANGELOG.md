@@ -10,7 +10,9 @@ Titles that move so all of them is read, a cover for every track, the
 dedicated GPU of a laptop with two, and an output that comes back - with
 what the release review of it found (6.5 of 10: the output's recovery,
 the log flood, a cover's seed, the marquee on a slow renderer, a switch
-of the window's own to stop it).
+of the window's own to stop it) and its confirmation (7.5 of 10: a log
+that cannot be written aborted the player; a recovery by the user left
+it let go).
 
 ### Added
 - **A cover for every track: 100 pictures made for tracks without one**
@@ -122,20 +124,34 @@ of the window's own to stop it).
   again, and tries once a round - after 5 s, then 10, 20 and every 30 s -
   until the device is back; a try that fails is let go at once (no three
   more at once); a stream that has played 30 s without an error is well
-  again. A track that played goes on where it was (Android stability
-  audit, H4; `tests/engine.rs`, `tests/output_retry.rs`: the waits, one
-  try a round).
+  again - whoever opened it: the retry, Play, a device chosen in the
+  Mixer (the user's recovery left it let go for good, and a single loss
+  hours later was 5-30 s of silence and "keeps failing"); time paused
+  does not count. A track that played goes on where it was (Android
+  stability audit, H4; `tests/engine.rs`, `tests/output_retry.rs`: the
+  waits, one try a round, Play and a device chosen, time paused).
 - **An output that fails at every write is no longer logged at every
   write**: what the output says - its own errors and alsa-lib's lines,
-  which alsa-lib printed for every failed write itself - goes through one
-  limiter of the program's, across the streams made anew: said once, then
-  at most every 10 s with how many more. Errors that are not recovered from
+  which alsa-lib printed for every failed write itself - goes through a
+  limiter of the program's, across the streams made anew: each kind of
+  line (where in alsa-lib it comes from; the kind of the output's error)
+  said once, then at most every 10 s with how many more - alsa-lib's
+  flood does not keep the output's own errors unsaid. alsa-lib's lines are
+  said with their arguments (which file, which device - formatted in C,
+  `src/alsa_errors.c`: its handler is variadic), not the bare format. A
+  log that cannot be written - a full disk under it, a closed terminal -
+  loses lines and nothing else: every line the program says is written
+  so, and nothing unwinds into alsa-lib (its first line aborted the
+  player) nor into the sound system's callbacks (CoreAudio calls them
+  from C: a panic there is silence and the output made anew). Errors that are not recovered from
   by themselves, 20 within a second, make the output lost; an underrun, a
   route followed or real-time scheduling refused never count (an
   overloaded machine's underruns let the output go). With ALSA's file
-  plugin writing to a full disk: 2 lines in 25 s, where there were 26 260
-  of alsa-lib's and 86 of the program's, and 6 streams made, where there
-  were some 13 every 5 s (`tests/output_flood.rs`). (A sound file with its
+  plugin writing to a full disk: 4 lines in 25 s (two of alsa-lib's, two
+  of the program's), where there were 26 260 of alsa-lib's and 86 of the
+  program's, and 6 streams made, where there
+  were some 13 every 5 s; with the log on a full disk, playing on
+  (`tests/output_flood.rs`). (A sound file with its
   reader gone wrote 20 GB of the one line into the log in three hours.)
 - **A cover made smaller wakes the window when it is done**: while its
   sizes were made the window asked for a frame every 30 ms - on a slow
@@ -170,8 +186,10 @@ of the window's own to stop it).
   background too, which knows the variables as the program's by a mark of
   its own (as in axross-files-matrix, its review 6's M3); an update's
   first start stays watched across it. A panic on the dedicated GPU
-  (wgpu's validation, a device lost) is made good the same way; an error
-  of another kind (no display) is not. The start again knows itself so
+  before the window's first frame is shown (wgpu's validation, a device
+  lost) is made good the same way; one after it is the program's, a panic
+  as any other (not put on the GPU); an error of another kind (no
+  display) is not. The start again knows itself so
   and takes the word out of its environment: a "Restart now" for an
   update starts a program that decides afresh and whose first start is
   watched. Helpers (gsettings, xrandr, pactl, a new release's self-test)

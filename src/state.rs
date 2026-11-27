@@ -558,14 +558,14 @@ fn keep_unreadable_copy(path: &Path) {
         out.sync_all()
     })();
     if let Err(e) = copied {
-        eprintln!(
+        crate::say!(
             "axross-amp: could not keep a copy of the unreadable {} ({e}) - moved aside",
             path.display()
         );
         let _ = fs::remove_file(&backup);
         let _ = fs::rename(path, &backup);
     } else {
-        eprintln!(
+        crate::say!(
             "axross-amp: {} could not be read; kept as {}",
             path.display(),
             backup.display()

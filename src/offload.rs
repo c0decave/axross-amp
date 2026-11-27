@@ -25,6 +25,24 @@
 //! ([`decide`]). Linux only: Windows and macOS choose the GPU themselves.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+
+/// Frames the window has begun to draw ([`frame_begun`]). Past the first,
+/// the dedicated GPU has given a window, and a panic is the program's, not
+/// the GPU's: one hours in was put on the GPU - the program started again
+/// without it, the sound stopped, Options blaming the GPU (review 2 of
+/// 0.17.1, L-N5).
+static FRAMES_BEGUN: AtomicU64 = AtomicU64::new(0);
+
+/// A frame of the window begun (its `ui`).
+pub fn frame_begun() {
+    FRAMES_BEGUN.fetch_add(1, Ordering::Relaxed);
+}
+
+/// The window's first frame drawn and shown (the second begun).
+pub fn window_shown() -> bool {
+    FRAMES_BEGUN.load(Ordering::Relaxed) >= 2
+}
 
 /// A GPU as /sys/class/drm tells it.
 #[derive(Clone, Debug, PartialEq, Eq)]
