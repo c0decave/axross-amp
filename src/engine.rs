@@ -68,10 +68,20 @@ pub static NO_OUTPUT: AtomicBool = AtomicBool::new(false);
 /// (more than it reads at a call).
 const CUT_MARGIN: u64 = 16_384;
 
-/// How often the output is tried again while there is none: at first, and
-/// at most (each try that fails waits twice as long, up to this).
-const OUTPUT_RETRY: Duration = Duration::from_secs(5);
-const OUTPUT_RETRY_MOST: Duration = Duration::from_secs(30);
+/// How often the output is tried again while there is none: at first (ms;
+/// tests make it shorter), and at most six times that - each try waits
+/// twice as long as the one before. A stream that has played that long
+/// (six times it: 30 s) without an error is well again.
+#[doc(hidden)]
+pub static OUTPUT_RETRY_MS: AtomicU64 = AtomicU64::new(5000);
+
+fn output_retry() -> Duration {
+    Duration::from_millis(OUTPUT_RETRY_MS.load(Ordering::Relaxed).max(1))
+}
+
+fn output_retry_most() -> Duration {
+    output_retry() * 6
+}
 /// Paused (or stopped, or nothing loaded) this long, the output stream is
 /// let go - no silence rendered 100 times a second, the device free, the
 /// machine let sleep - and opened again at Play, where the sound left off
@@ -434,6 +444,12 @@ pub struct Shared {
     lost: AtomicBool,
     /// The output stream let go while nothing plays ([`SUSPEND_AFTER`]).
     pub suspended: AtomicBool,
+    /// The output's errors that count toward its loss: when this second of
+    /// them began (ms of [`Shared::born`]), how many in it, how many ever.
+    error_second: AtomicU64,
+    errors_in_second: AtomicU32,
+    pub errors_counted: AtomicU64,
+    born: Instant,
     /// The sound in the ring ends there (a track's end, nothing after it):
     /// running dry is no stall to fade over.
     ending: AtomicBool,
@@ -500,6 +516,10 @@ impl Shared {
             tap: Tap::new(TAP_FRAMES),
             lost: AtomicBool::new(false),
             suspended: AtomicBool::new(false),
+            error_second: AtomicU64::new(0),
+            errors_in_second: AtomicU32::new(0),
+            errors_counted: AtomicU64::new(0),
+            born: Instant::now(),
             ending: AtomicBool::new(false),
             latency: AtomicU64::new(0),
             track_mark: AtomicU64::new(u64::MAX),
@@ -555,6 +575,41 @@ impl Shared {
     #[doc(hidden)]
     pub fn simulate_output_loss(&self) {
         self.lost.store(true, Ordering::Relaxed);
+    }
+
+    /// An error the output reported: said through the program's one limiter
+    /// ([`say_limited`]: across streams - a stream made anew said its first
+    /// error again, 93 lines a minute); a device gone, a stream to be made
+    /// anew - or 20 errors of a kind it does not recover from by itself
+    /// within a second - is the output lost. An underrun (Xrun), a route
+    /// followed (DeviceChanged), real-time scheduling refused: said, never
+    /// counted (an overloaded machine's underruns let the output go, 5 s of
+    /// silence and "keeps failing" - review of 0.17.1, M1).
+    pub fn output_error(&self, text: &str, kind: cpal::ErrorKind) {
+        say_limited(&format!("axross-amp: output: {text}"));
+        use cpal::ErrorKind as K;
+        match kind {
+            K::DeviceNotAvailable | K::StreamInvalidated | K::HostUnavailable => {
+                self.errors_counted.fetch_add(1, Ordering::Relaxed);
+                self.lost.store(true, Ordering::Relaxed);
+            }
+            K::Xrun | K::DeviceChanged | K::RealtimeDenied => {}
+            _ => {
+                self.errors_counted.fetch_add(1, Ordering::Relaxed);
+                let now = self.born.elapsed().as_millis() as u64;
+                let began = self.error_second.load(Ordering::Relaxed);
+                let n = if now.saturating_sub(began) > 1000 {
+                    self.error_second.store(now, Ordering::Relaxed);
+                    self.errors_in_second.store(1, Ordering::Relaxed);
+                    1
+                } else {
+                    self.errors_in_second.fetch_add(1, Ordering::Relaxed) + 1
+                };
+                if n >= 20 {
+                    self.lost.store(true, Ordering::Relaxed);
+                }
+            }
+        }
     }
 
     /// The position of the sound heard (seconds).
@@ -806,6 +861,9 @@ fn open_output(
     shared: Arc<Shared>,
     device: Option<&str>,
 ) -> Result<(cpal::Stream, u32, String), String> {
+    // (alsa-lib's own lines through the program's limiter)
+    #[cfg(target_os = "linux")]
+    quiet_alsa_lib();
     let mut last = String::from("no audio output");
     for host in hosts() {
         let chosen = device
@@ -868,6 +926,90 @@ fn open_output(
     Err(last)
 }
 
+/// The program's one limiter of what the output says (its errors, and
+/// alsa-lib's own lines): a line said, then at most one every 10 s, with
+/// how many more there were. Kept for the whole program - across streams
+/// made anew, and for alsa-lib, which prints a line for every failed write
+/// (38 000 a minute with an output writing to a full disk - review of
+/// 0.17.1, H1).
+static SAID: Mutex<(Option<Instant>, u64)> = Mutex::new((None, 0));
+/// Lines said by [`say_limited`] (tests).
+#[doc(hidden)]
+pub static LINES_SAID: AtomicU64 = AtomicU64::new(0);
+
+/// `line` said on stderr (the log, in the background) - or counted, when
+/// one was said less than 10 s ago.
+pub fn say_limited(line: &str) {
+    let Ok(mut said) = SAID.lock() else {
+        return;
+    };
+    let now = Instant::now();
+    said.1 += 1;
+    if said
+        .0
+        .is_none_or(|at| now.duration_since(at) >= Duration::from_secs(10))
+    {
+        let more = said.1 - 1;
+        *said = (Some(now), 0);
+        LINES_SAID.fetch_add(1, Ordering::Relaxed);
+        if more > 0 {
+            eprintln!("{line} ({more} more like it since)");
+        } else {
+            eprintln!("{line}");
+        }
+    }
+}
+
+/// alsa-lib's own messages through [`say_limited`] (it printed each one on
+/// stderr itself). Its handler is variadic in C; this one takes the fixed
+/// arguments only (the format's arguments, passed after them in registers
+/// or on the stack, are left alone: the format is said as it is).
+#[cfg(target_os = "linux")]
+fn quiet_alsa_lib() {
+    use std::ffi::{CStr, c_char, c_int};
+    type Handler = unsafe extern "C" fn(*const c_char, c_int, *const c_char, c_int, *const c_char);
+    unsafe extern "C" {
+        fn snd_lib_error_set_handler(handler: Option<Handler>) -> c_int;
+    }
+    unsafe extern "C" fn handler(
+        file: *const c_char,
+        line: c_int,
+        function: *const c_char,
+        err: c_int,
+        fmt: *const c_char,
+    ) {
+        let text = |p: *const c_char| {
+            if p.is_null() {
+                String::new()
+            } else {
+                // SAFETY: alsa-lib passes NUL-terminated strings of its own
+                unsafe { CStr::from_ptr(p) }.to_string_lossy().into_owned()
+            }
+        };
+        let errno = if err != 0 {
+            format!(" ({})", std::io::Error::from_raw_os_error(err.abs()))
+        } else {
+            String::new()
+        };
+        say_limited(&format!(
+            "ALSA lib {}:{line}:({}) {}{errno}",
+            text(file),
+            text(function),
+            text(fmt)
+        ));
+    }
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        // SAFETY: a function with alsa-lib's fixed arguments, called by it
+        // with them (and the format's, which it does not read: a variadic
+        // call reaches a function of the fixed ones alike on the ABIs Linux
+        // runs on); set once, before any stream is opened
+        unsafe {
+            snd_lib_error_set_handler(Some(handler));
+        }
+    });
+}
+
 fn build<T>(
     device: &cpal::Device,
     config: cpal::StreamConfig,
@@ -882,9 +1024,6 @@ where
     let piece = (8192 / channels).max(1) * channels;
     let mut mixed = vec![0.0f32; piece];
     let lost = shared.clone();
-    // (the errors: when one was last said, how many since; this second's
-    // start and how many in it)
-    let mut errors: (Option<Instant>, u64, Instant, u32) = (None, 0, Instant::now(), 0);
     device
         .build_output_stream(
             config,
@@ -913,41 +1052,9 @@ where
                 }
             },
             move |err| {
-                // (said once, then at most every 10 s with how many more: an
-                // output failing at each write - ALSA's file plugin with its
-                // reader gone - wrote 20 GB of this line in three hours)
-                let now = Instant::now();
-                errors.1 += 1;
-                if errors
-                    .0
-                    .is_none_or(|said| now.duration_since(said) >= Duration::from_secs(10))
-                {
-                    if errors.1 > 1 {
-                        eprintln!("axross-amp: output: {err} ({} more since)", errors.1 - 1);
-                    } else {
-                        eprintln!("axross-amp: output: {err}");
-                    }
-                    errors = (Some(now), 0, now, 0);
-                }
-                // (failing on and on - 20 times within a second - it is no
-                // output: made anew as a lost one, then let go and tried
-                // again now and then)
-                if now.duration_since(errors.2) > Duration::from_secs(1) {
-                    (errors.2, errors.3) = (now, 0);
-                }
-                errors.3 += 1;
-                // a device that went away, a stream to be made anew: the
-                // decoder thread opens the output again
-                if errors.3 >= 20
-                    || matches!(
-                        err.kind(),
-                        cpal::ErrorKind::DeviceNotAvailable
-                            | cpal::ErrorKind::StreamInvalidated
-                            | cpal::ErrorKind::HostUnavailable
-                    )
-                {
-                    lost.lost.store(true, Ordering::Relaxed);
-                }
+                // (said through the one limiter of the program; a stream
+                // failing on and on taken for lost - Shared::output_error)
+                lost.output_error(&err.to_string(), err.kind());
             },
             None,
         )
@@ -2926,6 +3033,12 @@ struct Player {
     output_ok: bool,
     output_tried: Instant,
     retry_every: Duration,
+    /// Let go after it failed again and again: tried once a round (a try
+    /// that fails is let go at once), until a stream has played
+    /// [`output_retry_most`] without an error (from when, and the errors
+    /// counted then).
+    retrying: bool,
+    healthy_from: Option<(Instant, u64)>,
     /// Since when nothing plays (the stream let go after [`SUSPEND_AFTER`]),
     /// and whether it is let go.
     idle_since: Option<Instant>,
@@ -3056,22 +3169,73 @@ impl Player {
         if !self.shared.lost.swap(false, Ordering::Relaxed) {
             return;
         }
+        // (let go: the next try is the retry's - not three more at once)
+        if !self.output_ok {
+            return;
+        }
         let now = Instant::now();
+        // a retried output failing again: let go at once, the next try later
+        if self.retrying {
+            return self.let_go(now);
+        }
         self.losses
             .retain(|t| now.duration_since(*t) < Duration::from_secs(10));
         self.losses.push(now);
         if self.losses.len() > 3 {
-            drop(self.stream.take());
-            self.losses.clear();
-            self.output_ok = false;
-            self.output_tried = now;
-            self.retry_every = OUTPUT_RETRY;
-            return self.send(Event::Output(
-                "no sound: the output keeps failing - trying again".into(),
-            ));
+            return self.let_go(now);
         }
         let device = self.device.clone();
         self.reopen(device);
+    }
+
+    /// The output let go after failing again and again: tried again once
+    /// after [`Player::retry_every`] (5 s, then 10, 20, 30, 30 ...).
+    fn let_go(&mut self, now: Instant) {
+        drop(self.stream.take());
+        // (the dying stream's word of its loss is not a new loss: three
+        // more opens at once, every round - review of 0.17.1, H2)
+        self.shared.lost.store(false, Ordering::Relaxed);
+        self.output_ok = false;
+        self.output_tried = now;
+        self.retrying = true;
+        self.healthy_from = None;
+        self.send(Event::Output(format!(
+            "no sound: the output keeps failing - trying again in {} s",
+            self.retry_every.as_secs().max(1)
+        )));
+    }
+
+    /// The output once a round while it is let go; well again once a
+    /// stream has played a while without an error.
+    fn retry_output(&mut self) {
+        if !self.output_ok && self.output_tried.elapsed() >= self.retry_every {
+            let device = self.device.clone();
+            self.reopen(device);
+            // (longer each time - until a stream has played a while: one
+            // that opens and fails at its first write is no success)
+            self.retry_every = (self.retry_every * 2).min(output_retry_most());
+            if self.output_ok {
+                self.healthy_from = Some((
+                    Instant::now(),
+                    self.shared.errors_counted.load(Ordering::Relaxed),
+                ));
+            }
+        }
+        if self.output_ok
+            && let Some((from, errors)) = self.healthy_from
+        {
+            if self.shared.errors_counted.load(Ordering::Relaxed) != errors {
+                self.healthy_from = Some((
+                    Instant::now(),
+                    self.shared.errors_counted.load(Ordering::Relaxed),
+                ));
+            } else if from.elapsed() >= output_retry_most() {
+                self.retrying = false;
+                self.retry_every = output_retry();
+                self.losses.clear();
+                self.healthy_from = None;
+            }
+        }
     }
 
     /// Take back a queued track already decoded after the current one (a
@@ -3893,7 +4057,9 @@ fn run(
         carry: Vec::new(),
         output_ok: false,
         output_tried: Instant::now(),
-        retry_every: OUTPUT_RETRY,
+        retry_every: output_retry(),
+        retrying: false,
+        healthy_from: None,
         idle_since: None,
         suspended: false,
         chunk: Vec::with_capacity(16_384),
@@ -3929,15 +4095,7 @@ fn run(
         player.recover();
         // no output: tried again now and then (a sound server that starts, a
         // device plugged in, a headset back) - less often while it fails
-        if !player.output_ok && player.output_tried.elapsed() >= player.retry_every {
-            let device = player.device.clone();
-            player.reopen(device);
-            player.retry_every = if player.output_ok {
-                OUTPUT_RETRY
-            } else {
-                (player.retry_every * 2).min(OUTPUT_RETRY_MOST)
-            };
-        }
+        player.retry_output();
         player.suspend_when_idle();
         player.check_boundary();
         busy = player.tick();

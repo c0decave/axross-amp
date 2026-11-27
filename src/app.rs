@@ -846,7 +846,10 @@ impl App {
             playlist,
             info: TrackInfo::default(),
             cover: None,
-            sizer: crate::cover::Sizer::default(),
+            sizer: {
+                let ctx = cc.egui_ctx.clone();
+                crate::cover::Sizer::start(move || ctx.request_repaint())
+            },
             cover_scheme: None,
             accent: th().accent,
             cover_hue: None,
@@ -1214,6 +1217,12 @@ impl App {
             None => self.cover_art.clone(),
         };
         (art, self.cover_is_stand_in)
+    }
+
+    /// Titles that do not fit moved, or cut (the setting; tests).
+    #[doc(hidden)]
+    pub fn set_scroll_titles(&mut self, on: bool) {
+        self.amp.scroll_titles = on;
     }
 
     /// Covers for tracks without one: made, or none (the setting; tests).
@@ -1604,7 +1613,7 @@ impl App {
                 self.cover_is_stand_in = false;
                 Some(art)
             }
-            None => self.stand_in(),
+            None => self.stand_in(&info.album),
         };
         if info.art.is_some() || self.stand_in_for.is_none() || art.is_some() {
             self.cover_is_stand_in = info.art.is_none() && art.is_some();
@@ -1642,7 +1651,10 @@ impl App {
     /// The cover made for the track playing, which brings none: where the
     /// setting has them; kept already, or asked for (then None, and
     /// [`App::stand_in_for`] says which is awaited).
-    fn stand_in(&mut self) -> Option<Arc<crate::engine::Art>> {
+    /// (`album`: what the track's own file says - the information coming
+    /// in, not the one before it: an untagged track reached by a gapless
+    /// advance took the track before's album - review of 0.17.1, M2)
+    fn stand_in(&mut self, album: &str) -> Option<Arc<crate::engine::Art>> {
         self.stand_in_for = None;
         if !self.amp.generated_covers || !self.stand_ins_allowed {
             return None;
@@ -1652,7 +1664,7 @@ impl App {
             .current
             .and_then(|i| self.playlist.tracks.get(i))?;
         let album = if track.album.is_empty() {
-            self.info.album.as_str()
+            album
         } else {
             track.album.as_str()
         };
@@ -1681,7 +1693,8 @@ impl App {
         self.album_covers.clear();
         if self.amp.generated_covers {
             if self.cover_art.is_none() && self.info.art.is_none() && self.loaded.is_some() {
-                let art = self.stand_in();
+                let album = self.info.album.clone();
+                let art = self.stand_in(&album);
                 if art.is_some() {
                     self.cover_is_stand_in = true;
                     self.show_cover(ctx, art);
@@ -4199,6 +4212,16 @@ impl App {
         {
             self.amp_dirty = true;
         }
+        if ui
+            .checkbox(
+                &mut self.amp.scroll_titles,
+                "Move titles that do not fit (a click on one stops it)",
+            )
+            .on_hover_text("Off: cut to an ellipsis, the whole title in a tooltip")
+            .changed()
+        {
+            self.amp_dirty = true;
+        }
         ui.separator();
         ui.label(RichText::new("Covers for tracks without one").strong());
         let before = self.amp.generated_covers;
@@ -6645,7 +6668,9 @@ impl App {
     /// How much the words of what plays may move: the desktop's reduced
     /// motion over the setting.
     fn marquee_motion(&self) -> crate::marquee::Motion {
-        if self.desktop_reduces_motion() {
+        // (the window's own switch too: a desktop that does not say it
+        // wants less motion left no way to stop it - WCAG 2.2.2)
+        if self.desktop_reduces_motion() || !self.amp.scroll_titles {
             crate::marquee::Motion::Reduced
         } else if self.amp.motion == "intense" {
             crate::marquee::Motion::Intense
@@ -6935,8 +6960,10 @@ impl App {
         crate::marquee::begin_frame(&ctx, self.marquee_motion(), self.track_mark(), self.slow);
         // the cover made at the sizes it is shown: what is done comes in
         self.sizer.poll(&ctx);
+        // (the sizer wakes the window when it is done; a frame now and
+        // then meanwhile, in case)
         if self.sizer.waiting() {
-            ctx.request_repaint_after(Duration::from_millis(30));
+            ctx.request_repaint_after(Duration::from_millis(500));
         }
         self.gate = self.key_gate(&ctx);
         self.keys(ui);
@@ -7749,7 +7776,7 @@ fn desktop_reduced_motion() -> Arc<Mutex<Option<bool>>> {
 /// motion), Windows (animate windows off). None where none says.
 fn reduced_motion_asked() -> Option<bool> {
     let run = |program: &str, args: &[&str]| -> Option<String> {
-        std::process::Command::new(program)
+        crate::offload::helper(&mut std::process::Command::new(program))
             .args(args)
             .stderr(std::process::Stdio::null())
             .output()

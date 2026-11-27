@@ -44,6 +44,15 @@ pub struct Sizer {
 
 impl Default for Sizer {
     fn default() -> Self {
+        Sizer::start(|| {})
+    }
+}
+
+impl Sizer {
+    /// The sizer, `wake` called once what was asked is made (the window
+    /// asked for a frame every 30 ms while it waited: on a slow renderer,
+    /// some 10 frames a second for as long as a cover's sizes took).
+    pub fn start(wake: impl Fn() + Send + 'static) -> Sizer {
         let (ask, asks) = crossbeam_channel::unbounded::<Ask>();
         let (tx, rx) = crossbeam_channel::unbounded::<Made>();
         let generation = Arc::new(std::sync::atomic::AtomicU64::new(0));
@@ -70,6 +79,9 @@ impl Default for Sizer {
                         {
                             return;
                         }
+                    }
+                    if asks.is_empty() {
+                        wake();
                     }
                 }
             });

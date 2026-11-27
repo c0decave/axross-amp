@@ -921,6 +921,9 @@ pub fn self_test_answer(version: Version) -> String {
 /// say [`self_test_answer`] within [`SELF_TEST_SECS`].
 pub fn self_test(path: &Path, version: Version) -> Result<(), String> {
     let mut command = std::process::Command::new(path);
+    // (the new program as it starts by itself: none of this one's
+    // offload - review of 0.17.1, L8)
+    crate::offload::helper(&mut command);
     command
         .arg("--self-test")
         .env(NO_CHECK_ENV, "1")
@@ -1195,6 +1198,10 @@ pub fn restart(path: &Path, sha256: &[u8; 32], wait: std::time::Duration) -> Res
         return Err("the new program changed since it was checked; not started".into());
     }
     let mut command = std::process::Command::new(path);
+    // (the new program decides on the dedicated GPU by itself, and its
+    // first start is watched: not "started again without it" - review of
+    // 0.17.1, M3)
+    crate::offload::helper(&mut command);
     command
         .args(RESTART_ARGS)
         .stdin(std::process::Stdio::null());

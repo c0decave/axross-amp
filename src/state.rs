@@ -211,6 +211,10 @@ pub struct AmpSettings {
     /// false: the empty box with its note, as before 0.17.1 (`"covers"`:
     /// "generated" / "none").
     pub generated_covers: bool,
+    /// Titles too long for their box move within it (src/marquee.rs);
+    /// false: cut to an ellipsis, their whole in a tooltip - as reduced
+    /// motion has them (`"scroll_titles"`; WCAG 2.2.2, review of 0.17.1 M5).
+    pub scroll_titles: bool,
 }
 
 /// The loudness targets offered: LUFS and what aims at it.
@@ -250,6 +254,7 @@ impl Default for AmpSettings {
             face: String::new(),
             graphics: "auto".into(),
             generated_covers: true,
+            scroll_titles: true,
         }
     }
 }
@@ -367,6 +372,9 @@ pub fn read_amp(path: &Path) -> AmpSettings {
     if let Some(c) = text(&map, "covers") {
         settings.generated_covers = c != "none";
     }
+    if let Some(b) = map.get("scroll_titles").and_then(|v| v.as_bool()) {
+        settings.scroll_titles = b;
+    }
     // (the mode; a player of 0.15 - "update_check" alone, which it always
     // wrote - keeps its choice: off, nothing to the network, unless ticked,
     // then said. Taken for no choice, every 0.15 user was asking GitHub
@@ -437,6 +445,7 @@ pub fn write_amp(path: &Path, settings: &AmpSettings) -> std::io::Result<()> {
     }
     map.insert("design".into(), json!(settings.design));
     map.insert("graphics".into(), json!(settings.graphics));
+    map.insert("scroll_titles".into(), json!(settings.scroll_titles));
     map.insert(
         "covers".into(),
         json!(if settings.generated_covers {
@@ -1394,6 +1403,7 @@ mod tests {
             face: "galaxy".into(),
             graphics: "high".into(),
             generated_covers: false,
+            scroll_titles: false,
         };
         write_amp(&path, &settings).unwrap();
         let back = read_amp(&path);
@@ -1411,6 +1421,7 @@ mod tests {
         );
         assert_eq!(back.motion, "intense");
         assert!(!back.generated_covers && fresh.generated_covers);
+        assert!(!back.scroll_titles && fresh.scroll_titles);
         assert_eq!(
             (
                 back.theme.as_str(),

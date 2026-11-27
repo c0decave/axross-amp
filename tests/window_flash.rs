@@ -34,7 +34,10 @@ fn window(dir: &std::path::Path, args: Vec<String>) -> Harness<'static, App> {
         desktop: false,
         desktop_bus: None,
         headless_audio: true,
-        stand_in_covers: false,
+        // (covers made for tracks without one, as the player has them: their
+        // coming and their accent are part of what is tested - review of
+        // 0.17.1, L4)
+        stand_in_covers: true,
     };
     Harness::builder()
         .with_size(SIZE)
@@ -287,12 +290,19 @@ fn red_and_dark_covers_in_quick_turn_flash_no_red() {
 #[test]
 fn covers_made_for_tracks_in_quick_turn_keep_within_the_rule() {
     let mut failures = Vec::new();
-    for mode in ["off", "cover"] {
+    // (every design with the picture off - the cover's slot, its accent,
+    // the cassette, the collage, the Glass haze -, and Modern with the
+    // Cover face, the window's largest area)
+    let cases = axross_amp::design::DESIGNS
+        .iter()
+        .map(|d| (d.key, "off"))
+        .chain([("modern", "cover")]);
+    for (design, mode) in cases {
         let home = Scratch::new("wf-made-covers");
         let mut h = window(home.path(), Vec::new());
         let ctx = h.ctx.clone();
         h.state_mut().set_generated_covers(&ctx, true);
-        h.state_mut().set_design("modern");
+        h.state_mut().set_design(design);
         h.state_mut().set_mode(mode);
         settle(&mut h, 20);
         let tracks: Vec<axross_amp::state::Track> = (0..12)
@@ -321,9 +331,9 @@ fn covers_made_for_tracks_in_quick_turn_keep_within_the_rule() {
             meters.push(&h.render().unwrap());
         }
         let most = meters.most();
-        let line = format!("made covers, mode {mode}: {}", most.said);
+        let line = format!("made covers, {design}, mode {mode}: {}", most.said);
         println!("{line}");
-        assert!(h.state().has_cover(), "{mode}: no cover shown");
+        assert!(h.state().has_cover(), "{design} {mode}: no cover shown");
         if most.red > 1 || most.light > 6 {
             failures.push(line);
         }

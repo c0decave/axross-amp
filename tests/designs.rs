@@ -29,7 +29,10 @@ fn window(dir: &Path, args: Vec<String>, size: egui::Vec2) -> Harness<'static, A
         desktop: false,
         desktop_bus: None,
         headless_audio: true,
-        stand_in_covers: false,
+        // (covers made for tracks without one, as the player has them: their
+        // coming and their accent are part of what is tested - review of
+        // 0.17.1, L4)
+        stand_in_covers: true,
     };
     Harness::builder()
         .with_size(size)

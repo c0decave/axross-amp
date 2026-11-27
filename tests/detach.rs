@@ -458,8 +458,12 @@ fn a_window_the_dedicated_gpu_cannot_give_is_made_on_the_integrated_one() {
     let said = String::from_utf8_lossy(&out.stderr);
     assert!(said.contains("again on the integrated one"), "{said}");
     let env = window_env(&envfile);
+    // (it knows it is the start again; the variable that told it is gone
+    // from its environment - what it starts, a "Restart now" for an
+    // update, does not inherit it: review of 0.17.1, M3)
     assert!(
-        env.contains("AXROSS_AMP_NO_OFFLOAD=1\n")
+        env.contains("again=1\n")
+            && !env.contains("AXROSS_AMP_NO_OFFLOAD")
             && !env.contains("__NV_PRIME")
             && !env.contains("AXROSS_AMP_OFFLOAD="),
         "{env:?}"
@@ -493,7 +497,8 @@ fn the_copy_in_the_background_keeps_its_way_back_to_the_integrated_gpu() {
     let env = window_env(&envfile);
     assert!(
         env.contains("AXROSS_AMP_DETACHED=1\n")
-            && env.contains("AXROSS_AMP_NO_OFFLOAD=1\n")
+            && env.contains("again=1\n")
+            && !env.contains("AXROSS_AMP_NO_OFFLOAD")
             && !env.contains("__NV_PRIME")
             && !env.contains("AXROSS_AMP_OFFLOAD="),
         "{env:?}"

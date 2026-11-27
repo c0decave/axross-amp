@@ -126,8 +126,40 @@ fn a_cover_made_for_a_track_costs_the_frame_nothing() {
     }
     let (made, own) = (frames[0], frames[1]);
     println!("30 frames: {made} allocations with a cover made, {own} with its own");
+    // (a few a frame at most: what egui's texts and shapes take differ
+    // by the picture's size - review of 0.17.1, L2: the bound was 65 a
+    // frame)
     assert!(
-        made <= own + own / 10 + 30,
+        made <= own + 3 * 30,
         "a cover made costs the frames: {made} against {own}"
     );
+
+    // a title moving: what a frame of it allocates over one that fits - its
+    // laid-out text looked up (a String and a job, as every label's), the
+    // gap's - a handful, no more
+    let mut frames = Vec::new();
+    for title in ["Short", TITLE] {
+        let mut h = window(home.path());
+        h.state_mut().set_mode("off");
+        h.state_mut().pose(
+            vec![axross_amp::state::Track {
+                path: "/m/x.flac".into(),
+                title: title.into(),
+                ..Default::default()
+            }],
+            0,
+            200.0,
+            1.0,
+        );
+        // (past its wait: moving)
+        h.run_steps(60);
+        let ((), n) = counted(|| h.run_steps(30));
+        frames.push(n);
+    }
+    let per_frame = (frames[1] as f64 - frames[0] as f64) / 30.0;
+    println!("a moving title: {per_frame:.1} allocations a frame more ({frames:?})");
+    assert!(per_frame <= 12.0, "{per_frame} a frame: {frames:?}");
 }
+
+const TITLE: &str =
+    "'Back To The 80's' _ Best of Synthwave And Retro Electro Music Mix for 2 Hours _ Vol. 5";

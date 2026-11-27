@@ -774,7 +774,7 @@ fn pactl() -> String {
 
 /// Run pactl with `args`: (exit ok, stdout, stderr); killed after TIMEOUT.
 pub fn run(args: &[String]) -> Result<(bool, String, String), String> {
-    let mut child: Child = Command::new(pactl())
+    let mut child: Child = crate::offload::helper(&mut Command::new(pactl()))
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -1091,7 +1091,7 @@ impl Subscriber {
                     && restarts <= SUBSCRIBE_RESTARTS
                 {
                     let started = Instant::now();
-                    let Ok(mut process) = Command::new(pactl())
+                    let Ok(mut process) = crate::offload::helper(&mut Command::new(pactl()))
                         .arg("subscribe")
                         .stdin(Stdio::null())
                         .stdout(Stdio::piped())

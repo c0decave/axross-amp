@@ -257,13 +257,43 @@ pub fn render(preset: usize, seed: u64, side: u32) -> image::RgbaImage {
     let grain_seed = (seed as u32) ^ 0x9e37;
     for (x, y, pixel) in out.enumerate_pixels_mut() {
         let (u, v) = ((x as f32 + 0.5) * px, (y as f32 + 0.5) * px);
-        let c = paint(u, v, px);
+        let c = tame_red(paint(u, v, px));
         // (a fine grain: no bands in slow gradients)
         let g = (lattice(x as i32, y as i32, grain_seed) - 0.5) * (1.6 / 255.0);
         let to = |v: f32| ((v + g).clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
         *pixel = image::Rgba([to(c[0]), to(c[1]), to(c[2]), 255]);
     }
     out
+}
+
+/// A colour of saturated red made less so: none of these pictures has
+/// what the window's red guard slows a cover's change for (a red share of
+/// 0.75, linear or as sent - viz::red_share). Some seeds of preset 5 had
+/// 10 % of it (review of 0.17.1, L1).
+fn tame_red(c: Rgb) -> Rgb {
+    let share = |c: Rgb| {
+        let lin = |v: f32| v.max(0.0).powf(2.2);
+        let (r, g, b) = (lin(c[0]), lin(c[1]), lin(c[2]));
+        let linear = if r + g + b > 0.0 {
+            r / (r + g + b)
+        } else {
+            0.0
+        };
+        let sum = c[0] + c[1] + c[2];
+        let gamma = if sum > 0.0 { c[0] / sum } else { 0.0 };
+        linear.max(gamma)
+    };
+    if share(c) < 0.66 {
+        return c;
+    }
+    let l = 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+    for k in [0.2f32, 0.4, 0.6, 0.8, 1.0] {
+        let t = mix(c, [l, l, l], k);
+        if share(t) < 0.66 {
+            return t;
+        }
+    }
+    [l, l, l]
 }
 
 // ---------------------------------------------------------------- families

@@ -39,6 +39,9 @@ pub struct Gpu {
     /// `mem_info_vram_total`): an APU's is a small carve-out of the
     /// system's, a discrete card's its own gigabytes.
     pub vram: Option<u64>,
+    /// Whether a display is connected to one of its outputs (None: it has
+    /// none listed - a render-only GPU, or not told).
+    pub connected: Option<bool>,
 }
 
 impl Gpu {
@@ -65,14 +68,19 @@ pub struct System {
     pub vulkan_loader: bool,
 }
 
-/// The tests' stand-in for `/` (a fixture tree of /sys and /proc): the
-/// program's own, like `AXROSS_AMP_FAKE_WINDOW`.
+/// The tests' stand-in for `/` (a fixture tree of /sys and /proc): read in
+/// builds with debug assertions only - the tests' - never in a release
+/// (review of 0.17.1, L9).
 pub const FAKE_ROOT: &str = "AXROSS_AMP_FAKE_ROOT";
 
-/// The root the machine is read under: `/`, or [`FAKE_ROOT`]'s.
+/// The root the machine is read under: `/`, or (tests) [`FAKE_ROOT`]'s.
 pub fn root() -> PathBuf {
-    std::env::var_os(FAKE_ROOT)
-        .map(PathBuf::from)
+    let fake = if cfg!(debug_assertions) {
+        std::env::var_os(FAKE_ROOT)
+    } else {
+        None
+    };
+    fake.map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("/"))
 }
 
@@ -109,12 +117,30 @@ pub fn system_at(root: &Path) -> System {
                 .unwrap_or_default();
             let boot_vga = read("boot_vga").trim() == "1";
             let vram = read("mem_info_vram_total").trim().parse::<u64>().ok();
+            // (its connectors: card0-eDP-1, card0-HDMI-A-1 ... and whether one
+            // has a display)
+            let prefix = format!("{n}-");
+            let statuses: Vec<String> = std::fs::read_dir(&drm)
+                .into_iter()
+                .flatten()
+                .flatten()
+                .filter(|e| e.file_name().to_string_lossy().starts_with(&prefix))
+                .map(|e| {
+                    std::fs::read_to_string(e.path().join("status"))
+                        .unwrap_or_default()
+                        .trim()
+                        .to_owned()
+                })
+                .collect();
+            let connected =
+                (!statuses.is_empty()).then(|| statuses.iter().any(|s| s == "connected"));
             if vendor != 0 {
                 gpus.push(Gpu {
                     vendor,
                     driver,
                     boot_vga,
                     vram,
+                    connected,
                 });
             }
         }
@@ -190,6 +216,32 @@ pub fn decide(sys: &System, dedicated: bool, env: &dyn Fn(&str) -> Option<String
         return Decision::default();
     };
     let igpu = boot;
+    // (the GPU that drew the boot screen draws no display, the other one
+    // does - a desktop whose BIOS made the processor's GPU the first while
+    // the monitor is on the card: DRI_PRIME would move the drawing to the
+    // processor's GPU - review of 0.17.1, L5)
+    if boot.connected == Some(false) && dgpu.connected == Some(true) {
+        return Decision {
+            set: Vec::new(),
+            note: Some(format!(
+                "Two GPUs: the display is on the {} one - nothing to ask for",
+                dgpu.vendor_name()
+            )),
+        };
+    }
+    // (a GPU bound to another driver than a graphics one - vfio-pci, handed
+    // to a virtual machine - is none to draw with: L6)
+    const DRM: [&str; 6] = ["nvidia", "nouveau", "amdgpu", "radeon", "i915", "xe"];
+    if !dgpu.driver.is_empty() && !DRM.contains(&dgpu.driver.as_str()) {
+        return Decision {
+            set: Vec::new(),
+            note: Some(format!(
+                "Two GPUs: the {} one is held by {} (not a graphics driver) - nothing to ask for",
+                dgpu.vendor_name(),
+                dgpu.driver
+            )),
+        };
+    }
     // (an AMD APU beside an AMD card - both amdgpu - is told by its memory:
     // a carve-out smaller than the card's own)
     let amd_apu = boot.vendor == 0x1002
@@ -293,7 +345,16 @@ pub static NOTE: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new(
 /// has one to offload to; the note kept for Options and `--adapters`.
 /// Whether anything was set - then a window that cannot be made is made
 /// again without them ([`again_without`]).
-pub fn prefer_dedicated(graphics: &str) -> bool {
+pub fn prefer_dedicated(graphics: &str) -> Start {
+    // (started again without the offload: said once, taken out of the
+    // environment - a "Restart now" for an update, a helper, inherited it
+    // and never tried the dedicated GPU, nor watched the update's first
+    // start - review of 0.17.1, M3)
+    let again = std::env::var_os(NO_OFFLOAD).is_some();
+    if again {
+        // SAFETY: at the very start of main, before any thread exists
+        unsafe { std::env::remove_var(NO_OFFLOAD) };
+    }
     let sys = system();
     let root = root();
     let battery = if cfg!(target_os = "linux") {
@@ -301,7 +362,6 @@ pub fn prefer_dedicated(graphics: &str) -> bool {
     } else {
         crate::graphics::has_battery()
     };
-    let again = std::env::var_os(NO_OFFLOAD).is_some();
     let wanted = crate::graphics::Preference::from_key(graphics)
         .with_env()
         .settled(battery)
@@ -318,7 +378,35 @@ pub fn prefer_dedicated(graphics: &str) -> bool {
         decision.note
     };
     let _ = NOTE.set(note);
-    !decision.set.is_empty()
+    Start {
+        offloaded: !decision.set.is_empty(),
+        again,
+    }
+}
+
+/// What [`prefer_dedicated`] did at the start.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Start {
+    /// The offload variables set (a window that fails is made again
+    /// without them).
+    pub offloaded: bool,
+    /// This is the start again without them.
+    pub again: bool,
+}
+
+/// A helper program started by this one (gsettings, xrandr, pactl, a new
+/// release): without the offload variables the program set for itself -
+/// a program drawing with GL would wake the dedicated GPU (review of
+/// 0.17.1, L8). The user's own stand.
+pub fn helper(command: &mut std::process::Command) -> &mut std::process::Command {
+    command.env_remove(NO_OFFLOAD);
+    if std::env::var_os(MARK).is_some() {
+        command.env_remove(MARK);
+        for name in VARIABLES {
+            command.env_remove(name);
+        }
+    }
+    command
 }
 
 /// The command that starts this program again in its place without the
@@ -344,6 +432,7 @@ mod tests {
             driver: driver.into(),
             boot_vga: boot,
             vram: None,
+            connected: None,
         }
     }
 
@@ -559,6 +648,83 @@ mod tests {
             (n == "__NV_PRIME_RENDER_OFFLOAD").then(|| "1".to_string())
         });
         assert!(user.set.is_empty());
+    }
+
+    #[test]
+    fn a_desktop_whose_display_is_on_the_card_or_a_card_held_for_a_vm_asks_nothing() {
+        let none = |_: &str| None;
+        // the BIOS made the Intel GPU the first, the monitor is on the card
+        let mut sys = System {
+            gpus: vec![
+                Gpu {
+                    connected: Some(false),
+                    ..gpu(0x8086, "i915", true)
+                },
+                Gpu {
+                    connected: Some(true),
+                    ..gpu(0x1002, "amdgpu", false)
+                },
+            ],
+            ..System::default()
+        };
+        let d = decide(&sys, true, &none);
+        assert!(d.set.is_empty() && d.note.unwrap().contains("display is on the AMD"));
+        // (both with a display - a laptop's panel and a monitor on the
+        // card's port: offloaded as before)
+        sys.gpus[0].connected = Some(true);
+        assert!(!decide(&sys, true, &none).set.is_empty());
+        // a card handed to a virtual machine
+        sys.gpus[1].driver = "vfio-pci".into();
+        let d = decide(&sys, true, &none);
+        assert!(
+            d.set.is_empty() && d.note.as_deref().unwrap_or("").contains("vfio-pci"),
+            "{d:?}"
+        );
+        // (read from /sys: a connector's status)
+        let dir = crate::testdir::Scratch::new("offload-connected");
+        tree(
+            &dir,
+            &[
+                ("card0", "0x8086", "i915", "1", None),
+                ("card1", "0x1002", "amdgpu", "0", None),
+            ],
+            false,
+            false,
+            true,
+        );
+        std::fs::write(
+            dir.join("sys/class/drm/card1-HDMI-A-1/status"),
+            "connected\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("sys/class/drm/card0-HDMI-A-1/status"),
+            "disconnected\n",
+        )
+        .unwrap();
+        let sys = system_at(&dir);
+        assert_eq!(
+            (sys.gpus[0].connected, sys.gpus[1].connected),
+            (Some(false), Some(true))
+        );
+        assert!(decide(&sys, true, &none).set.is_empty());
+    }
+
+    #[test]
+    fn helpers_get_none_of_the_programs_variables() {
+        let mut c = std::process::Command::new("/bin/true");
+        helper(&mut c);
+        let removed: Vec<String> = c
+            .get_envs()
+            .filter(|(_, v)| v.is_none())
+            .map(|(k, _)| k.to_string_lossy().into_owned())
+            .collect();
+        assert!(removed.contains(&NO_OFFLOAD.to_string()), "{removed:?}");
+        // (the variables themselves only where the program set them: its
+        // mark - the user's own stand)
+        if std::env::var_os(MARK).is_none() {
+            assert!(!removed.contains(&"DRI_PRIME".to_string()));
+        }
     }
 
     #[test]

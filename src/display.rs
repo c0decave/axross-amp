@@ -160,7 +160,7 @@ pub fn list() -> Vec<Monitor> {
         || std::env::var("XDG_SESSION_TYPE").is_ok_and(|t| t == "wayland");
     let xrandr = (!wayland && std::env::var_os("DISPLAY").is_some())
         .then(|| {
-            std::process::Command::new("xrandr")
+            crate::offload::helper(&mut std::process::Command::new("xrandr"))
                 .args(XRANDR_ARGS)
                 .stderr(std::process::Stdio::null())
                 .output()

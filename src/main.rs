@@ -89,9 +89,11 @@ fn main() -> eframe::Result {
     // (a laptop with two GPUs: the dedicated one asked for through PRIME
     // render offload where the setting wants it - here, before any thread
     // of this program exists and before the graphics: src/offload.rs)
-    let offloaded = axross_amp::offload::prefer_dedicated(&settings.graphics);
-    // (started again without it: its window failed on the dedicated GPU)
-    let again = std::env::var_os(axross_amp::offload::NO_OFFLOAD).is_some();
+    // (`again`: started again without it - its window failed on the
+    // dedicated GPU; the variable that says so is taken out of the
+    // environment there)
+    let axross_amp::offload::Start { offloaded, again } =
+        axross_amp::offload::prefer_dedicated(&settings.graphics);
     if args.iter().any(|a| a == "--adapters") {
         print!(
             "{}",
@@ -200,6 +202,7 @@ fn main() -> eframe::Result {
                     &"AXROSS_AMP_DETACHED",
                 ])
                 .filter_map(|n| std::env::var(n).ok().map(|v| format!("{n}={v}\n")))
+                .chain(again.then(|| "again=1\n".to_owned()))
                 .collect();
             let _ = std::fs::write(path, said);
         }
@@ -241,24 +244,40 @@ fn main() -> eframe::Result {
         let preference = axross_amp::graphics::Preference::from_key(&settings.graphics);
         setup.native_adapter_selector = Some(axross_amp::graphics::selector(preference));
     }
-    let started = eframe::run_native(
-        "axross-amp",
-        options,
-        Box::new(move |cc| {
-            let app = app::App::new(cc, files);
-            #[cfg(unix)]
-            app::close_on_signals(&cc.egui_ctx);
-            // (in the background: the window is up - the terminal may go)
-            axross_amp::detach::signal_ready();
-            Ok(Box::new(app))
-        }),
-    );
-    // (the dedicated GPU asked for, and no window came of it: once more in
-    // this process's place without asking - never no window at all)
-    if started.is_err() && offloaded {
-        if let Err(error) = &started {
-            eprintln!("axross-amp: {error}");
+    let run = || {
+        eframe::run_native(
+            "axross-amp",
+            options,
+            Box::new(move |cc| {
+                let app = app::App::new(cc, files);
+                #[cfg(unix)]
+                app::close_on_signals(&cc.egui_ctx);
+                // (in the background: the window is up - the terminal may go)
+                axross_amp::detach::signal_ready();
+                Ok(Box::new(app))
+            }),
+        )
+    };
+    // (the dedicated GPU asked for: a panic in its driver's way - wgpu's
+    // validation, a device lost - is caught too, and the window made again
+    // without it - review of 0.17.1, L7)
+    let started = if offloaded {
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(run)) {
+            Ok(started) => started,
+            Err(_) => {
+                eprintln!("axross-amp: the window panicked on the dedicated GPU");
+                again_without_offload();
+            }
         }
+    } else {
+        run()
+    };
+    // (the dedicated GPU asked for, and its graphics could not be set up:
+    // once more in this process's place without asking - never no window
+    // at all; not for an error of another kind - no display - which no
+    // other GPU makes good)
+    if offloaded && let Err(error @ eframe::Error::Wgpu(_)) = &started {
+        eprintln!("axross-amp: {error}");
         again_without_offload();
     }
     // (no adapter, no surface, no device: Options cannot be reached, so

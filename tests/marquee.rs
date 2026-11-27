@@ -560,6 +560,62 @@ fn in_reduced_motion_it_is_cut_to_an_ellipsis_and_stands() {
     }
 }
 
+/// Options' switch (WCAG 2.2.2; a desktop that says nothing of reduced
+/// motion left no way to stop it - review of 0.17.1, M5): off, nothing
+/// moves - cut to an ellipsis, as in reduced motion.
+#[test]
+fn the_windows_own_switch_stops_every_title() {
+    let home = Scratch::new("marquee-switch");
+    let mut h = window(home.path(), DEFAULT, 0.05, false);
+    h.state_mut().set_scroll_titles(false);
+    for d in &DESIGNS {
+        h.state_mut().set_design(d.key);
+        h.run_steps(3);
+        pose(&mut h, TITLE, "Synthwave Nights");
+        h.run_steps(3);
+        let first: Vec<Pos2> = painted(&h).iter().map(|p| p.pos).collect();
+        h.run_steps(100);
+        let seen = marquee::seen(&h.ctx);
+        assert!(seen.iter().all(|m| !m.moving), "{}: nothing moves", d.key);
+        let now: Vec<Pos2> = painted(&h).iter().map(|p| p.pos).collect();
+        assert_eq!(first, now, "{}: all where it was", d.key);
+    }
+}
+
+/// A click on a moving title stops it - also once the pointer has gone -,
+/// another sets it moving again.
+#[test]
+fn a_click_stops_a_title_and_another_sets_it_moving() {
+    let home = Scratch::new("marquee-click");
+    let mut h = window(home.path(), DEFAULT, 0.05, false);
+    h.run_steps(3);
+    pose(&mut h, TITLE, "Synthwave Nights");
+    h.run_steps(70);
+    let (rect, _, _) = offset(&h).expect("moving");
+    let click = |h: &mut Harness<'static, App>| {
+        let at = rect.center();
+        h.event(egui::Event::PointerMoved(at));
+        for pressed in [true, false] {
+            h.event(egui::Event::PointerButton {
+                pos: at,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::NONE,
+            });
+        }
+        h.run_steps(2);
+        h.event(egui::Event::PointerMoved(Pos2::new(5.0, DEFAULT.y - 5.0)));
+        h.run_steps(2);
+    };
+    click(&mut h);
+    let (_, stopped, _) = offset(&h).unwrap();
+    h.run_steps(60);
+    assert_eq!(offset(&h).unwrap().1, stopped, "stopped, the pointer gone");
+    click(&mut h);
+    h.run_steps(60);
+    assert_ne!(offset(&h).unwrap().1, stopped, "moving again");
+}
+
 #[test]
 fn a_screen_reader_is_given_the_whole_title() {
     let home = Scratch::new("marquee-reader");

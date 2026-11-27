@@ -141,7 +141,7 @@ fn portal_on(connection: &zbus::blocking::Connection) -> Option<u32> {
 /// GNOME's `color-scheme` and, for its "Default", the GTK theme's name.
 fn gsettings() -> Option<bool> {
     let get = |key: &str| {
-        std::process::Command::new("gsettings")
+        crate::offload::helper(&mut std::process::Command::new("gsettings"))
             .args(["get", "org.gnome.desktop.interface", key])
             .stderr(std::process::Stdio::null())
             .output()

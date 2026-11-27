@@ -4,7 +4,13 @@ axross-amp is axross's Media Player as a program of its own, in Rust. The
 versions before 0.14.0 were not published; they are listed so the history
 reads whole.
 
-## Unreleased
+## 0.17.1 - 2026-11-27
+
+Titles that move so all of them is read, a cover for every track, the
+dedicated GPU of a laptop with two, and an output that comes back - with
+what the release review of it found (6.5 of 10: the output's recovery,
+the log flood, a cover's seed, the marquee on a slow renderer, a switch
+of the window's own to stop it).
 
 ### Added
 - **A cover for every track: 100 pictures made for tracks without one**
@@ -24,17 +30,24 @@ reads whole.
   playlist's album heads, and the desktop's (MPRIS) art. Made once a
   track on a thread of its own, at 256 and 1024 px, kept in memory (four)
   and on disk (`~/.cache/axross-amp/covers`, the newest 64); a frame
-  allocates nothing more for it. A change goes through the window's own
-  cover change - its turn every half second at most, its crossfade - and
-  no preset has the saturated red the red guard slows for. Options ›
+  showing one allocates no more than one showing a track's own cover (3
+  allocations a frame at most, tested). A change goes through the
+  window's own cover change - its turn every half second at most, its
+  crossfade - and no picture has the saturated red the red guard slows
+  for: a colour that red is made less so as it is drawn, whatever the
+  seed (tested over 24 seeds of every preset). A track reached by the
+  gapless advance gets its own cover, from what its own file says (not the
+  album of the track before it). Options ›
   *Covers for tracks without one*: Generated (the default) or None (as
   before). Tested: the same track the same picture in two windows, an
   album one, others another; 100 presets pairwise unlike (16 x 16 means,
   the nearest two 0.061 apart, none under 0.06), none flat, none red;
-  the frames' allocations with a made cover against an own one (20 040 to
-  20 370 over 30 frames); tracks without covers switched every half
-  second in Modern and as the Cover face read by both flash meters
-  (`tests/covers.rs`, `tests/covers_alloc.rs`, `tests/window_flash.rs`).
+  the frames' allocations with a made cover against an own one; an
+  untagged track after an album's track by the gapless advance; tracks
+  without covers switched every half second in every design and as the
+  Cover face, read by both flash meters (`tests/covers.rs`,
+  `tests/covers_alloc.rs`, `tests/window_flash.rs`); the design, flash
+  and MPRIS tests run with them, as the player does.
   `COVERS_SHEET=1 cargo test --test covers` draws all 100.
 
 ### Changed
@@ -65,8 +78,12 @@ reads whole.
   pages, each shown a while and faded into the next. A right-to-left title
   starts at the right and moves the way it is read. Where the desktop asks
   for reduced motion nothing moves: cut to an ellipsis, its whole in the
-  tooltip, as before. The playlist's rows and "Up next" keep their
-  ellipsis and tooltip (a list moving in every row is noise).
+  tooltip, as before - and so with Options › *Move titles that do not
+  fit* off, the program's own switch (WCAG 2.2.2: a desktop that says
+  nothing of reduced motion left no way to stop it). A click on a moving
+  title stops it, another sets it moving again. The playlist's rows and
+  "Up next" keep their ellipsis and tooltip (a list moving in every row is
+  noise).
 - It costs little: a frame is drawn only while it moves - during its
   waits the window sleeps until the wait ends; moving smoothly 20 to 30
   frames a second (as often as it moves a pixel), by cells about 4 (once
@@ -80,8 +97,12 @@ reads whole.
   without fading: stopped, with the picture off, measured in a real
   window there over 30 s, 0.4 % of a core with a short title and 3.9 %
   (Modern), 7.5 % (the rack), 2.1 % (the 90s strip) with the user's;
-  cell by cell it had been 16 - 37 %. The text is laid out once for each
-  change of it (egui's cache; a frame looks it up).
+  cell by cell it had been 16 - 37 %. A jump is at most 3 s of the pace
+  apart, and a wait the clock asked for is its own time (a jump 5.9 s
+  away was taken for the window not drawn, and the title stood for
+  good). The text is laid out once for each change of it (egui's cache;
+  a frame looks it up - a text and its job a frame, as every label of
+  egui's: a moving title allocates a handful a frame, tested).
 - Tested (`tests/marquee.rs`): the user's title in all ten designs at
   620 x 860 and 420 x 420 - over a round its first letter and its last
   are each seen whole in its box, which runs into no other text; it moves
@@ -98,14 +119,29 @@ reads whole.
   (a Bluetooth headset or a car connecting and disconnecting): the player
   gave up for good - "choose one in the Mixer tab" - and stayed silent
   until it was started again. Now it lets the output go, says it is trying
-  again, and tries every 5 s, then less often (up to every 30 s), until
-  the device is back; a track that played goes on where it was (Android
-  stability audit, H4; `tests/engine.rs`).
+  again, and tries once a round - after 5 s, then 10, 20 and every 30 s -
+  until the device is back; a try that fails is let go at once (no three
+  more at once); a stream that has played 30 s without an error is well
+  again. A track that played goes on where it was (Android stability
+  audit, H4; `tests/engine.rs`, `tests/output_retry.rs`: the waits, one
+  try a round).
 - **An output that fails at every write is no longer logged at every
-  write**: said once, then at most every 10 s with how many more; failing
-  20 times within a second it is taken for lost - made anew, then let go
-  and tried again as above. (A sound file with its reader gone - ALSA's
-  file plugin - wrote 20 GB of the one line into the log in three hours.)
+  write**: what the output says - its own errors and alsa-lib's lines,
+  which alsa-lib printed for every failed write itself - goes through one
+  limiter of the program's, across the streams made anew: said once, then
+  at most every 10 s with how many more. Errors that are not recovered from
+  by themselves, 20 within a second, make the output lost; an underrun, a
+  route followed or real-time scheduling refused never count (an
+  overloaded machine's underruns let the output go). With ALSA's file
+  plugin writing to a full disk: 2 lines in 25 s, where there were 26 260
+  of alsa-lib's and 86 of the program's, and 6 streams made, where there
+  were some 13 every 5 s (`tests/output_flood.rs`). (A sound file with its
+  reader gone wrote 20 GB of the one line into the log in three hours.)
+- **A cover made smaller wakes the window when it is done**: while its
+  sizes were made the window asked for a frame every 30 ms - on a slow
+  renderer some 10 frames a second, the Cover face held to 4, for as long
+  as a large cover's sizes took (`tests/real_window.rs`, now with a cover
+  made for its track).
 - **Paused for five seconds, the output is let go**; Play opens it again
   where the sound left off - nothing lost, nothing heard twice (tested
   frame by frame). Before, the stream ran all the time - also paused,
@@ -133,12 +169,22 @@ reads whole.
   place, on the integrated one - from a terminal by the copy in the
   background too, which knows the variables as the program's by a mark of
   its own (as in axross-files-matrix, its review 6's M3); an update's
-  first start stays watched across it. Options › Graphics says what was
-  done; `axross-amp --adapters` lists every adapter by API, the one the
-  window would draw with and that note. Tested on fixture trees - Intel +
-  NVIDIA's driver (the owner's), Intel + nouveau, AMD + AMD, one GPU, a
-  virtual machine -, the variables it sets, the start again without them,
-  and the copy in the background keeping it (`tests/detach.rs`).
+  first start stays watched across it. A panic on the dedicated GPU
+  (wgpu's validation, a device lost) is made good the same way; an error
+  of another kind (no display) is not. The start again knows itself so
+  and takes the word out of its environment: a "Restart now" for an
+  update starts a program that decides afresh and whose first start is
+  watched. Helpers (gsettings, xrandr, pactl, a new release's self-test)
+  get none of the program's variables. Not offloaded: a desktop whose
+  display is on the card while the BIOS made the processor's GPU the
+  first, or a card held by another driver than a graphics one (vfio-pci,
+  for a virtual machine). The tests' fixture root is read in test builds
+  only. Options › Graphics says what was done; `axross-amp --adapters`
+  lists every adapter by API, the one the window would draw with and that
+  note. Tested on fixture trees - Intel + NVIDIA's driver (the owner's),
+  Intel + nouveau, AMD + AMD, one GPU, a virtual machine, a display on
+  the card, vfio-pci -, the variables it sets, the start again without
+  them, and the copy in the background keeping it (`tests/detach.rs`).
 
 ## 0.17.0 - 2026-11-24
 

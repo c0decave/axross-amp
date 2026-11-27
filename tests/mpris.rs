@@ -45,7 +45,10 @@ fn app_on(dir: &std::path::Path, bus: &str, args: Vec<String>) -> Harness<'stati
         desktop: true,
         desktop_bus: Some(bus.to_owned()),
         headless_audio: true,
-        stand_in_covers: false,
+        // (covers made for tracks without one, as the player has them: their
+        // coming and their accent are part of what is tested - review of
+        // 0.17.1, L4)
+        stand_in_covers: true,
     };
     Harness::builder()
         .with_size(egui::vec2(620.0, 860.0))

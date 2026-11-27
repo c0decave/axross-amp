@@ -60,6 +60,26 @@ const MIN_DISTANCE: f32 = 0.06;
 /// as much saturated red as the window's red guard watches for (8 %).
 #[test]
 fn every_preset_has_contrast_and_no_red_flash() {
+    // (contrast at one seed; red at many - a few seeds of preset 5 had
+    // 10 % of it: review of 0.17.1, L1)
+    for (p, seed) in
+        (0..PRESETS).flat_map(|p| (0..24u64).map(move |k| (p, covers::fnv(&k.to_le_bytes()))))
+    {
+        let small = covers::render(p, seed, 48);
+        let art = axross_amp::engine::Art {
+            width: 48,
+            height: 48,
+            rgba: small.as_raw().clone(),
+            png: Vec::new(),
+            large: None,
+        };
+        let red = axross_amp::app::red_area(&art);
+        assert!(
+            red < 0.02,
+            "preset {p} ({}) seed {seed:x}: red {red}",
+            FAMILIES[covers::family_of(p).0]
+        );
+    }
     for p in 0..PRESETS {
         let img = covers::render(p, 7, 128);
         let art = axross_amp::engine::Art {
@@ -300,4 +320,57 @@ fn a_track_with_a_cover_keeps_it() {
     }
     let (art, made) = h.state().cover_art();
     assert!(!made && art.is_some_and(|a| a.png == own.png));
+}
+
+/// An untagged track reached by the gapless advance from an album's track
+/// gets its own cover - the one it gets opened on its own -, not one seeded
+/// by the album before it (review of 0.17.1, M2).
+#[test]
+fn an_untagged_track_after_an_album_track_gets_its_own_cover() {
+    let Some(corpus) = std::env::var_os("AMP_CORPUS") else {
+        eprintln!("AMP_CORPUS not set: the gapless cover test is skipped");
+        return;
+    };
+    let home = player::Scratch::new("covers-advance");
+    let (a_dir, b_dir) = (home.join("A"), home.join("B"));
+    std::fs::create_dir_all(&a_dir).unwrap();
+    std::fs::create_dir_all(&b_dir).unwrap();
+    let a = a_dir.join("a.flac");
+    let b = b_dir.join("b.wav");
+    std::fs::copy(std::path::Path::new(&corpus).join("tone.flac"), &a).unwrap();
+    player::write_wav(&b, 6.0);
+    let (a_s, b_s) = (
+        a.to_string_lossy().into_owned(),
+        b.to_string_lossy().into_owned(),
+    );
+    let album = axross_amp::engine::probe(&a_s).unwrap().album;
+    assert!(!album.is_empty(), "the corpus's tone.flac has an album");
+    let own = covers::seed(&b_s, "");
+    let own_png = covers::art(covers::preset_of(own), own).png;
+    let setup = Setup {
+        config_dir: home.join("config"),
+        desktop: false,
+        desktop_bus: None,
+        headless_audio: true,
+        stand_in_covers: true,
+    };
+    let args = vec![a_s.clone(), b_s.clone()];
+    let mut h = Harness::builder()
+        .with_size(egui::vec2(620.0, 860.0))
+        .with_step_dt(0.05)
+        .build_eframe(move |cc| App::with_setup(cc, args.clone(), setup.clone()));
+    let mut out = axross_amp::engine::RenderState::default();
+    let mut advanced = false;
+    for _ in 0..200 {
+        player::listen(&mut h, &mut out, 0.1);
+        if h.state().snapshot().current == 1 {
+            advanced = true;
+            if let (Some(art), true) = h.state().cover_art()
+                && art.png == own_png
+            {
+                return;
+            }
+        }
+    }
+    panic!("advanced: {advanced}; the untagged track never got its own cover");
 }

@@ -1955,7 +1955,8 @@ impl App {
                 .collect();
             let round: f32 = times.iter().sum();
             let held = ui.rect_contains_pointer(scraps_rect);
-            let clock = marquee::clock(ui.ctx(), ui.scope_id().with("collage-pages"), &title, held);
+            let pages_id = ui.scope_id().with("collage-pages");
+            let clock = marquee::clock(ui.ctx(), pages_id, &title, held);
             let mut t = clock.rem_euclid(round);
             for (k, &d) in times.iter().enumerate() {
                 if t < d || k + 1 == times.len() {
@@ -1970,14 +1971,17 @@ impl App {
                     } else {
                         (into / fade).min((d - t) / fade).clamp(0.0, 1.0)
                     };
+                    let next = if marquee::slow(ui.ctx()) {
+                        d - t
+                    } else if alpha < 1.0 {
+                        1.0 / 30.0
+                    } else {
+                        (d - t - fade).max(1.0 / 30.0)
+                    };
+                    // (a page shown longer than five seconds: its turn is
+                    // no gap of the clock's)
+                    marquee::expect_wake(ui.ctx(), pages_id, next);
                     if !held {
-                        let next = if marquee::slow(ui.ctx()) {
-                            d - t
-                        } else if alpha < 1.0 {
-                            1.0 / 30.0
-                        } else {
-                            (d - t - fade).max(1.0 / 30.0)
-                        };
                         marquee::wake(ui.ctx(), next);
                     }
                     break;

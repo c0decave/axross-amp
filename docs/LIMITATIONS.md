@@ -83,7 +83,8 @@ Back to the [README](../README.md) - everything in detail: the [extended README]
   at the end of what is shown, which for such a name is its beginning -
   the whole name is in the tooltip).
 - A title too long for its box moves within it (src/marquee.rs); where
-  the desktop asks for reduced motion it stands, cut to an ellipsis, its
+  the desktop asks for reduced motion, or Options › *Move titles that do
+  not fit* is off, it stands, cut to an ellipsis, its
   whole in the tooltip only - pointing at it does not move it either (it
   would be motion started by the pointer, which reduced motion asks to
   spare). The playlist's rows and "Up next" are always cut so. On a slow

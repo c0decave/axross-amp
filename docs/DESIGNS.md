@@ -96,8 +96,10 @@ cell at a time with "***" between; the Terminal a cell at a time there
 and back. The collage's title, cut from other pages word by word, is laid
 on pages turned one after another (each shown two seconds and as long as
 its letters take to read, faded into the next). A right-to-left title
-starts at the right and moves the way it is read. Reduced motion: nothing
-moves - cut to an ellipsis, its whole in the tooltip. A frame is drawn
+starts at the right and moves the way it is read. Reduced motion - the
+desktop's, or Options › *Move titles that do not fit* off -: nothing moves,
+cut to an ellipsis, its whole in the tooltip; a click on a moving title
+stops it, another sets it moving again. A frame is drawn
 only while it moves (20 - 30 a second smoothly, about 4 by cells; none
 during its waits, none minimised); on a slow renderer (no GPU) every
 design moves it in jumps of at most a third of its box, a frame every few

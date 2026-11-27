@@ -304,6 +304,10 @@ struct Clock {
     track: u64,
     t: f32,
     last: f64,
+    /// The wake asked for last (a gap up to it and a second is no gap).
+    wake: f32,
+    /// Stopped by a click (until the next click, or another text).
+    stopped: bool,
 }
 
 /// What was drawn moving this frame (tests).
@@ -388,27 +392,57 @@ pub fn clock(ctx: &egui::Context, id: Id, text: &str, held: bool) -> f32 {
     let f = frame(ctx);
     let key = hash(text);
     ctx.data_mut(|d| {
-        let c = d.get_temp_mut_or_insert_with(id, || Clock {
+        let fresh = Clock {
             text: key,
             track: f.track,
             t: 0.0,
             last: now,
-        });
+            wake: 0.0,
+            stopped: false,
+        };
+        let c = d.get_temp_mut_or_insert_with(id, || fresh);
         if c.text != key || c.track != f.track {
-            *c = Clock {
-                text: key,
-                track: f.track,
-                t: 0.0,
-                last: now,
-            };
+            *c = fresh;
         }
+        // (a gap longer than five seconds - or than the wake asked for and
+        // a second: a slow renderer's jumps may be further apart - is the
+        // window not drawn; the clock stood still for good where a jump
+        // was 5.9 s away - review of 0.17.1, M4)
         let dt = (now - c.last) as f32;
-        if !held && (0.0..=5.0).contains(&dt) {
+        let gap = 5.0f32.max(c.wake + 1.0);
+        if !held && !c.stopped && (0.0..=gap).contains(&dt) {
             c.t += dt;
         }
         c.last = now;
         c.t
     })
+}
+
+/// The window is to be woken in `secs` for the text at `id`: a gap up to
+/// it is the text's own time.
+pub fn expect_wake(ctx: &egui::Context, id: Id, secs: f32) {
+    ctx.data_mut(|d| {
+        if let Some(mut c) = d.get_temp::<Clock>(id) {
+            c.wake = if secs.is_finite() { secs } else { 0.0 };
+            d.insert_temp(id, c);
+        }
+    });
+}
+
+/// A click on the text at `id`: stopped, or moving again (WCAG 2.2.2).
+pub fn toggle_stop(ctx: &egui::Context, id: Id) {
+    ctx.data_mut(|d| {
+        if let Some(mut c) = d.get_temp::<Clock>(id) {
+            c.stopped = !c.stopped;
+            d.insert_temp(id, c);
+        }
+    });
+}
+
+/// Whether the text at `id` was stopped by a click.
+pub fn stopped(ctx: &egui::Context, id: Id) -> bool {
+    ctx.data(|d| d.get_temp::<Clock>(id))
+        .is_some_and(|c| c.stopped)
 }
 
 /// Forget the clock of a text that fits again.
@@ -429,6 +463,16 @@ pub fn wake(ctx: &egui::Context, secs: f32) {
 /// moves a pixel, 20 to 30 times a second.
 fn frame_every(speed: f32, ppp: f32) -> f32 {
     (1.0 / (speed * ppp).max(1.0)).clamp(1.0 / 30.0, 1.0 / 20.0)
+}
+
+/// A slow renderer's jump for a text `over` points too wide for a box
+/// `room` wide, moving at `pace`: at most a third of the box and 3 s of the
+/// pace (a wake further away than the clock's gap stopped it for good -
+/// review of 0.17.1, M4), evenly to its end.
+fn slow_cell(over: f32, room: f32, pace: f32) -> f32 {
+    let jump = (room / 3.0).min(pace * 3.0).max(8.0);
+    let n = (over.max(1.0) / jump).ceil().max(1.0);
+    over.max(1.0) / n
 }
 
 /// A text to draw: what it says, in what type and colour; what lies under
@@ -499,7 +543,12 @@ pub fn paint(
         return Shown { rect, cut: true };
     }
     let rect = align.anchor_size(pos, vec2(width, galley.size().y));
-    let response = ui.interact(rect, id.with("whole"), Sense::hover());
+    // (a click stops it, another sets it moving again - never focused:
+    // the keys have Options' switch)
+    let response = ui.interact(rect, id.with("whole"), Sense::CLICK);
+    if response.clicked() {
+        toggle_stop(ui.ctx(), id);
+    }
     let under = text.under.as_ref().map(|(u, c)| {
         (
             one_row(painter, u, TextFormat::simple(text.font.clone(), *c)),
@@ -520,7 +569,7 @@ pub fn paint(
         look,
         response.hovered(),
     );
-    let _ = crate::app::whole_on_hover(response, text.text);
+    let _ = tooltip(response, text.text);
     Shown { rect, cut: true }
 }
 
@@ -553,7 +602,12 @@ pub fn label(ui: &mut Ui, text: impl Into<egui::WidgetText>, look: Look) -> Resp
         return response;
     }
     let id = ui.next_auto_id().with("marquee");
-    let (rect, response) = ui.allocate_exact_size(vec2(width, galley.size().y), Sense::hover());
+    // (a click stops it, another sets it moving again: Sense::CLICK, not
+    // focused - the keys have Options' switch)
+    let (rect, response) = ui.allocate_exact_size(vec2(width, galley.size().y), Sense::CLICK);
+    if response.clicked() {
+        toggle_stop(ui.ctx(), id);
+    }
     response.widget_info(|| egui::WidgetInfo::labeled(egui::accesskit::Role::Label, true, &whole));
     if ui.is_rect_visible(rect) {
         let painter = ui.painter().clone();
@@ -572,7 +626,19 @@ pub fn label(ui: &mut Ui, text: impl Into<egui::WidgetText>, look: Look) -> Resp
             response.hovered(),
         );
     }
-    crate::app::whole_on_hover(response, &whole)
+    tooltip(response, &whole)
+}
+
+/// The whole text in a tooltip, and what a click does (made only while the
+/// pointer is there: no text a frame for it).
+fn tooltip(response: Response, whole: &str) -> Response {
+    if !response.contains_pointer() {
+        return response;
+    }
+    crate::app::whole_on_hover(
+        response,
+        &format!("{whole}\n(a click stops it moving, another sets it moving again)"),
+    )
 }
 
 /// A text laid out: its galley in one row, its type, what moves under it.
@@ -597,13 +663,13 @@ fn moving(ui: &Ui, painter: &Painter, id: Id, rect: Rect, laid: &Laid, look: Loo
     // frame every few seconds)
     let (look, cell) = if f.slow {
         let over = (text_w - rect.width()).max(1.0);
-        let n = (over / (rect.width() / 3.0).max(8.0)).ceil().max(1.0);
+        let pace = timing(font.size, f.motion, 1.0).map_or(30.0, |m| m.speed);
         let look = Look {
             style: Style::Bounce,
             stepped: true,
             ..look
         };
-        (look, over / n)
+        (look, slow_cell(over, rect.width(), pace))
     } else if look.stepped {
         (look, ctx.fonts_mut(|fonts| fonts.glyph_width(font, '0')))
     } else {
@@ -718,12 +784,13 @@ fn moving(ui: &Ui, painter: &Painter, id: Id, rect: Rect, laid: &Laid, look: Loo
     }
     draw(band(inner.0, inner.1), 1.0);
     keep(ctx, f, laid.whole, rect, now.offset, now.moving, false);
-    if !held {
-        let next = if now.moving && m.cell <= 0.0 {
-            frame_every(m.speed, ppp)
-        } else {
-            now.next
-        };
+    let next = if now.moving && m.cell <= 0.0 {
+        frame_every(m.speed, ppp)
+    } else {
+        now.next
+    };
+    expect_wake(ctx, id, next);
+    if !held && !stopped(ctx, id) {
         wake(ctx, next);
     }
 }
@@ -887,6 +954,64 @@ mod tests {
         let intense = timing(14.0, Motion::Intense, 0.0).unwrap();
         assert!(intense.speed > calm.speed && intense.speed <= 42.0);
         assert!(timing(14.0, Motion::Reduced, 0.0).is_none());
+    }
+
+    #[test]
+    fn a_slow_renderers_jumps_are_never_further_apart_than_its_clock_allows() {
+        // (review of 0.17.1, M4: 14 pt, a box of 600, a text of 980 - a
+        // jump of 190 points, 5.9 s apart)
+        for size in [9.0f32, 14.0, 22.0, 48.0] {
+            let pace = timing(size, Motion::Calm, 1.0).unwrap().speed;
+            for room in (100..=2400).step_by(100).map(|r| r as f32) {
+                for k in [1.05f32, 1.6, 2.5, 6.0] {
+                    let text = room * k;
+                    let cell = slow_cell(text - room, room, pace);
+                    let m = timing(size, Motion::Calm, cell).unwrap();
+                    for i in 0..400 {
+                        let a = at(i as f32 * 0.25, text, room, 0.0, Style::Bounce, &m);
+                        assert!(
+                            !a.next.is_finite() || a.next <= 4.0,
+                            "size {size} room {room} text {text}: next {}",
+                            a.next
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_wake_asked_for_is_no_gap_of_the_clock() {
+        let ctx = egui::Context::default();
+        let id = Id::NULL.with("slow");
+        let mut time = 0.0;
+        let mut step = |dt: f64, expect: Option<f32>| -> f32 {
+            time += dt;
+            let input = egui::RawInput {
+                time: Some(time),
+                ..Default::default()
+            };
+            let mut out = 0.0;
+            let mut output = ctx.run_ui(input, |ui| {
+                begin_frame(ui.ctx(), Motion::Calm, 1, true);
+                out = clock(ui.ctx(), id, "a", false);
+                if let Some(e) = expect {
+                    expect_wake(ui.ctx(), id, e);
+                }
+            });
+            output.textures_delta.clear();
+            out
+        };
+        step(0.0, Some(7.0));
+        // woken when it asked, 7 s on: its time
+        assert!((step(7.0, Some(7.0)) - 7.0).abs() < 1e-3);
+        // not drawn for a minute: no time of its
+        assert!((step(60.0, Some(7.0)) - 7.0).abs() < 1e-3);
+        // a click: stopped until the next
+        toggle_stop(&ctx, id);
+        assert!((step(1.0, None) - 7.0).abs() < 1e-3);
+        toggle_stop(&ctx, id);
+        assert!((step(1.0, None) - 8.0).abs() < 1e-3);
     }
 
     #[test]
