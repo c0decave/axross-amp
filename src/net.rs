@@ -12,6 +12,9 @@
 //! * An old SHOUTcast server's `ICY 200 OK` status line (no HTTP) is
 //!   understood.
 
+// (Android: no network - what only the network needs is left out, see open)
+#![cfg_attr(target_os = "android", allow(dead_code, unused_imports))]
+
 use crossbeam_channel::{Receiver, RecvTimeoutError, Sender};
 use std::collections::VecDeque;
 use std::io::{self, Read, Write};
